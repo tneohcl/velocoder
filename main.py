@@ -139,7 +139,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_command_preview())
 
         self.hw_status_label = QLabel(self._hardware_status_text())
-        self.hw_status_label.setStyleSheet("color: palette(mid); font-size: 10pt;")
+        # palette(mid) is meant for borders/shadows, not body text -- against
+        # a dark theme it's nearly unreadable. Rely on the default (theme-
+        # correct in both light and dark) text color; a smaller size is
+        # enough to read as "secondary detail" without losing contrast.
+        self.hw_status_label.setStyleSheet("font-size: 10pt;")
         self.hw_status_label.setWordWrap(True)
         layout.addWidget(self.hw_status_label)
 
@@ -330,7 +334,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.progress_bar)
 
         self.stats_label = QLabel("—")
-        self.stats_label.setStyleSheet("color: palette(mid);")
+        # Same fix as hw_status_label above: palette(mid) reads as
+        # near-invisible on a dark theme. Default text color, smaller size.
+        self.stats_label.setStyleSheet("font-size: 10pt;")
         layout.addWidget(self.stats_label)
 
         layout.addWidget(QLabel("Log:"))

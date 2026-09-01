@@ -36,6 +36,26 @@ def _make_clip(path: Path, audio_codec: str):
     )
 
 
+class _FakeApp:
+    """Stand-in for QApplication -- just needs to accept setStyleSheet()."""
+    received = None
+
+    def setStyleSheet(self, text):
+        self.received = text
+
+
+class TestStylesheetLoading(unittest.TestCase):
+    def test_missing_file_does_not_crash_startup(self):
+        app = _FakeApp()
+        main._load_stylesheet(app, style_path=Path("/nonexistent/style.qss"))  # must not raise
+        self.assertIsNone(app.received)
+
+    def test_real_stylesheet_file_loads(self):
+        app = _FakeApp()
+        main._load_stylesheet(app, style_path=REPO_ROOT / "style.qss")
+        self.assertIn("QPushButton", app.received)
+
+
 class TestStartupOrdering(unittest.TestCase):
     """rc_mode_combo must be populated before any preset gets applied."""
 

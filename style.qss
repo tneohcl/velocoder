@@ -1,0 +1,263 @@
+/* TITAN-i Transcoder theme. Dark palette, one accent color (blue). Loaded
+   once in main() via app.setStyleSheet() — see that function for why
+   app.setStyle("Fusion") has to be called first (native styles like Breeze
+   ignore several of the subcontrols this file relies on, e.g. the slider
+   groove/handle and the combobox popup). */
+
+QWidget {
+    background-color: #1a1d23;
+    color: #e6e8eb;
+    font-size: 10pt;
+}
+
+QMainWindow, QSplitter {
+    background-color: #1a1d23;
+}
+
+QGroupBox {
+    background-color: #21252c;
+    border: 1px solid #333944;
+    border-radius: 8px;
+    margin-top: 14px;
+    padding-top: 14px;
+    font-weight: 600;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 12px;
+    padding: 0 6px;
+    color: #4fa8e0;
+}
+
+QTabWidget::pane {
+    border: 1px solid #333944;
+    border-radius: 8px;
+    top: -1px;
+    background: #21252c;
+}
+
+QTabBar::tab {
+    background: transparent;
+    color: #8b93a1;
+    padding: 6px 18px;
+    margin-right: 2px;
+    border-bottom: 2px solid transparent;
+}
+
+QTabBar::tab:selected {
+    color: #e6e8eb;
+    border-bottom: 2px solid #4fa8e0;
+}
+
+QTabBar::tab:hover:!selected {
+    color: #c3c8d1;
+}
+
+QPushButton {
+    background-color: #2a2f38;
+    border: 1px solid #3a4049;
+    border-radius: 6px;
+    padding: 6px 14px;
+    color: #e6e8eb;
+}
+
+QPushButton:hover {
+    background-color: #333a45;
+    border-color: #4fa8e0;
+}
+
+QPushButton:pressed {
+    background-color: #23272e;
+}
+
+QPushButton:disabled {
+    color: #5a616c;
+    border-color: #2a2f38;
+    background-color: #1e2127;
+}
+
+/* Start/Stop get object names in main.py so they read as the primary and
+   destructive actions instead of blending into every other button. */
+QPushButton#startButton {
+    background-color: #4fa8e0;
+    border: none;
+    color: #0d1117;
+    font-weight: 600;
+}
+
+QPushButton#startButton:hover { background-color: #6bb8e8; }
+QPushButton#startButton:pressed { background-color: #3d8ec4; }
+QPushButton#startButton:disabled { background-color: #29394a; color: #5a6b7a; }
+
+QPushButton#stopButton:enabled {
+    border-color: #e0614f;
+    color: #e0614f;
+}
+
+QPushButton#stopButton:enabled:hover {
+    background-color: #3a2a28;
+}
+
+QComboBox, QLineEdit, QSpinBox, QPlainTextEdit {
+    background-color: #171a1f;
+    border: 1px solid #333944;
+    border-radius: 6px;
+    padding: 4px 8px;
+    selection-background-color: #4fa8e0;
+    selection-color: #0d1117;
+}
+
+QComboBox:hover, QLineEdit:hover, QSpinBox:hover {
+    border-color: #454c59;
+}
+
+QComboBox:focus, QLineEdit:focus, QSpinBox:focus, QPlainTextEdit:focus {
+    border-color: #4fa8e0;
+}
+
+/* No custom ::drop-down/::down-arrow rule here on purpose: styling the
+   drop-down subcontrol at all suppresses Fusion's built-in arrow glyph
+   unless a replacement image is supplied, which would leave combo boxes
+   looking like plain read-only text fields with no affordance that
+   they're clickable. Fusion's default arrow button already matches this
+   theme closely enough once the field body itself is styled below. */
+
+QComboBox QAbstractItemView {
+    background-color: #21252c;
+    border: 1px solid #333944;
+    outline: none;
+    selection-background-color: #4fa8e0;
+    selection-color: #0d1117;
+}
+
+QLineEdit:read-only {
+    color: #9aa1ac;
+}
+
+QSlider::groove:horizontal {
+    height: 4px;
+    background: #333944;
+    border-radius: 2px;
+}
+
+QSlider::sub-page:horizontal {
+    background: #4fa8e0;
+    border-radius: 2px;
+}
+
+QSlider::handle:horizontal {
+    width: 15px;
+    height: 15px;
+    margin: -6px 0;
+    background: #e6e8eb;
+    border-radius: 7px;
+}
+
+QSlider::handle:horizontal:hover {
+    background: #6bb8e8;
+}
+
+QProgressBar {
+    background: #171a1f;
+    border: 1px solid #333944;
+    border-radius: 6px;
+    min-height: 18px;
+    text-align: center;
+    color: #e6e8eb;
+}
+
+QProgressBar::chunk {
+    background-color: #4fa8e0;
+    border-radius: 5px;
+}
+
+QListWidget {
+    background-color: #171a1f;
+    border: 1px solid #333944;
+    border-radius: 8px;
+    padding: 4px;
+}
+
+QListWidget::item {
+    padding: 6px 8px;
+    border-radius: 4px;
+}
+
+QListWidget::item:selected {
+    background-color: #2a3f52;
+    color: #e6e8eb;
+}
+
+QListWidget::item:hover:!selected {
+    background-color: #262b33;
+}
+
+QCheckBox::indicator {
+    width: 15px;
+    height: 15px;
+    border: 1px solid #454c59;
+    border-radius: 4px;
+    background: #171a1f;
+}
+
+QCheckBox::indicator:checked {
+    background: #4fa8e0;
+    border-color: #4fa8e0;
+}
+
+QCheckBox::indicator:hover {
+    border-color: #4fa8e0;
+}
+
+QSplitter::handle {
+    background: #14161a;
+}
+
+QSplitter::handle:horizontal {
+    width: 3px;
+}
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 11px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background: #3a4049;
+    border-radius: 5px;
+    min-height: 24px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #4a5159;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 11px;
+    margin: 0;
+}
+
+QScrollBar::handle:horizontal {
+    background: #3a4049;
+    border-radius: 5px;
+    min-width: 24px;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0;
+}
+
+QToolTip {
+    background-color: #2a2f38;
+    color: #e6e8eb;
+    border: 1px solid #454c59;
+    padding: 4px 6px;
+}

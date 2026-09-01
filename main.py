@@ -351,10 +351,12 @@ class MainWindow(QMainWindow):
 
         run_row = QHBoxLayout()
         self.start_btn = QPushButton("Start")
+        self.start_btn.setObjectName("startButton")
         self.start_btn.setDefault(True)
         self.start_btn.setMinimumHeight(36)
         self.start_btn.clicked.connect(self._start)
         self.stop_btn = QPushButton("Stop")
+        self.stop_btn.setObjectName("stopButton")
         self.stop_btn.setMinimumHeight(36)
         self.stop_btn.clicked.connect(self._stop)
         self.stop_btn.setEnabled(False)
@@ -379,6 +381,7 @@ class MainWindow(QMainWindow):
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(5000)
+        self.log_view.setPlaceholderText("ffmpeg output will appear here once a job starts…")
         layout.addWidget(self.log_view, 2)
         return right
 
@@ -783,8 +786,22 @@ class MainWindow(QMainWindow):
         self.stats_label.setText("—")
 
 
+def _load_stylesheet(app, style_path: Path = Path(__file__).parent / "style.qss"):
+    try:
+        app.setStyleSheet(style_path.read_text())
+    except OSError as exc:
+        # Missing/unreadable style.qss shouldn't take the whole app down --
+        # fall back to plain Fusion rather than crash at startup over theming.
+        print(f"Warning: couldn't load {style_path} ({exc}); using unstyled Fusion.")
+
+
 def main():
     app = QApplication(sys.argv)
+    # Fusion is the style QSS was written against -- native styles (Breeze,
+    # Windows) silently ignore some of the subcontrols the theme relies on,
+    # e.g. the slider groove/handle and the combobox popup background.
+    app.setStyle("Fusion")
+    _load_stylesheet(app)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

@@ -79,8 +79,11 @@ def build_args(
     (quality units, or kbps when rc_mode is a bitrate mode), speed
     (compression_level 1-7 as str, or an x265 preset name), bit_depth (8|10),
     width, height, container ("mp4"|"mkv", default mp4), tune (an x265 tune
-    name or "None", ignored for hevc_vaapi), audio_track,
-    audio_copy_if_compatible, audio_bitrate.
+    name or "None", ignored for hevc_vaapi), deinterlace (bool, default
+    False -- container-level progressive/interlaced flags are frequently
+    wrong, especially on camcorder-sourced footage; this is a manual
+    override, not auto-detected), audio_track, audio_copy_if_compatible,
+    audio_bitrate.
 
     probe_audio=False skips the real ffprobe call and uses audio_codec as
     given instead -- for building a representative command line to *show*
@@ -94,6 +97,7 @@ def build_args(
     width, height = settings["width"], settings["height"]
     bit_depth = settings["bit_depth"]
     container = settings.get("container", "mp4")
+    deinterlace = settings.get("deinterlace", False)
 
     args = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "info"]
 
@@ -103,8 +107,14 @@ def build_args(
 
     if is_vaapi:
         upload_fmt = "p010le" if bit_depth == 10 else "nv12"
+        # deinterlace_vaapi operates on hardware surfaces, so it has to run
+        # after hwupload; before scale_vaapi so it works on full-resolution
+        # fields rather than already-downscaled ones. rate=frame keeps
+        # single-rate output (one deinterlaced frame per field pair) rather
+        # than the frame-doubling "bob" behavior.
+        deinterlace_stage = "deinterlace_vaapi=rate=frame," if deinterlace else ""
         vf = (
-            f"format={upload_fmt},hwupload,"
+            f"format={upload_fmt},hwupload,{deinterlace_stage}"
             f"scale_vaapi=w='min({width},iw)':h='min({height},ih)':"
             f"force_original_aspect_ratio=decrease:force_divisible_by=2"
         )
@@ -120,8 +130,13 @@ def build_args(
             args += ["-rc_mode", "VBR", "-b:v", f"{quality_value}k"]
         args += ["-compression_level", str(settings["speed"])]
     else:
+        # bwdif's own default (mode=send_field) doubles the frame rate -- one
+        # output frame per FIELD -- which isn't what a "fix the interlacing,
+        # leave everything else the same" toggle should do. send_frame keeps
+        # single-rate output, matching deinterlace_vaapi's rate=frame above.
+        deinterlace_stage = "bwdif=mode=send_frame," if deinterlace else ""
         vf = (
-            f"scale=w='min({width},iw)':h='min({height},ih)':"
+            f"{deinterlace_stage}scale=w='min({width},iw)':h='min({height},ih)':"
             f"force_original_aspect_ratio=decrease:force_divisible_by=2"
         )
         pix_fmt = "yuv420p10le" if bit_depth == 10 else "yuv420p"

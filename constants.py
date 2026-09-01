@@ -56,12 +56,14 @@ BUILTIN_PRESETS = [
         "name": "720p QSV Balanced (Hardware / VAAPI)",
         "encoder": "hevc_vaapi", "rc_mode": "ICQ", "quality_value": 26, "speed": "1",
         "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
+        "deinterlace": False,
         "audio_track": 0, "audio_copy_if_compatible": True, "audio_bitrate": "160k",
     },
     {
         "name": "720p Stuff Tuned (CPU / x265)",
         "encoder": "libx265", "rc_mode": "CRF", "quality_value": 23, "speed": "medium",
         "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
+        "deinterlace": False,
         "audio_track": 0, "audio_copy_if_compatible": True, "audio_bitrate": "160k",
     },
 ]

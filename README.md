@@ -83,6 +83,7 @@ saved preset *is*, plus a `name` key):
     "width": int, "height": int,
     "container": "mp4" | "mkv",
     "tune": str,              # an x265 tune name, or "None" to omit -tune; ignored for hevc_vaapi
+    "deinterlace": bool,     # bwdif (x265) or deinterlace_vaapi (VAAPI), see Deinterlace below
     "audio_track": int,      # 0-based
     "audio_copy_if_compatible": bool,
     "audio_bitrate": str,    # e.g. "160k", used only when transcoding audio
@@ -160,6 +161,27 @@ The rest is grouped into two tabs, by what kind of setting they are.
   is deliberately not offered** — it's a real x265 tune name in general, but
   this exact libx265 build rejects it outright (`Error setting preset/tune
   (null)/film.`, confirmed by actually running it, not assumed).
+- **Deinterlace** — off by default, manual only (not auto-detected — see
+  Known gaps). This exists because a container's progressive/interlaced
+  flag is frequently just wrong: a real user file was tagged
+  `yuv420p(progressive)` in its own metadata, played back with visible
+  combing, and `ffmpeg -vf idet` on the actual pixel data showed 100% of
+  sampled frames as TFF-interlaced — camcorder/broadcast-sourced footage
+  (the `Mainconcept`-encoded file here is exactly that lineage) does this
+  often enough that the flag can't be trusted. When on: VAAPI gets
+  `deinterlace_vaapi=rate=frame` after `hwupload` and before `scale_vaapi`
+  (operates on hardware surfaces, so order matters, and full-resolution
+  fields deinterlace better than already-downscaled ones); x265 gets
+  `bwdif=mode=send_frame` before `scale`. Both explicitly pin single-rate
+  output — bwdif's own default (`send_field`) silently doubles the frame
+  rate, one output frame per field, which isn't what a "just fix the
+  interlacing" checkbox should do. Verified against a real interlaced
+  fixture, not just argument presence: `tests/test_worker.py`'s
+  `TestDeinterlace` builds a genuinely-interlaced synthetic source
+  (`tinterlace=interleave_top`, confirmed 100% TFF via `idet`), encodes it
+  through both paths, and checks the *output* is measured clean by the same
+  detector — including a negative control proving the fix comes from the
+  deinterlace filter and not incidentally from re-encoding.
 
 **Audio tab**
 - **Audio track** — `Track 1`–`4`, by stream index (not probed per file —
@@ -245,6 +267,14 @@ offscreen platform.
 
 ## Known gaps
 
+- Deinterlace is manual-only, not auto-detected. `ffmpeg -vf idet` (see
+  Deinterlace above) is a real, cheap-ish per-file check that could drive
+  this automatically; not built because it costs a decode-only pre-pass
+  per file (roughly proportional to however much of the file gets
+  sampled) even for files that turn out not to need it, and a
+  sampled-region check can misjudge a file that's only partially
+  interlaced. Worth adding as an explicit "Auto-detect" mode alongside
+  the current on/off if it comes up again.
 - `-compression_level 1` not A/B'd against remembered QSV output quality —
   try the range (1–7, lower = slower/better) if output doesn't match
   expectations.

@@ -359,6 +359,100 @@ class TestNonMatchingAspectRatio(unittest.TestCase):
         self.assertEqual(height % 2, 0)
 
 
+def _detect_interlace_fraction(path: Path) -> float:
+    """Fraction of frames ffmpeg's idet filter classifies as interlaced
+    (TFF+BFF) rather than progressive. The real ground-truth check used
+    throughout this suite -- container-level progressive/interlaced flags
+    are frequently wrong (this feature exists because of exactly that, on a
+    real user file: tagged yuv420p(progressive), 100% TFF by idet)."""
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", str(path), "-vf", "idet", "-f", "null", "-"],
+        capture_output=True, text=True, timeout=30,
+    )
+    # idet logs one "Multi frame detection" line per filter instance touched;
+    # the real per-stream stats are the last one in stderr.
+    lines = [ln for ln in result.stderr.splitlines() if "Multi frame detection" in ln]
+    tff = int(lines[-1].split("TFF:")[1].split()[0])
+    bff = int(lines[-1].split("BFF:")[1].split()[0])
+    progressive = int(lines[-1].split("Progressive:")[1].split()[0])
+    total = tff + bff + progressive
+    return (tff + bff) / total if total else 0.0
+
+
+class TestDeinterlace(unittest.TestCase):
+    """settings["deinterlace"] must actually remove interlacing, not just
+    add a plausible-looking flag -- verified with idet, not assumed."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        # 60fps progressive source with real per-frame motion (needed for
+        # fields to actually differ), field-interleaved down to a genuinely
+        # interlaced 30fps source -- not a container flag, real combing.
+        cls.clip = cls.tmpdir / "interlaced.mkv"
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error",
+             "-f", "lavfi", "-i", "testsrc2=size=640x480:rate=60:duration=1",
+             "-vf", "tinterlace=interleave_top", "-c:v", "libx264", str(cls.clip)],
+            check=True, timeout=30,
+        )
+        # Confirm the fixture itself is actually interlaced before trusting
+        # any test that relies on it -- if this ever fails, the fixture
+        # generation broke, not the deinterlace feature.
+        assert _detect_interlace_fraction(cls.clip) == 1.0, "test fixture isn't interlaced"
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmpdir, ignore_errors=True)
+
+    def test_off_by_default_and_leaves_filter_chain_unchanged(self):
+        args = worker.build_args(x265_settings(deinterlace=False), self.clip, self.tmpdir / "out.mp4")
+        self.assertNotIn("bwdif", args[args.index("-vf") + 1])
+
+    def test_x265_deinterlace_uses_send_frame_not_the_frame_doubling_default(self):
+        args = worker.build_args(x265_settings(deinterlace=True), self.clip, self.tmpdir / "out.mp4")
+        vf = args[args.index("-vf") + 1]
+        # bwdif's own default (send_field) doubles the frame rate -- one
+        # output frame per field. That's not what this checkbox promises.
+        self.assertIn("bwdif=mode=send_frame", vf)
+        self.assertLess(vf.index("bwdif"), vf.index("scale"), "must deinterlace before scaling, not after")
+
+    def test_x265_deinterlace_actually_fixes_a_real_interlaced_file(self):
+        out = self.tmpdir / "x265_deint.mp4"
+        args = worker.build_args(x265_settings(width=640, height=480, deinterlace=True), self.clip, out)
+        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        # Source is 100% interlaced (asserted in setUpClass); real deinterlacers
+        # aren't perfect at clip boundaries, so allow a small residual rather
+        # than demanding exactly 0% -- the fix under test cut this from 100%.
+        self.assertLess(_detect_interlace_fraction(out), 0.15)
+
+    def test_without_deinterlace_the_interlacing_survives_the_encode(self):
+        # Negative control: without the flag, re-encoding alone does NOT
+        # remove interlacing -- proves the improvement above comes from
+        # bwdif, not incidentally from libx265's own encoding.
+        out = self.tmpdir / "x265_no_deint.mp4"
+        args = worker.build_args(x265_settings(width=640, height=480, deinterlace=False), self.clip, out)
+        subprocess.run(args, check=True, capture_output=True, timeout=30)
+        self.assertGreater(_detect_interlace_fraction(out), 0.8)
+
+    @unittest.skipUnless(HAS_VAAPI, "no VAAPI render node on this machine")
+    def test_vaapi_deinterlace_runs_after_hwupload_before_scale(self):
+        args = worker.build_args(vaapi_settings(deinterlace=True), self.clip, self.tmpdir / "out.mp4")
+        vf = args[args.index("-vf") + 1]
+        self.assertIn("deinterlace_vaapi=rate=frame", vf)
+        self.assertLess(vf.index("hwupload"), vf.index("deinterlace_vaapi"))
+        self.assertLess(vf.index("deinterlace_vaapi"), vf.index("scale_vaapi"))
+
+    @unittest.skipUnless(HAS_VAAPI, "no VAAPI render node on this machine")
+    def test_vaapi_deinterlace_actually_fixes_a_real_interlaced_file(self):
+        out = self.tmpdir / "vaapi_deint.mp4"
+        args = worker.build_args(vaapi_settings(width=640, height=480, deinterlace=True), self.clip, out)
+        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        self.assertLess(_detect_interlace_fraction(out), 0.15)
+
+
 class TestOutputPathCollisionGuard(unittest.TestCase):
     def test_refuses_when_output_would_equal_input(self):
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))

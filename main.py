@@ -262,6 +262,15 @@ class MainWindow(QMainWindow):
         self.tune_combo.currentIndexChanged.connect(self._update_command_preview)
         form.addRow("Tune (x265 only):", self.tune_combo)
 
+        self.deinterlace_check = QCheckBox("Deinterlace (interlaced or telecined source)")
+        self.deinterlace_check.setToolTip(
+            "Container-level progressive/interlaced flags are frequently wrong,\n"
+            "especially on camcorder-sourced footage -- this isn't auto-detected,\n"
+            "turn it on if the output shows combing/interlacing artifacts."
+        )
+        self.deinterlace_check.stateChanged.connect(self._update_command_preview)
+        form.addRow("", self.deinterlace_check)
+
         outer.addWidget(encoding_group)
 
         output_group = QGroupBox("Output Shape")
@@ -513,6 +522,7 @@ class MainWindow(QMainWindow):
             "height": res["height"],
             "container": self.container_combo.currentText(),
             "tune": self.tune_combo.currentText(),
+            "deinterlace": self.deinterlace_check.isChecked(),
             "audio_track": self.audio_combo.currentIndex(),
             "audio_copy_if_compatible": self.audio_copy_check.isChecked(),
             "audio_bitrate": self.audio_bitrate_combo.currentText(),
@@ -547,6 +557,7 @@ class MainWindow(QMainWindow):
         self.res_combo.setCurrentIndex(res_index)
         self.container_combo.setCurrentText(settings.get("container", "mp4"))
         self.tune_combo.setCurrentText(settings.get("tune", "None"))
+        self.deinterlace_check.setChecked(settings.get("deinterlace", False))
         self.audio_combo.setCurrentIndex(settings["audio_track"])
         self.audio_copy_check.setChecked(settings["audio_copy_if_compatible"])
         self.audio_bitrate_combo.setCurrentText(settings["audio_bitrate"])
@@ -558,10 +569,11 @@ class MainWindow(QMainWindow):
         qv = job["quality_value"]
         q_str = f"{qv}kbps" if rc in BITRATE_RC_MODES else f"{rc}{qv}"
         res_label = self._res_label.get((job["width"], job["height"]), f"{job['width']}x{job['height']}")
+        deinterlace_tag = " · Deinterlace" if job.get("deinterlace") else ""
         return (
             f"{job['path'].name}   "
             f"[{enc_tag} {job['bit_depth']}b · {q_str} · {res_label} · "
-            f"{AUDIO_TRACK_LABELS[job['audio_track']]} · {job.get('container', 'mp4')}]"
+            f"{AUDIO_TRACK_LABELS[job['audio_track']]} · {job.get('container', 'mp4')}{deinterlace_tag}]"
         )
 
     # --- preset management ---

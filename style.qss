@@ -117,6 +117,51 @@ QComboBox:focus, QLineEdit:focus, QSpinBox:focus, QPlainTextEdit:focus {
     border-color: #4fa8e0;
 }
 
+/* Without these, the up/down buttons inherit QSpinBox's own near-black
+   field background with no border between them and the text, and Fusion's
+   default arrow glyph color (from the palette, never set to a dark-mode
+   variant since this app has no QPalette of its own, only this stylesheet)
+   is a dark near-black that all but disappears on that background --
+   confirmed by screenshot: the buttons were there and clickable, just
+   effectively invisible. */
+QSpinBox::up-button, QSpinBox::down-button {
+    background-color: #2a2f38;
+    width: 18px;
+    border-left: 1px solid #333944;
+}
+
+QSpinBox::up-button {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    border-top-right-radius: 6px;
+}
+
+QSpinBox::down-button {
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    border-bottom-right-radius: 6px;
+}
+
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+    background-color: #333a45;
+}
+
+QSpinBox::up-button:pressed, QSpinBox::down-button:pressed {
+    background-color: #23272e;
+}
+
+QSpinBox::up-arrow {
+    image: url($ASSETS/arrow_up.svg);
+    width: 10px;
+    height: 6px;
+}
+
+QSpinBox::down-arrow {
+    image: url($ASSETS/arrow_down.svg);
+    width: 10px;
+    height: 6px;
+}
+
 /* No custom ::drop-down/::down-arrow rule here on purpose: styling the
    drop-down subcontrol at all suppresses Fusion's built-in arrow glyph
    unless a replacement image is supplied, which would leave combo boxes
@@ -205,6 +250,13 @@ QCheckBox::indicator {
 QCheckBox::indicator:checked {
     background: #4fa8e0;
     border-color: #4fa8e0;
+    /* Touching ::indicator at all (even just for the unchecked base look)
+       stops Fusion drawing its own native checkmark glyph on top -- same
+       reason ::drop-down is left alone for QComboBox above. Verified by
+       screenshot: without this image, :checked and :unchecked render as
+       two identically-shaped boxes that differ only by fill color, with
+       nothing to instantly read as "checked" at a glance. */
+    image: url($ASSETS/check.svg);
 }
 
 QCheckBox::indicator:hover {

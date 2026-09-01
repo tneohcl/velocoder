@@ -138,6 +138,12 @@ class MainWindow(QMainWindow):
         row.addWidget(label)
 
         self.preset_combo = QComboBox()
+        # Long preset names (both built-ins, and anything a user later saves)
+        # were hard-clipping mid-character against the row's other widgets
+        # with no ellipsis -- this floor is measured to comfortably fit the
+        # longer built-in name; setToolTip in _on_preset_selected below is
+        # the safety net for anything still longer than that.
+        self.preset_combo.setMinimumWidth(300)
         self.preset_combo.currentIndexChanged.connect(self._on_preset_selected)
         row.addWidget(self.preset_combo, 1)
 
@@ -204,7 +210,14 @@ class MainWindow(QMainWindow):
         self.command_preview.setReadOnly(True)
         self.command_preview.setMaximumHeight(110)
         self.command_preview.setStyleSheet("font-family: monospace; font-size: 9pt;")
-        self.command_preview.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        # _format_preview_text below already breaks the command into one
+        # logical group per line (input / filter / mapping / etc.) -- with
+        # WidgetWidth wrap, a single long -vf value still doesn't fit one
+        # line and gets re-wrapped a second time at an arbitrary character
+        # (confirmed by screenshot: "force_divisible_b" / "y=2" mid-token).
+        # NoWrap preserves the intended one-line-per-group layout and lets
+        # only that one line scroll horizontally instead.
+        self.command_preview.setLineWrapMode(QPlainTextEdit.NoWrap)
         layout.addWidget(self.command_preview)
         return group
 
@@ -268,8 +281,10 @@ class MainWindow(QMainWindow):
         self.deinterlace_check = QCheckBox("Deinterlace (interlaced or telecined source)")
         self.deinterlace_check.setToolTip(
             "Container-level progressive/interlaced flags are frequently wrong,\n"
-            "especially on camcorder-sourced footage -- this isn't auto-detected,\n"
-            "turn it on if the output shows combing/interlacing artifacts."
+            "especially on camcorder-sourced footage. New files are sampled\n"
+            "and this is set automatically, but detection only checks the\n"
+            "first ~20s -- override it here if the output still shows\n"
+            "combing/interlacing artifacts."
         )
         self.deinterlace_check.stateChanged.connect(self._on_control_changed)
         form.addRow("", self.deinterlace_check)
@@ -444,7 +459,7 @@ class MainWindow(QMainWindow):
         self._on_control_changed()
 
     def _on_speed_slider_changed(self):
-        self.speed_label.setText(f"{self.speed_slider.value()} (compression_level)")
+        self.speed_label.setText(f"{self.speed_slider.value()} / {self.speed_slider.maximum()}")
         self._on_control_changed()
 
     def _on_control_changed(self):
@@ -635,6 +650,7 @@ class MainWindow(QMainWindow):
 
     def _on_preset_selected(self):
         name = self.preset_combo.currentText()
+        self.preset_combo.setToolTip(name)
         settings = next((p for p in self._all_presets() if p["name"] == name), None)
         if settings:
             # Set before applying: _apply_settings_to_controls cascades through
@@ -876,7 +892,13 @@ class MainWindow(QMainWindow):
 
 def _load_stylesheet(app, style_path: Path = Path(__file__).parent / "style.qss"):
     try:
-        app.setStyleSheet(style_path.read_text())
+        text = style_path.read_text()
+        # QSS url() is resolved relative to the process's working directory,
+        # not the .qss file's location -- not safe to hardcode given launch.sh
+        # cd's first but a direct `python3 main.py` from elsewhere wouldn't.
+        # Substituting an absolute path here keeps style.qss itself portable.
+        assets_dir = style_path.parent / "assets"
+        app.setStyleSheet(text.replace("$ASSETS", str(assets_dir)))
     except OSError as exc:
         # Missing/unreadable style.qss shouldn't take the whole app down --
         # fall back to plain Fusion rather than crash at startup over theming.

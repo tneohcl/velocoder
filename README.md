@@ -58,6 +58,10 @@ main.py        PySide6 GUI: MainWindow (preset toolbar + two-pane layout —
                settings tabs and a live command preview on the left,
                queue/progress/log on the right), DropListWidget
                (drag-and-drop queue).
+style.qss      Dark theme, loaded by _load_stylesheet() in main.py — see
+               the gotcha about its $ASSETS token in Known gaps.
+assets/        SVG glyphs style.qss paints on top of Fusion's native
+               checkbox/spinbox subcontrols (see Known gaps for why).
 tests/         unittest suite for constants.py/presets.py/worker.py.
 ```
 
@@ -279,6 +283,30 @@ offscreen platform.
 
 ## Known gaps
 
+- `style.qss` references its checkmark/arrow SVGs as `url($ASSETS/...)` —
+  `$ASSETS` is a literal token, not real QSS syntax; `_load_stylesheet()` in
+  main.py substitutes it for `assets/`'s absolute path before the text ever
+  reaches `setStyleSheet()`. Loading `style.qss` any other way (a quick
+  screenshot/test harness, say) leaves that token in place, which Qt's QSS
+  parser rejects outright (`Could not parse application stylesheet`) rather
+  than just failing to find the image — confirmed by hitting exactly that
+  while testing this. Go through `_load_stylesheet()`, don't
+  `setStyleSheet(open("style.qss").read())` directly.
+- Touching a subcontrol in QSS at all (`::indicator`, `::up-button`, …)
+  replaces Fusion's *entire* native paint for it, not just the property you
+  set — there's no partial opt-in. `style.qss` already worked around this
+  once, deliberately (see the comment above `QComboBox QAbstractItemView`
+  about not touching `::drop-down`, to keep its native arrow glyph). The
+  checkbox and spinbox rules didn't get the same treatment originally: a
+  checked `QCheckBox` rendered as a flat colored square with no checkmark,
+  and `QSpinBox`'s up/down buttons rendered close to invisible (Fusion's
+  default arrow color, un-adjusted for dark mode since this app has no
+  QPalette of its own, on a background this stylesheet also darkened) —
+  both confirmed by screenshot, both now fixed via the SVGs in `assets/`.
+  A data-URI `image: url(data:image/svg+xml;...)` was tried first instead
+  of a real file — Qt's QSS parser can't reliably handle one inline
+  (`Could not parse application stylesheet` again); a real file is the only
+  approach confirmed to work here.
 - Deinterlace auto-detect samples ~20s per file, not the whole thing — a
   file that's only partially interlaced (spliced from multiple sources)
   can be misjudged depending on which part gets sampled. Also: the sample

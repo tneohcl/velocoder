@@ -65,7 +65,14 @@ def probe_audio_codec(path: Path, track_index: int = 0) -> str | None:
     return codec or None
 
 
-def build_args(settings: dict, input_path: Path, output_path: Path) -> list[str]:
+def build_args(
+    settings: dict,
+    input_path: Path,
+    output_path: Path,
+    *,
+    probe_audio: bool = True,
+    audio_codec: str | None = None,
+) -> list[str]:
     """Build the full ffmpeg argv for one job from a resolved settings dict.
 
     settings keys: encoder ("hevc_vaapi"|"libx265"), rc_mode, quality_value
@@ -74,6 +81,11 @@ def build_args(settings: dict, input_path: Path, output_path: Path) -> list[str]
     width, height, container ("mp4"|"mkv", default mp4), tune (an x265 tune
     name or "None", ignored for hevc_vaapi), audio_track,
     audio_copy_if_compatible, audio_bitrate.
+
+    probe_audio=False skips the real ffprobe call and uses audio_codec as
+    given instead -- for building a representative command line to *show*
+    the user (e.g. a live preview) against a file that may not exist yet,
+    without shelling out on every keystroke. Real jobs always probe.
     """
     encoder = settings["encoder"]
     is_vaapi = encoder == "hevc_vaapi"
@@ -123,7 +135,8 @@ def build_args(settings: dict, input_path: Path, output_path: Path) -> list[str]
     # Capital V excludes attached-pic/cover-art streams from the video map,
     # matching ffmpeg's own default auto-selection more closely than 'v'.
     args += ["-map", "0:V:0", "-map", f"0:a:{audio_track}"]
-    audio_codec = probe_audio_codec(input_path, audio_track)
+    if probe_audio:
+        audio_codec = probe_audio_codec(input_path, audio_track)
     if audio_codec is not None:
         if settings["audio_copy_if_compatible"] and audio_codec in ("aac", "ac3", "eac3"):
             args += ["-c:a", "copy"]

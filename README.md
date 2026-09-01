@@ -54,16 +54,21 @@ worker.py      The engine: turns a settings dict into an ffmpeg argv
                module never looks up a preset by name, it only ever sees
                a fully-resolved settings dict. Presets are a GUI-only
                convenience for naming/saving a settings snapshot.
-main.py        PySide6 GUI: MainWindow (two-pane layout — settings tabs on
-               the left, queue/progress/log on the right), DropListWidget
+main.py        PySide6 GUI: MainWindow (preset toolbar + two-pane layout —
+               settings tabs and a live command preview on the left,
+               queue/progress/log on the right), DropListWidget
                (drag-and-drop queue).
 tests/         unittest suite for constants.py/presets.py/worker.py.
 ```
 
-The GUI is a `QSplitter`: left pane is the output-folder row plus a
-`QTabWidget` (**Preset** / **Video** / **Audio** — grouped by what each
-setting is, see Controls below), right pane is the queue, run controls,
-progress bar, a live stats line, and the full log.
+The GUI: a `QToolBar` across the top holds **Preset** (load/Save As/Delete)
+— it's the one control that sets every other control at once, so it isn't
+buried as a tab among its own dependents. Below that is a `QSplitter`: left
+pane is a `QTabWidget` (**Video** / **Audio**, grouped by what each setting
+is — see Controls below) plus a live **Effective Command** preview showing
+the actual ffmpeg argv the current settings resolve to; right pane is the
+queue, output folder, run controls, progress bar, a live stats line, and
+the full log.
 
 The settings dict that flows from the GUI into `build_args()` (and that a
 saved preset *is*, plus a `name` key):
@@ -116,13 +121,16 @@ isn't reliably playable.
 
 ## Controls
 
-Grouped into three tabs by what kind of setting they are.
-
-**Preset tab**
+**Preset toolbar** (top of the window, above everything else)
 - **Preset** — load a saved settings snapshot into every control below.
-  **Save As…** / **Delete** manage `user_presets.json`.
+  This is the main lever — it sets everything else at once — so it isn't a
+  tab alongside its own dependents, it's the one thing always visible
+  regardless of which tab is open. **Save As…** / **Delete** manage
+  `user_presets.json`.
 
-**Video tab**
+The rest is grouped into two tabs, by what kind of setting they are.
+
+**Video tab** (grouped into "Encoding" and "Output Shape")
 - **Encoder** — VAAPI HEVC (hardware) or x265 (CPU).
 - **Rate control** — options depend on encoder: VAAPI gets ICQ/CQP/VBR,
   x265 gets CRF/target-bitrate. Picking a bitrate-based mode swaps the
@@ -154,12 +162,24 @@ Grouped into three tabs by what kind of setting they are.
   codec that would normally be copied through.
 - **Audio bitrate** — used only when a track gets transcoded.
 
+**Below the tabs, left side**
+- **Effective Command** — a live, read-only preview of the actual ffmpeg
+  argv the current settings resolve to (`worker.build_args(...,
+  probe_audio=False, audio_codec="aac")` — same function real jobs use, so
+  it can never drift from what actually runs; the placeholder audio codec
+  is the one inexact part, since real audio handling depends on the file's
+  actual track). Updates on every control change.
+- **Hardware status caption** — confirms at a glance whether a VAAPI render
+  node was found (`worker.find_render_node`), and which one.
+
 **Queue pane (right side)**
 - **Apply Settings to Selected** — every control above is only the
   *default* baked into a file the moment it's added to the queue. To make
   one queued file different, select it, change the controls, click this.
   There's no per-row editable table — deliberately, to keep the main
   controls to one place.
+- **Output folder** — deliberately *not* the first thing in the window; it's
+  a per-run detail, so it sits right next to Start, where it's used.
 - **Open** — opens the current output folder in the desktop file manager.
 - **Live stats line** (under the progress bar) — fps / bitrate / speed /
   ETA for the job currently running, parsed from ffmpeg's `-progress`

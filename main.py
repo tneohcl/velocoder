@@ -4,14 +4,16 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QTabWidget, QSplitter, QListWidget, QListWidgetItem, QPushButton, QComboBox,
-    QLabel, QProgressBar, QPlainTextEdit, QFileDialog, QLineEdit, QSlider,
-    QSpinBox, QCheckBox, QInputDialog, QMessageBox, QSizePolicy,
+    QTabWidget, QSplitter, QToolBar, QGroupBox, QListWidget, QListWidgetItem,
+    QPushButton, QComboBox, QLabel, QProgressBar, QPlainTextEdit, QFileDialog,
+    QLineEdit, QSlider, QSpinBox, QCheckBox, QInputDialog, QMessageBox,
+    QSizePolicy, QStyle,
 )
 
+import worker
 from constants import (
     VIDEO_FILTER, AUDIO_TRACK_LABELS, ENCODERS, RC_MODES, QUALITY_RANGES,
     X265_PRESETS, RESOLUTIONS, AUDIO_BITRATES, CONTAINERS, X265_TUNES,
@@ -19,6 +21,9 @@ from constants import (
 )
 from presets import load_user_presets, save_user_presets
 from worker import TranscodeQueue, BITRATE_RC_MODES
+
+PANEL_MARGIN = 12
+PANEL_SPACING = 10
 
 
 class DropListWidget(QListWidget):
@@ -47,7 +52,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("TITAN-i Transcoder")
-        self.resize(1200, 800)
+        self.resize(1240, 820)
 
         self.user_presets: list[dict] = load_user_presets()
         self._res_label = {(r["width"], r["height"]): r["label"] for r in RESOLUTIONS}
@@ -68,6 +73,8 @@ class MainWindow(QMainWindow):
 
     # --- UI construction ---
     def _build_ui(self):
+        self.addToolBar(self._build_preset_toolbar())
+
         splitter = QSplitter(Qt.Horizontal)
         self.setCentralWidget(splitter)
         splitter.addWidget(self._build_left_panel())
@@ -75,60 +82,92 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
 
+    def _build_preset_toolbar(self) -> QToolBar:
+        # Preset is the main lever -- it sets every other control at once --
+        # so it lives in a toolbar, not buried as a tab among its own
+        # dependents. QToolBar also gets correct native theming for free.
+        toolbar = QToolBar("Preset")
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        toolbar.setContentsMargins(6, 4, 6, 4)
+
+        label = QLabel(" Preset: ")
+        bold = QFont()
+        bold.setBold(True)
+        label.setFont(bold)
+        toolbar.addWidget(label)
+
+        self.preset_combo = QComboBox()
+        self.preset_combo.setMinimumWidth(320)
+        self.preset_combo.currentIndexChanged.connect(self._on_preset_selected)
+        toolbar.addWidget(self.preset_combo)
+        toolbar.addSeparator()
+
+        style = self.style()
+        save_action = toolbar.addAction(
+            style.standardIcon(QStyle.SP_DialogSaveButton), "Save As…"
+        )
+        save_action.triggered.connect(self._save_preset_as)
+        delete_action = toolbar.addAction(
+            style.standardIcon(QStyle.SP_TrashIcon), "Delete"
+        )
+        delete_action.triggered.connect(self._delete_preset)
+        return toolbar
+
     def _build_left_panel(self) -> QWidget:
         left = QWidget()
         layout = QVBoxLayout(left)
-
-        out_row = QHBoxLayout()
-        self.output_edit = QLineEdit(str(self.output_dir))
-        self.output_edit.setReadOnly(True)
-        browse_btn = QPushButton("Output Folder…")
-        browse_btn.clicked.connect(self._pick_output_dir)
-        open_btn = QPushButton("Open")
-        open_btn.clicked.connect(self._open_output_dir)
-        out_row.addWidget(QLabel("Output:"))
-        out_row.addWidget(self.output_edit, 1)
-        out_row.addWidget(browse_btn)
-        out_row.addWidget(open_btn)
-        layout.addLayout(out_row)
+        layout.setContentsMargins(PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN)
+        layout.setSpacing(PANEL_SPACING)
 
         tabs = QTabWidget()
-        tabs.addTab(self._build_preset_tab(), "Preset")
         tabs.addTab(self._build_video_tab(), "Video")
         tabs.addTab(self._build_audio_tab(), "Audio")
-        # Tab pages have very different row counts (Preset: 2, Video: 8) --
-        # without this, the tab widget stretches to fill the splitter pane
-        # and the sparser tabs look broken. Cap it to its content's natural
-        # height instead and let the trailing stretch take the rest.
+        # The two tabs have very different row counts, and a QSplitter pane
+        # is always forced to the full window height regardless of content
+        # -- capping the tab widget to its natural size (instead of letting
+        # it stretch into that forced height) keeps the sparser tab from
+        # looking broken. The command preview below puts the leftover space
+        # to use instead of leaving it blank.
         tabs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         layout.addWidget(tabs)
+
+        layout.addWidget(self._build_command_preview())
+
+        self.hw_status_label = QLabel(self._hardware_status_text())
+        self.hw_status_label.setStyleSheet("color: palette(mid); font-size: 10pt;")
+        self.hw_status_label.setWordWrap(True)
+        layout.addWidget(self.hw_status_label)
+
         layout.addStretch(1)
         return left
 
-    def _build_preset_tab(self) -> QWidget:
-        tab = QWidget()
-        form = QFormLayout(tab)
+    @staticmethod
+    def _hardware_status_text() -> str:
+        try:
+            node = worker.find_render_node(worker.INTEL_VENDOR_ID)
+            return f"Hardware encode available via {node} (Intel iGPU)"
+        except RuntimeError:
+            return "No Intel VAAPI render node detected — hardware encoding unavailable"
 
-        preset_row = QHBoxLayout()
-        self.preset_combo = QComboBox()
-        self.preset_combo.currentIndexChanged.connect(self._on_preset_selected)
-        save_preset_btn = QPushButton("Save As…")
-        save_preset_btn.clicked.connect(self._save_preset_as)
-        delete_preset_btn = QPushButton("Delete")
-        delete_preset_btn.clicked.connect(self._delete_preset)
-        preset_row.addWidget(self.preset_combo, 1)
-        form.addRow("Preset:", preset_row)
-
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(save_preset_btn)
-        btn_row.addWidget(delete_preset_btn)
-        btn_row.addStretch()
-        form.addRow("", btn_row)
-        return tab
+    def _build_command_preview(self) -> QGroupBox:
+        group = QGroupBox("Effective Command")
+        layout = QVBoxLayout(group)
+        self.command_preview = QPlainTextEdit()
+        self.command_preview.setReadOnly(True)
+        self.command_preview.setMaximumHeight(110)
+        self.command_preview.setStyleSheet("font-family: monospace; font-size: 9pt;")
+        self.command_preview.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        layout.addWidget(self.command_preview)
+        return group
 
     def _build_video_tab(self) -> QWidget:
         tab = QWidget()
-        self.video_form = form = QFormLayout(tab)
+        outer = QVBoxLayout(tab)
+        outer.setSpacing(PANEL_SPACING)
+
+        encoding_group = QGroupBox("Encoding")
+        self.video_form = form = QFormLayout(encoding_group)
 
         self.encoder_combo = QComboBox()
         for _, label in ENCODERS:
@@ -148,6 +187,7 @@ class MainWindow(QMainWindow):
         self.bitrate_spin.setRange(200, 50000)
         self.bitrate_spin.setSingleStep(100)
         self.bitrate_spin.setSuffix(" kbps")
+        self.bitrate_spin.valueChanged.connect(self._update_command_preview)
         quality_row.addWidget(self.quality_slider, 1)
         quality_row.addWidget(self.quality_label)
         quality_row.addWidget(self.bitrate_spin, 1)
@@ -161,6 +201,7 @@ class MainWindow(QMainWindow):
         self.speed_combo = QComboBox()
         self.speed_combo.addItems(X265_PRESETS)
         self.speed_combo.setCurrentText("medium")
+        self.speed_combo.currentIndexChanged.connect(self._update_command_preview)
         speed_row.addWidget(self.speed_slider, 1)
         speed_row.addWidget(self.speed_label)
         speed_row.addWidget(self.speed_combo, 1)
@@ -169,45 +210,65 @@ class MainWindow(QMainWindow):
         self.bitdepth_combo = QComboBox()
         self.bitdepth_combo.addItems(["8-bit", "10-bit"])
         self.bitdepth_combo.setCurrentText("10-bit")
+        self.bitdepth_combo.currentIndexChanged.connect(self._update_command_preview)
         form.addRow("Bit depth:", self.bitdepth_combo)
+
+        self.tune_combo = QComboBox()
+        self.tune_combo.addItems(X265_TUNES)
+        self.tune_combo.currentIndexChanged.connect(self._update_command_preview)
+        form.addRow("Tune (x265 only):", self.tune_combo)
+
+        outer.addWidget(encoding_group)
+
+        output_group = QGroupBox("Output Shape")
+        out_form = QFormLayout(output_group)
 
         self.res_combo = QComboBox()
         for r in RESOLUTIONS:
             self.res_combo.addItem(r["label"])
         self.res_combo.setCurrentIndex(2)  # 720p
-        form.addRow("Resolution:", self.res_combo)
+        self.res_combo.currentIndexChanged.connect(self._update_command_preview)
+        out_form.addRow("Resolution:", self.res_combo)
 
         self.container_combo = QComboBox()
         self.container_combo.addItems(CONTAINERS)
-        form.addRow("Container:", self.container_combo)
+        self.container_combo.currentIndexChanged.connect(self._update_command_preview)
+        out_form.addRow("Container:", self.container_combo)
 
-        self.tune_combo = QComboBox()
-        self.tune_combo.addItems(X265_TUNES)
-        form.addRow("Tune (x265 only):", self.tune_combo)
-
+        outer.addWidget(output_group)
         return tab
 
     def _build_audio_tab(self) -> QWidget:
         tab = QWidget()
-        form = QFormLayout(tab)
+        outer = QVBoxLayout(tab)
+
+        group = QGroupBox("Audio Settings")
+        form = QFormLayout(group)
 
         self.audio_combo = QComboBox()
         self.audio_combo.addItems(AUDIO_TRACK_LABELS)
+        self.audio_combo.currentIndexChanged.connect(self._update_command_preview)
         form.addRow("Audio track:", self.audio_combo)
 
         self.audio_copy_check = QCheckBox("Copy audio if compatible (aac/ac3/eac3)")
         self.audio_copy_check.setChecked(True)
+        self.audio_copy_check.stateChanged.connect(self._update_command_preview)
         form.addRow("", self.audio_copy_check)
 
         self.audio_bitrate_combo = QComboBox()
         self.audio_bitrate_combo.addItems(AUDIO_BITRATES)
         self.audio_bitrate_combo.setCurrentText("160k")
+        self.audio_bitrate_combo.currentIndexChanged.connect(self._update_command_preview)
         form.addRow("Audio bitrate (if transcoded):", self.audio_bitrate_combo)
+
+        outer.addWidget(group)
         return tab
 
     def _build_right_panel(self) -> QWidget:
         right = QWidget()
         layout = QVBoxLayout(right)
+        layout.setContentsMargins(PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN)
+        layout.setSpacing(PANEL_SPACING)
 
         layout.addWidget(QLabel("Queue (drag files here, or use Add Files):"))
         self.queue_list = DropListWidget(self.add_files)
@@ -229,14 +290,32 @@ class MainWindow(QMainWindow):
         q_btns.addStretch()
         layout.addLayout(q_btns)
 
+        # Output folder is a per-run detail, not the first decision anyone
+        # makes -- it lives right next to Start, where it's actually used.
+        out_row = QHBoxLayout()
+        self.output_edit = QLineEdit(str(self.output_dir))
+        self.output_edit.setReadOnly(True)
+        browse_btn = QPushButton("Change…")
+        browse_btn.clicked.connect(self._pick_output_dir)
+        open_btn = QPushButton("Open")
+        open_btn.clicked.connect(self._open_output_dir)
+        out_row.addWidget(QLabel("Output folder:"))
+        out_row.addWidget(self.output_edit, 1)
+        out_row.addWidget(browse_btn)
+        out_row.addWidget(open_btn)
+        layout.addLayout(out_row)
+
         run_row = QHBoxLayout()
         self.start_btn = QPushButton("Start")
+        self.start_btn.setDefault(True)
+        self.start_btn.setMinimumHeight(36)
         self.start_btn.clicked.connect(self._start)
         self.stop_btn = QPushButton("Stop")
+        self.stop_btn.setMinimumHeight(36)
         self.stop_btn.clicked.connect(self._stop)
         self.stop_btn.setEnabled(False)
-        run_row.addWidget(self.start_btn)
-        run_row.addWidget(self.stop_btn)
+        run_row.addWidget(self.start_btn, 1)
+        run_row.addWidget(self.stop_btn, 1)
         layout.addLayout(run_row)
 
         self.status_label = QLabel("Idle")
@@ -294,13 +373,27 @@ class MainWindow(QMainWindow):
             self.quality_slider.setValue(default)
             self.quality_slider.blockSignals(False)
             self._on_quality_changed()
+        else:
+            self._update_command_preview()
 
     def _on_quality_changed(self):
         rc_mode = self.rc_mode_combo.currentData()
         self.quality_label.setText(f"{self.quality_slider.value()} ({rc_mode})")
+        self._update_command_preview()
 
     def _on_speed_slider_changed(self):
         self.speed_label.setText(f"{self.speed_slider.value()} (compression_level)")
+        self._update_command_preview()
+
+    def _update_command_preview(self):
+        if not hasattr(self, "command_preview"):
+            return  # widgets still being constructed
+        settings = self._current_settings()
+        args = worker.build_args(
+            settings, Path("input.ext"), Path(f"output.{settings['container']}"),
+            probe_audio=False, audio_codec="aac",
+        )
+        self.command_preview.setPlainText(" ".join(args))
 
     # --- settings <-> controls ---
     def _current_settings(self) -> dict:
@@ -355,6 +448,7 @@ class MainWindow(QMainWindow):
         self.audio_combo.setCurrentIndex(settings["audio_track"])
         self.audio_copy_check.setChecked(settings["audio_copy_if_compatible"])
         self.audio_bitrate_combo.setCurrentText(settings["audio_bitrate"])
+        self._update_command_preview()
 
     def _format_item_text(self, job: dict) -> str:
         enc_tag = "VAAPI" if job["encoder"] == "hevc_vaapi" else "x265"

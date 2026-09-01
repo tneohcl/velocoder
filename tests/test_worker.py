@@ -241,6 +241,37 @@ class TestAudioSelection(ClipTestCase):
     # rather than duplicated here with a fixture this class can't produce.
 
 
+class TestCommandPreview(unittest.TestCase):
+    """build_args(probe_audio=False) -- the GUI's live command preview path.
+
+    No real file needed: this mode exists specifically to avoid touching
+    the filesystem, so these don't use ClipTestCase.
+    """
+
+    def test_skips_probe_and_uses_given_audio_codec(self):
+        args = worker.build_args(
+            vaapi_settings(), Path("input.ext"), Path("output.mp4"),
+            probe_audio=False, audio_codec="aac",
+        )
+        self.assertEqual(args[args.index("-c:a") + 1], "copy")  # aac is copy-compatible
+
+    def test_none_audio_codec_omits_audio_flags(self):
+        args = worker.build_args(
+            vaapi_settings(), Path("input.ext"), Path("output.mp4"),
+            probe_audio=False, audio_codec=None,
+        )
+        self.assertNotIn("-c:a", args)
+
+    def test_never_touches_the_filesystem(self):
+        # A path that can't possibly exist -- if this tried to probe it,
+        # ffprobe would fail/hang on a subprocess call against a bogus path.
+        args = worker.build_args(
+            vaapi_settings(), Path("/nonexistent/does-not-exist.mkv"), Path("/nonexistent/out.mp4"),
+            probe_audio=False, audio_codec="ac3",
+        )
+        self.assertEqual(args[args.index("-c:a") + 1], "copy")
+
+
 class TestFindRenderNode(unittest.TestCase):
     @unittest.skipUnless(HAS_VAAPI, "no /dev/dri/by-path on this machine")
     def test_resolves_intel_node_when_present(self):

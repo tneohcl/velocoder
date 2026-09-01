@@ -174,6 +174,42 @@ class TestBuildArgsCommon(ClipTestCase):
         self.assertIn("-progress", args)
         self.assertEqual(args[args.index("-progress") + 1], "pipe:1")
 
+    def test_mp4_container_includes_faststart(self):
+        args = worker.build_args(vaapi_settings(container="mp4"), self.clip, self.out_path)
+        self.assertIn("-movflags", args)
+
+    def test_mkv_container_omits_faststart(self):
+        # movflags is a mov/mp4-muxer-private option -- ffmpeg silently
+        # ignores it elsewhere, but it shouldn't appear in the mkv command
+        # line at all (see worker.build_args' comment on this).
+        args = worker.build_args(vaapi_settings(container="mkv"), self.clip, self.out_path)
+        self.assertNotIn("-movflags", args)
+
+
+class TestTune(ClipTestCase):
+    def test_none_omits_tune_flag(self):
+        args = worker.build_args(x265_settings(tune="None"), self.clip, self.out_path)
+        self.assertNotIn("-tune", args)
+
+    def test_value_adds_tune_flag(self):
+        args = worker.build_args(x265_settings(tune="animation"), self.clip, self.out_path)
+        self.assertIn("-tune", args)
+        self.assertEqual(args[args.index("-tune") + 1], "animation")
+
+    def test_ignored_for_vaapi_encoder(self):
+        # -tune is an x265-only concept -- hevc_vaapi has no equivalent
+        # option, so it must never appear even if the field is set.
+        args = worker.build_args(vaapi_settings(tune="animation"), self.clip, self.out_path)
+        self.assertNotIn("-tune", args)
+
+    def test_film_is_deliberately_not_offered(self):
+        # Confirmed against this exact libx265 build: "Error setting
+        # preset/tune (null)/film." -- film is a real x265 tune name
+        # elsewhere but invalid here, so constants.X265_TUNES must not
+        # list it (regression check on the constants, not just build_args).
+        from constants import X265_TUNES
+        self.assertNotIn("film", X265_TUNES)
+
 
 class TestAudioSelection(ClipTestCase):
     tracks = (("aac", 440), ("ac3", 880))

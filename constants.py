@@ -41,20 +41,28 @@ RESOLUTIONS = [
 
 AUDIO_BITRATES = ["96k", "128k", "160k", "192k", "256k"]
 
+CONTAINERS = ["mp4", "mkv"]
+
+# x265's own tune list, verified against this exact build -- "film" is a
+# commonly-listed x265 tune elsewhere but this libx265 rejects it outright
+# ("Error setting preset/tune (null)/film"), so it's deliberately excluded.
+# "None" means omit -tune entirely, x265's own default. VAAPI ignores this.
+X265_TUNES = ["None", "animation", "grain", "psnr", "ssim", "fastdecode", "zerolatency"]
+
 # Mapped from the user's real HandBrake custom presets — see README's Presets
 # section. Protected: Save As refuses these names, Delete refuses these entries.
 BUILTIN_PRESETS = [
     {
         "name": "720p QSV Balanced (Hardware / VAAPI)",
         "encoder": "hevc_vaapi", "rc_mode": "ICQ", "quality_value": 26, "speed": "1",
-        "bit_depth": 10, "width": 1280, "height": 720, "audio_track": 0,
-        "audio_copy_if_compatible": True, "audio_bitrate": "160k",
+        "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
+        "audio_track": 0, "audio_copy_if_compatible": True, "audio_bitrate": "160k",
     },
     {
         "name": "720p Stuff Tuned (CPU / x265)",
         "encoder": "libx265", "rc_mode": "CRF", "quality_value": 23, "speed": "medium",
-        "bit_depth": 10, "width": 1280, "height": 720, "audio_track": 0,
-        "audio_copy_if_compatible": True, "audio_bitrate": "160k",
+        "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
+        "audio_track": 0, "audio_copy_if_compatible": True, "audio_bitrate": "160k",
     },
 ]
 BUILTIN_PRESET_NAMES = {p["name"] for p in BUILTIN_PRESETS}

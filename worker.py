@@ -71,7 +71,9 @@ def build_args(settings: dict, input_path: Path, output_path: Path) -> list[str]
     settings keys: encoder ("hevc_vaapi"|"libx265"), rc_mode, quality_value
     (quality units, or kbps when rc_mode is a bitrate mode), speed
     (compression_level 1-7 as str, or an x265 preset name), bit_depth (8|10),
-    width, height, audio_track, audio_copy_if_compatible, audio_bitrate.
+    width, height, container ("mp4"|"mkv", default mp4), tune (an x265 tune
+    name or "None", ignored for hevc_vaapi), audio_track,
+    audio_copy_if_compatible, audio_bitrate.
     """
     encoder = settings["encoder"]
     is_vaapi = encoder == "hevc_vaapi"
@@ -79,6 +81,7 @@ def build_args(settings: dict, input_path: Path, output_path: Path) -> list[str]
     quality_value = settings["quality_value"]
     width, height = settings["width"], settings["height"]
     bit_depth = settings["bit_depth"]
+    container = settings.get("container", "mp4")
 
     args = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "info"]
 
@@ -111,6 +114,9 @@ def build_args(settings: dict, input_path: Path, output_path: Path) -> list[str]
             args += ["-crf", str(quality_value)]
         elif rc_mode == "bitrate":
             args += ["-b:v", f"{quality_value}k"]
+        tune = settings.get("tune", "None")
+        if tune and tune != "None":
+            args += ["-tune", tune]
         args += ["-x265-params", "strong-intra-smoothing=0:aq-mode=3:psy-rdoq=1.0"]
 
     audio_track = settings["audio_track"]
@@ -125,9 +131,16 @@ def build_args(settings: dict, input_path: Path, output_path: Path) -> list[str]
             args += ["-c:a", "aac", "-b:a", settings["audio_bitrate"]]
 
     # Subtitle/data passthrough isn't implemented — drop both explicitly so an
-    # MP4-incompatible subtitle codec (e.g. PGS) can't fail the mux.
+    # MP4-incompatible subtitle codec (e.g. PGS) can't fail the mux. (MKV
+    # output would tolerate them, but nothing currently maps them in either
+    # case -- see README's Known gaps.)
     args += ["-sn", "-dn"]
-    args += ["-map_metadata", "0", "-movflags", "+faststart"]
+    args += ["-map_metadata", "0"]
+    if container == "mp4":
+        # movflags is a mov/mp4-muxer-private option; ffmpeg silently
+        # ignores it for other muxers, but omit it for mkv anyway so the
+        # command line doesn't carry a flag that means nothing there.
+        args += ["-movflags", "+faststart"]
     args += ["-progress", "pipe:1", "-nostats"]
     args += [str(output_path)]
     return args
@@ -136,6 +149,7 @@ def build_args(settings: dict, input_path: Path, output_path: Path) -> list[str]
 class TranscodeQueue(QObject):
     job_started = Signal(str, int, int)  # path, index (1-based), total
     job_progress = Signal(float)         # 0.0-1.0
+    job_stats = Signal(dict)             # {"fps", "bitrate", "speed", "eta_seconds"} -- see _emit_stats
     job_log = Signal(str)                # one log line
     job_finished = Signal(str)           # path
     job_failed = Signal(str, str)        # path, reason
@@ -149,6 +163,7 @@ class TranscodeQueue(QObject):
         self._output_dir: Path | None = None
         self._duration = 0.0
         self._stopped = False
+        self._stats_buffer: dict = {}
 
     def start(self, jobs: list[dict], output_dir: Path):
         """jobs: list of settings dicts (see build_args) plus a "path" key."""
@@ -171,8 +186,10 @@ class TranscodeQueue(QObject):
         job = self._jobs[self._index]
         self._index += 1
         input_path: Path = job["path"]
-        output_path = self._output_dir / (input_path.stem + ".mp4")
+        container = job.get("container", "mp4")
+        output_path = self._output_dir / (input_path.stem + f".{container}")
         self._duration = probe_duration(input_path)
+        self._stats_buffer = {}
 
         try:
             args = build_args(job, input_path, output_path)
@@ -198,11 +215,36 @@ class TranscodeQueue(QObject):
     def _read_progress(self, proc: QProcess):
         data = bytes(proc.readAllStandardOutput()).decode(errors="replace")
         for line in data.splitlines():
-            match = _OUT_TIME_RE.match(line)
-            if match and self._duration > 0:
-                h, m, s, frac = match.groups()
-                seconds = int(h) * 3600 + int(m) * 60 + int(s) + float(f"0.{frac}")
-                self.job_progress.emit(min(seconds / self._duration, 1.0))
+            key, sep, value = line.partition("=")
+            if not sep:
+                continue
+            if key == "out_time":
+                match = _OUT_TIME_RE.match(line)
+                if match and self._duration > 0:
+                    h, m, s, frac = match.groups()
+                    seconds = int(h) * 3600 + int(m) * 60 + int(s) + float(f"0.{frac}")
+                    self._stats_buffer["out_time_seconds"] = seconds
+                    self.job_progress.emit(min(seconds / self._duration, 1.0))
+            elif key in ("fps", "bitrate", "speed"):
+                self._stats_buffer[key] = value
+            elif key == "progress":
+                # One full -progress update block ends here (continue/end) --
+                # emit what's accumulated and start the next block fresh.
+                self._emit_stats()
+                self._stats_buffer = {}
+
+    def _emit_stats(self):
+        stats = dict(self._stats_buffer)
+        eta_seconds = None
+        try:
+            speed = float(stats.get("speed", "").rstrip("x"))
+            out_time = stats.get("out_time_seconds")
+            if speed > 0 and out_time is not None and self._duration > 0:
+                eta_seconds = max(self._duration - out_time, 0) / speed
+        except ValueError:
+            pass
+        stats["eta_seconds"] = eta_seconds
+        self.job_stats.emit(stats)
 
     def _read_log(self, proc: QProcess):
         data = bytes(proc.readAllStandardError()).decode(errors="replace")

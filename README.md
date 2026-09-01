@@ -54,10 +54,16 @@ worker.py      The engine: turns a settings dict into an ffmpeg argv
                module never looks up a preset by name, it only ever sees
                a fully-resolved settings dict. Presets are a GUI-only
                convenience for naming/saving a settings snapshot.
-main.py        PySide6 GUI: MainWindow (queue, settings panel, preset
-               management) and DropListWidget (drag-and-drop queue).
+main.py        PySide6 GUI: MainWindow (two-pane layout — settings tabs on
+               the left, queue/progress/log on the right), DropListWidget
+               (drag-and-drop queue).
 tests/         unittest suite for constants.py/presets.py/worker.py.
 ```
+
+The GUI is a `QSplitter`: left pane is the output-folder row plus a
+`QTabWidget` (**Preset** / **Video** / **Audio** — grouped by what each
+setting is, see Controls below), right pane is the queue, run controls,
+progress bar, a live stats line, and the full log.
 
 The settings dict that flows from the GUI into `build_args()` (and that a
 saved preset *is*, plus a `name` key):
@@ -70,6 +76,8 @@ saved preset *is*, plus a `name` key):
     "speed": str,            # "1".."7" (vaapi compression_level) or an x265 preset name
     "bit_depth": 8 | 10,
     "width": int, "height": int,
+    "container": "mp4" | "mkv",
+    "tune": str,              # an x265 tune name, or "None" to omit -tune; ignored for hevc_vaapi
     "audio_track": int,      # 0-based
     "audio_copy_if_compatible": bool,
     "audio_bitrate": str,    # e.g. "160k", used only when transcoding audio
@@ -96,19 +104,25 @@ Anything saved via **Save As…** is appended to `user_presets.json`
 (gitignored — it's the user's own data, not source) and shows up in the
 same dropdown as the built-ins from then on.
 
-Output is always MP4, first video stream (attached-pic/cover-art excluded)
-+ one selectable audio track (no subtitle/data passthrough — see Known
-gaps). Audio: copied through as-is if the selected track is
-`aac`/`ac3`/`eac3` *and* "copy if compatible" is checked, otherwise
-transcoded to AAC at the chosen bitrate (default 160k, matching the real
-HandBrake preset's `av_aac` @ 160kbps). Narrower than HandBrake's own copy
-mask (also allows `dts`/`dtshd`/`truehd`/`flac`) because muxing those into
-MP4 via ffmpeg isn't reliably playable.
+Output is MP4 or MKV (see Container below), first video stream
+(attached-pic/cover-art excluded) + one selectable audio track (no
+subtitle/data passthrough yet, even on MKV — see Known gaps). Audio: copied
+through as-is if the selected track is `aac`/`ac3`/`eac3` *and* "copy if
+compatible" is checked, otherwise transcoded to AAC at the chosen bitrate
+(default 160k, matching the real HandBrake preset's `av_aac` @ 160kbps).
+Narrower than HandBrake's own copy mask (also allows
+`dts`/`dtshd`/`truehd`/`flac`) because muxing those into MP4 via ffmpeg
+isn't reliably playable.
 
 ## Controls
 
+Grouped into three tabs by what kind of setting they are.
+
+**Preset tab**
 - **Preset** — load a saved settings snapshot into every control below.
   **Save As…** / **Delete** manage `user_presets.json`.
+
+**Video tab**
 - **Encoder** — VAAPI HEVC (hardware) or x265 (CPU).
 - **Rate control** — options depend on encoder: VAAPI gets ICQ/CQP/VBR,
   x265 gets CRF/target-bitrate. Picking a bitrate-based mode swaps the
@@ -122,18 +136,35 @@ MP4 via ffmpeg isn't reliably playable.
   VAAPI; `yuv420p` vs `yuv420p10le` for x265).
 - **Resolution** — `Source (no scale)` / `1080p` / `720p` / `480p`, fit
   within the box keeping aspect, never upscales.
+- **Container** — MP4 or MKV. `-movflags +faststart` is only added for MP4
+  (it's a mov/mp4-muxer-private option — ffmpeg silently ignores it on MKV,
+  but there's no reason to carry a flag that means nothing there).
+- **Tune (x265 only)** — hidden when Encoder is VAAPI (`hevc_vaapi` has no
+  equivalent option). Options: `animation`, `grain`, `psnr`, `ssim`,
+  `fastdecode`, `zerolatency`, or `None` to omit `-tune` entirely. **`film`
+  is deliberately not offered** — it's a real x265 tune name in general, but
+  this exact libx265 build rejects it outright (`Error setting preset/tune
+  (null)/film.`, confirmed by actually running it, not assumed).
+
+**Audio tab**
 - **Audio track** — `Track 1`–`4`, by stream index (not probed per file —
   keeps the tool from having to pre-scan the whole queue just to populate a
   dropdown).
 - **Copy audio if compatible** — uncheck to always transcode, even for a
   codec that would normally be copied through.
+- **Audio bitrate** — used only when a track gets transcoded.
+
+**Queue pane (right side)**
 - **Apply Settings to Selected** — every control above is only the
   *default* baked into a file the moment it's added to the queue. To make
   one queued file different, select it, change the controls, click this.
   There's no per-row editable table — deliberately, to keep the main
   controls to one place.
-- **Open Output Folder** — opens the current output folder in the desktop
-  file manager.
+- **Open** — opens the current output folder in the desktop file manager.
+- **Live stats line** (under the progress bar) — fps / bitrate / speed /
+  ETA for the job currently running, parsed from ffmpeg's `-progress`
+  stream (`TranscodeQueue._emit_stats`). Separate from the full scrolling
+  log further down, which stays raw ffmpeg stderr.
 
 ## Testing
 
@@ -153,9 +184,11 @@ that never calls ffmpeg can catch.
 - `-compression_level 1` not A/B'd against remembered QSV output quality —
   try the range (1–7, lower = slower/better) if output doesn't match
   expectations.
-- No subtitle passthrough (explicitly `-sn`'d to avoid MP4-incompatible
-  subtitle codecs failing the mux) and no foreign-audio-search/burn-in — the
-  old "Stuff Tuned" HandBrake preset had both, neither is replicated.
+- No subtitle passthrough (explicitly `-sn`'d — originally to avoid an
+  MP4-incompatible subtitle codec failing the mux; MKV output removes that
+  specific risk but nothing maps subtitle streams on either container yet)
+  and no foreign-audio-search/burn-in — the old "Stuff Tuned" HandBrake
+  preset had both, neither is replicated.
 - No batch folder-watch.
 - No error-recovery beyond the log showing FAILED and the partial output
   file being deleted.

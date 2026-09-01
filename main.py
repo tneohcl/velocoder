@@ -7,14 +7,15 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QGroupBox, QListWidget, QListWidgetItem, QPushButton, QComboBox, QLabel,
-    QProgressBar, QPlainTextEdit, QFileDialog, QLineEdit, QSlider, QSpinBox,
-    QCheckBox, QInputDialog, QMessageBox,
+    QTabWidget, QSplitter, QListWidget, QListWidgetItem, QPushButton, QComboBox,
+    QLabel, QProgressBar, QPlainTextEdit, QFileDialog, QLineEdit, QSlider,
+    QSpinBox, QCheckBox, QInputDialog, QMessageBox, QSizePolicy,
 )
 
 from constants import (
     VIDEO_FILTER, AUDIO_TRACK_LABELS, ENCODERS, RC_MODES, QUALITY_RANGES,
-    X265_PRESETS, RESOLUTIONS, AUDIO_BITRATES, BUILTIN_PRESETS, BUILTIN_PRESET_NAMES,
+    X265_PRESETS, RESOLUTIONS, AUDIO_BITRATES, CONTAINERS, X265_TUNES,
+    BUILTIN_PRESETS, BUILTIN_PRESET_NAMES,
 )
 from presets import load_user_presets, save_user_presets
 from worker import TranscodeQueue, BITRATE_RC_MODES
@@ -46,7 +47,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("TITAN-i Transcoder")
-        self.resize(1000, 780)
+        self.resize(1200, 800)
 
         self.user_presets: list[dict] = load_user_presets()
         self._res_label = {(r["width"], r["height"]): r["label"] for r in RESOLUTIONS}
@@ -55,6 +56,7 @@ class MainWindow(QMainWindow):
         self.queue = TranscodeQueue()
         self.queue.job_started.connect(self._on_job_started)
         self.queue.job_progress.connect(self._on_job_progress)
+        self.queue.job_stats.connect(self._on_job_stats)
         self.queue.job_log.connect(self._on_job_log)
         self.queue.job_finished.connect(self._on_job_finished)
         self.queue.job_failed.connect(self._on_job_failed)
@@ -66,17 +68,23 @@ class MainWindow(QMainWindow):
 
     # --- UI construction ---
     def _build_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
+        splitter = QSplitter(Qt.Horizontal)
+        self.setCentralWidget(splitter)
+        splitter.addWidget(self._build_left_panel())
+        splitter.addWidget(self._build_right_panel())
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
 
-        # --- output folder row ---
+    def _build_left_panel(self) -> QWidget:
+        left = QWidget()
+        layout = QVBoxLayout(left)
+
         out_row = QHBoxLayout()
         self.output_edit = QLineEdit(str(self.output_dir))
         self.output_edit.setReadOnly(True)
         browse_btn = QPushButton("Output Folder…")
         browse_btn.clicked.connect(self._pick_output_dir)
-        open_btn = QPushButton("Open Output Folder")
+        open_btn = QPushButton("Open")
         open_btn.clicked.connect(self._open_output_dir)
         out_row.addWidget(QLabel("Output:"))
         out_row.addWidget(self.output_edit, 1)
@@ -84,9 +92,22 @@ class MainWindow(QMainWindow):
         out_row.addWidget(open_btn)
         layout.addLayout(out_row)
 
-        # --- encode settings ---
-        settings_box = QGroupBox("Encode Settings")
-        form = QFormLayout(settings_box)
+        tabs = QTabWidget()
+        tabs.addTab(self._build_preset_tab(), "Preset")
+        tabs.addTab(self._build_video_tab(), "Video")
+        tabs.addTab(self._build_audio_tab(), "Audio")
+        # Tab pages have very different row counts (Preset: 2, Video: 8) --
+        # without this, the tab widget stretches to fill the splitter pane
+        # and the sparser tabs look broken. Cap it to its content's natural
+        # height instead and let the trailing stretch take the rest.
+        tabs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        layout.addWidget(tabs)
+        layout.addStretch(1)
+        return left
+
+    def _build_preset_tab(self) -> QWidget:
+        tab = QWidget()
+        form = QFormLayout(tab)
 
         preset_row = QHBoxLayout()
         self.preset_combo = QComboBox()
@@ -96,9 +117,18 @@ class MainWindow(QMainWindow):
         delete_preset_btn = QPushButton("Delete")
         delete_preset_btn.clicked.connect(self._delete_preset)
         preset_row.addWidget(self.preset_combo, 1)
-        preset_row.addWidget(save_preset_btn)
-        preset_row.addWidget(delete_preset_btn)
         form.addRow("Preset:", preset_row)
+
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(save_preset_btn)
+        btn_row.addWidget(delete_preset_btn)
+        btn_row.addStretch()
+        form.addRow("", btn_row)
+        return tab
+
+    def _build_video_tab(self) -> QWidget:
+        tab = QWidget()
+        self.video_form = form = QFormLayout(tab)
 
         self.encoder_combo = QComboBox()
         for _, label in ENCODERS:
@@ -147,6 +177,20 @@ class MainWindow(QMainWindow):
         self.res_combo.setCurrentIndex(2)  # 720p
         form.addRow("Resolution:", self.res_combo)
 
+        self.container_combo = QComboBox()
+        self.container_combo.addItems(CONTAINERS)
+        form.addRow("Container:", self.container_combo)
+
+        self.tune_combo = QComboBox()
+        self.tune_combo.addItems(X265_TUNES)
+        form.addRow("Tune (x265 only):", self.tune_combo)
+
+        return tab
+
+    def _build_audio_tab(self) -> QWidget:
+        tab = QWidget()
+        form = QFormLayout(tab)
+
         self.audio_combo = QComboBox()
         self.audio_combo.addItems(AUDIO_TRACK_LABELS)
         form.addRow("Audio track:", self.audio_combo)
@@ -159,10 +203,12 @@ class MainWindow(QMainWindow):
         self.audio_bitrate_combo.addItems(AUDIO_BITRATES)
         self.audio_bitrate_combo.setCurrentText("160k")
         form.addRow("Audio bitrate (if transcoded):", self.audio_bitrate_combo)
+        return tab
 
-        layout.addWidget(settings_box)
+    def _build_right_panel(self) -> QWidget:
+        right = QWidget()
+        layout = QVBoxLayout(right)
 
-        # --- queue ---
         layout.addWidget(QLabel("Queue (drag files here, or use Add Files):"))
         self.queue_list = DropListWidget(self.add_files)
         layout.addWidget(self.queue_list, 1)
@@ -183,7 +229,6 @@ class MainWindow(QMainWindow):
         q_btns.addStretch()
         layout.addLayout(q_btns)
 
-        # --- run controls ---
         run_row = QHBoxLayout()
         self.start_btn = QPushButton("Start")
         self.start_btn.clicked.connect(self._start)
@@ -194,18 +239,23 @@ class MainWindow(QMainWindow):
         run_row.addWidget(self.stop_btn)
         layout.addLayout(run_row)
 
+        self.status_label = QLabel("Idle")
+        layout.addWidget(self.status_label)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 1000)
         layout.addWidget(self.progress_bar)
 
-        self.status_label = QLabel("Idle")
-        layout.addWidget(self.status_label)
+        self.stats_label = QLabel("—")
+        self.stats_label.setStyleSheet("color: palette(mid);")
+        layout.addWidget(self.stats_label)
 
         layout.addWidget(QLabel("Log:"))
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(5000)
         layout.addWidget(self.log_view, 2)
+        return right
 
     # --- cascading settings behavior ---
     def _current_encoder_id(self) -> str:
@@ -225,6 +275,7 @@ class MainWindow(QMainWindow):
         self.speed_label.setVisible(is_vaapi)
         self.speed_combo.setVisible(not is_vaapi)
         self._on_speed_slider_changed()
+        self.video_form.setRowVisible(self.tune_combo, not is_vaapi)
 
         self._on_rc_mode_changed()
 
@@ -265,6 +316,8 @@ class MainWindow(QMainWindow):
             "bit_depth": 10 if self.bitdepth_combo.currentText() == "10-bit" else 8,
             "width": res["width"],
             "height": res["height"],
+            "container": self.container_combo.currentText(),
+            "tune": self.tune_combo.currentText(),
             "audio_track": self.audio_combo.currentIndex(),
             "audio_copy_if_compatible": self.audio_copy_check.isChecked(),
             "audio_bitrate": self.audio_bitrate_combo.currentText(),
@@ -272,7 +325,7 @@ class MainWindow(QMainWindow):
 
     def _apply_settings_to_controls(self, settings: dict):
         encoder_index = 0 if settings["encoder"] == "hevc_vaapi" else 1
-        self.encoder_combo.setCurrentIndex(encoder_index)  # cascades rc_mode/speed rebuild
+        self.encoder_combo.setCurrentIndex(encoder_index)  # cascades rc_mode/speed/tune rebuild
 
         rc_index = next(
             (i for i in range(self.rc_mode_combo.count())
@@ -297,6 +350,8 @@ class MainWindow(QMainWindow):
              if r["width"] == settings["width"] and r["height"] == settings["height"]), 0
         )
         self.res_combo.setCurrentIndex(res_index)
+        self.container_combo.setCurrentText(settings.get("container", "mp4"))
+        self.tune_combo.setCurrentText(settings.get("tune", "None"))
         self.audio_combo.setCurrentIndex(settings["audio_track"])
         self.audio_copy_check.setChecked(settings["audio_copy_if_compatible"])
         self.audio_bitrate_combo.setCurrentText(settings["audio_bitrate"])
@@ -310,7 +365,7 @@ class MainWindow(QMainWindow):
         return (
             f"{job['path'].name}   "
             f"[{enc_tag} {job['bit_depth']}b · {q_str} · {res_label} · "
-            f"{AUDIO_TRACK_LABELS[job['audio_track']]}]"
+            f"{AUDIO_TRACK_LABELS[job['audio_track']]} · {job.get('container', 'mp4')}]"
         )
 
     # --- preset management ---
@@ -432,10 +487,26 @@ class MainWindow(QMainWindow):
     def _on_job_started(self, path: str, index: int, total: int):
         self.status_label.setText(f"[{index}/{total}] Encoding {Path(path).name}")
         self.progress_bar.setValue(0)
+        self.stats_label.setText("—")
         self.log_view.appendPlainText(f"\n=== Starting {path} ===")
 
     def _on_job_progress(self, fraction: float):
         self.progress_bar.setValue(int(fraction * 1000))
+
+    def _on_job_stats(self, stats: dict):
+        fps = stats.get("fps", "?")
+        bitrate = stats.get("bitrate", "?")
+        speed = stats.get("speed", "?")
+        eta = stats.get("eta_seconds")
+        eta_str = self._format_eta(eta) if eta is not None else "--:--"
+        self.stats_label.setText(f"{fps} fps  ·  {bitrate}  ·  {speed} speed  ·  ETA {eta_str}")
+
+    @staticmethod
+    def _format_eta(seconds: float) -> str:
+        seconds = int(seconds)
+        h, rem = divmod(seconds, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
     def _on_job_log(self, line: str):
         self.log_view.appendPlainText(line)
@@ -451,6 +522,7 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.progress_bar.setValue(0)
+        self.stats_label.setText("—")
 
 
 def main():

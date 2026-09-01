@@ -89,6 +89,131 @@ class TestCommandPreviewAudioAccuracy(unittest.TestCase):
         self.assertNotIn("-c:a", preview_text)
 
 
+class TestClearQueueConfirmation(unittest.TestCase):
+    def test_declining_confirmation_keeps_the_queue(self):
+        window = main.MainWindow()
+        window.queue_list.addItem(main.QListWidgetItem("dummy"))
+        with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.No):
+            window._clear_queue()
+        self.assertEqual(window.queue_list.count(), 1)
+
+    def test_confirming_clears_the_queue(self):
+        window = main.MainWindow()
+        window.queue_list.addItem(main.QListWidgetItem("dummy"))
+        with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
+            window._clear_queue()
+        self.assertEqual(window.queue_list.count(), 0)
+
+    def test_empty_queue_skips_the_dialog_entirely(self):
+        window = main.MainWindow()
+        with patch.object(main.QMessageBox, "question") as mock_question:
+            window._clear_queue()
+        mock_question.assert_not_called()
+
+
+class TestResultSizeFormatting(unittest.TestCase):
+    def test_format_size_units(self):
+        self.assertEqual(main.MainWindow._format_size(500), "500B")
+        self.assertEqual(main.MainWindow._format_size(2048), "2.0KB")
+        self.assertEqual(main.MainWindow._format_size(300 * 1024 * 1024), "300.0MB")
+
+    def test_append_result_size_shows_shrinkage(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_gui_test_"))
+        try:
+            src = tmpdir / "in.mkv"
+            out = tmpdir / "out.mp4"
+            src.write_bytes(b"x" * 1000)
+            out.write_bytes(b"x" * 250)  # 75% smaller
+            item = main.QListWidgetItem("in.mkv")
+            main.MainWindow._append_result_size(item, src, out)
+            self.assertIn("75% smaller", item.text())
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_append_result_size_shows_growth(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_gui_test_"))
+        try:
+            src = tmpdir / "in.mkv"
+            out = tmpdir / "out.mp4"
+            src.write_bytes(b"x" * 100)
+            out.write_bytes(b"x" * 200)  # larger output (e.g. a tiny/simple source)
+            item = main.QListWidgetItem("in.mkv")
+            main.MainWindow._append_result_size(item, src, out)
+            self.assertIn("larger", item.text())
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_missing_output_file_does_not_crash(self):
+        item = main.QListWidgetItem("in.mkv")
+        main.MainWindow._append_result_size(item, Path("/nonexistent/in.mkv"), Path("/nonexistent/out.mp4"))
+        self.assertEqual(item.text(), "in.mkv")  # left untouched
+
+
+class TestPresetModifiedIndicator(unittest.TestCase):
+    # isVisible() reflects the whole ancestor chain, not just this widget's
+    # own setVisible() calls -- it's always False until the top-level window
+    # has been shown at least once (true even under the offscreen platform).
+
+    def test_hidden_immediately_after_loading_a_preset(self):
+        window = main.MainWindow()
+        window.show()
+        self.assertFalse(window.preset_modified_label.isVisible())
+
+    def test_shown_after_changing_a_setting(self):
+        window = main.MainWindow()
+        window.show()
+        window.quality_slider.setValue(window.quality_slider.value() + 1)
+        self.assertTrue(window.preset_modified_label.isVisible())
+
+    def test_hidden_again_after_reverting_the_change(self):
+        window = main.MainWindow()
+        window.show()
+        original = window.quality_slider.value()
+        window.quality_slider.setValue(original + 1)
+        self.assertTrue(window.preset_modified_label.isVisible())
+        window.quality_slider.setValue(original)
+        self.assertFalse(window.preset_modified_label.isVisible())
+
+
+class TestCommandPreviewGrouping(unittest.TestCase):
+    def test_preview_is_broken_into_multiple_lines(self):
+        window = main.MainWindow()
+        text = window.command_preview.toPlainText()
+        self.assertGreater(text.count("\n"), 0)
+        # Grouping is cosmetic only -- flattening it back out must reproduce
+        # the same tokens build_args() actually returns.
+        self.assertEqual(" ".join(text.split()), " ".join(text.replace("\n", " ").split()))
+
+
+class TestJobStatusIcons(unittest.TestCase):
+    """Queue rows should reflect per-job outcome, not just the status label."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_gui_test_"))
+        cls.clip = cls.tmpdir / "clip.mkv"
+        _make_clip(cls.clip, "aac")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmpdir, ignore_errors=True)
+
+    def test_started_job_gets_an_icon(self):
+        window = main.MainWindow()
+        window.add_files([self.clip])
+        window._running_items = [window.queue_list.item(0)]
+        window._on_job_started(str(self.clip), 1, 1)
+        self.assertFalse(window._running_items[0].icon().isNull())
+
+    def test_failed_job_gets_a_tooltip_with_the_reason(self):
+        window = main.MainWindow()
+        window.add_files([self.clip])
+        window._running_items = [window.queue_list.item(0)]
+        window._current_running_item = window.queue_list.item(0)
+        window._on_job_failed(str(self.clip), "ffmpeg exited 1")
+        self.assertEqual(window._running_items[0].toolTip(), "ffmpeg exited 1")
+
+
 class TestQueueLockingDuringRun(unittest.TestCase):
     def test_set_queue_editable_toggles_buttons(self):
         window = main.MainWindow()

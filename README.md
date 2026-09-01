@@ -61,14 +61,14 @@ main.py        PySide6 GUI: MainWindow (preset toolbar + two-pane layout —
 tests/         unittest suite for constants.py/presets.py/worker.py.
 ```
 
-The GUI: a `QToolBar` across the top holds **Preset** (load/Save As/Delete)
-— it's the one control that sets every other control at once, so it isn't
-buried as a tab among its own dependents. Below that is a `QSplitter`: left
-pane is a `QTabWidget` (**Video** / **Audio**, grouped by what each setting
-is — see Controls below) plus a live **Effective Command** preview showing
-the actual ffmpeg argv the current settings resolve to; right pane is the
-queue, output folder, run controls, progress bar, a live stats line, and
-the full log.
+The GUI is a `QSplitter`. Left pane: a **Preset** row (load/Save As/Delete)
+above a `QTabWidget` (**Video** / **Audio**, grouped by what each setting
+is — see Controls below), then a live **Effective Command** preview. Right
+pane: the queue, output folder, run controls, progress bar, a live stats
+line, and the full log. Window geometry and the splitter position are
+remembered across launches via `QSettings("TITAN-i", "Transcoder")` (on
+Linux: `~/.config/TITAN-i/Transcoder.conf`) — separate from
+`user_presets.json`, since this is per-viewer window state, not app data.
 
 The settings dict that flows from the GUI into `build_args()` (and that a
 saved preset *is*, plus a `name` key):
@@ -121,12 +121,15 @@ isn't reliably playable.
 
 ## Controls
 
-**Preset toolbar** (top of the window, above everything else)
+**Preset row** (top of the left pane, above the tabs)
 - **Preset** — load a saved settings snapshot into every control below.
   This is the main lever — it sets everything else at once — so it isn't a
-  tab alongside its own dependents, it's the one thing always visible
-  regardless of which tab is open. **Save As…** / **Delete** manage
-  `user_presets.json`.
+  tab alongside its own dependents, it sits above them instead.
+  **Save As…** / **Delete** manage `user_presets.json`.
+- **`(modified)`** — appears next to the dropdown the moment any control
+  drifts from the loaded preset's saved values, and disappears again if you
+  change it back. Without this, nothing indicated that the preset name
+  shown no longer matches what's actually configured.
 
 The rest is grouped into two tabs, by what kind of setting they are.
 
@@ -177,20 +180,35 @@ The rest is grouped into two tabs, by what kind of setting they are.
   queue there's no real track to reflect, so the audio codec decision is
   omitted rather than asserting a codec that might be wrong. If building
   the preview fails (e.g. VAAPI selected on a machine with no Intel render
-  node), it shows an inline message instead of taking the app down.
+  node), it shows an inline message instead of taking the app down. Broken
+  into a handful of lines (input / video encode / stream mapping /
+  container flags, `_format_preview_text`) purely for readability — it's
+  still the exact same argv underneath, just joined with newlines instead
+  of spaces at the display step.
 - **Hardware status caption** — confirms at a glance whether a VAAPI render
   node was found (`worker.find_render_node`), and which one.
 
 **Queue pane (right side)**
+- **The queue itself** — drag files in from a file manager to add them, or
+  drag existing rows to reorder them (`QAbstractItemView.InternalMove`;
+  `DropListWidget` tells the two apart by whether the drag carries URLs).
+  Shows placeholder text when empty instead of a blank box. Each row picks
+  up a status icon once a run starts (▶ encoding, ✓ done, ⚠ failed — a
+  failed row's tooltip holds the failure reason), and a finished row gets
+  its result appended: `movie.mkv [...]  →  301.1MB (73% smaller)`.
 - **Apply Settings to Selected** — every control above is only the
   *default* baked into a file the moment it's added to the queue. To make
   one queued file different, select it, change the controls, click this.
   There's no per-row editable table — deliberately, to keep the main
-  controls to one place. Add/Remove/Clear/Apply are all disabled for the
-  duration of a run (`_set_queue_editable`) — `TranscodeQueue.start()`
-  snapshots the job list once, so editing the visible queue after Start
-  can't affect what's actually running; it can only make the list lie
-  about it.
+  controls to one place. Add/Remove/Clear/Apply (and reordering) are all
+  disabled for the duration of a run (`_set_queue_editable`) —
+  `TranscodeQueue.start()` snapshots the job list once, so editing the
+  visible queue after Start can't affect what's actually running; it can
+  only make the list lie about it.
+- **Clear Queue** asks for confirmation first (skipped entirely if the
+  queue is already empty) — it can discard real per-file setup done via
+  Apply Settings to Selected, so it gets the same treatment Delete Preset
+  already had.
 - **Output folder** — deliberately *not* the first thing in the window; it's
   a per-run detail, so it sits right next to Start, where it's used.
 - **Open** — opens the current output folder in the desktop file manager.
@@ -216,8 +234,14 @@ event loop — the whole point of this module is producing a command line
 ffmpeg accepts and running real jobs correctly, and neither is something a
 test that never calls ffmpeg/never starts a real QProcess can catch.
 `test_main.py` covers GUI-level behavior that isn't `build_args`'
-responsibility: startup ordering, the command preview's error handling and
-audio accuracy, and the queue being locked during a run.
+responsibility: startup ordering, the command preview's error handling,
+audio accuracy and line grouping, the queue being locked during a run,
+Clear Queue's confirmation, per-row status icons/result-size text, and the
+preset-modified indicator. One gotcha if you're adding to it:
+`QWidget.isVisible()` reflects the whole ancestor chain, not just a
+widget's own `setVisible()` calls — it's always `False` until the
+top-level window has been `.show()`n at least once, even under the
+offscreen platform.
 
 ## Known gaps
 

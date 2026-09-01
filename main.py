@@ -3,14 +3,14 @@
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QFont
+from PySide6.QtCore import Qt, QUrl, QSettings
+from PySide6.QtGui import QDesktopServices, QFont, QIcon, QPainter, QPalette
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QTabWidget, QSplitter, QGroupBox, QListWidget, QListWidgetItem,
     QPushButton, QComboBox, QLabel, QProgressBar, QPlainTextEdit, QFileDialog,
     QLineEdit, QSlider, QSpinBox, QCheckBox, QInputDialog, QMessageBox,
-    QSizePolicy, QStyle,
+    QSizePolicy, QStyle, QAbstractItemView,
 )
 
 import worker
@@ -27,25 +27,44 @@ PANEL_SPACING = 10
 
 
 class DropListWidget(QListWidget):
-    """QListWidget that accepts files dragged in from a file manager."""
+    """QListWidget that accepts files dragged in from a file manager, and
+    also supports dragging its own rows to reorder the queue."""
+
+    PLACEHOLDER_TEXT = "Drag video files here,\nor click “Add Files…”"
 
     def __init__(self, on_files_dropped, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setSelectionMode(QListWidget.ExtendedSelection)
+        self.setDragDropMode(QAbstractItemView.InternalMove)
         self._on_files_dropped = on_files_dropped
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)  # internal row-reorder drag
 
     def dragMoveEvent(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
 
     def dropEvent(self, event):
-        paths = [Path(u.toLocalFile()) for u in event.mimeData().urls() if u.isLocalFile()]
-        self._on_files_dropped(paths)
+        if event.mimeData().hasUrls():
+            paths = [Path(u.toLocalFile()) for u in event.mimeData().urls() if u.isLocalFile()]
+            self._on_files_dropped(paths)
+        else:
+            super().dropEvent(event)  # internal row-reorder drop
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.count() == 0:
+            painter = QPainter(self.viewport())
+            painter.setPen(self.palette().color(QPalette.PlaceholderText))
+            painter.drawText(self.viewport().rect(), Qt.AlignCenter, self.PLACEHOLDER_TEXT)
+            painter.end()
 
 
 class MainWindow(QMainWindow):
@@ -57,7 +76,11 @@ class MainWindow(QMainWindow):
         self.user_presets: list[dict] = load_user_presets()
         self._res_label = {(r["width"], r["height"]): r["label"] for r in RESOLUTIONS}
         self._preview_audio_cache: dict[tuple, str | None] = {}
+        self._loaded_preset_settings: dict | None = None
+        self._running_items: list[QListWidgetItem] = []
+        self._current_running_item: QListWidgetItem | None = None
         self.output_dir = Path.home() / "Videos" / "transcoded"
+        self._qsettings = QSettings("TITAN-i", "Transcoder")
 
         self.queue = TranscodeQueue()
         self.queue.job_started.connect(self._on_job_started)
@@ -74,15 +97,29 @@ class MainWindow(QMainWindow):
         # still empty leaves rc_mode reading back as None.
         self._on_encoder_changed()
         self._refresh_preset_combo()
+        self._restore_window_state()
+
+    def closeEvent(self, event):
+        self._qsettings.setValue("window_geometry", self.saveGeometry())
+        self._qsettings.setValue("splitter_state", self._splitter.saveState())
+        super().closeEvent(event)
+
+    def _restore_window_state(self):
+        geometry = self._qsettings.value("window_geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        splitter_state = self._qsettings.value("splitter_state")
+        if splitter_state is not None:
+            self._splitter.restoreState(splitter_state)
 
     # --- UI construction ---
     def _build_ui(self):
-        splitter = QSplitter(Qt.Horizontal)
-        self.setCentralWidget(splitter)
-        splitter.addWidget(self._build_left_panel())
-        splitter.addWidget(self._build_right_panel())
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
+        self._splitter = QSplitter(Qt.Horizontal)
+        self.setCentralWidget(self._splitter)
+        self._splitter.addWidget(self._build_left_panel())
+        self._splitter.addWidget(self._build_right_panel())
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
 
     def _build_preset_row(self) -> QHBoxLayout:
         # Preset is the main lever -- it sets every other control at once --
@@ -100,6 +137,11 @@ class MainWindow(QMainWindow):
         self.preset_combo = QComboBox()
         self.preset_combo.currentIndexChanged.connect(self._on_preset_selected)
         row.addWidget(self.preset_combo, 1)
+
+        self.preset_modified_label = QLabel("(modified)")
+        self.preset_modified_label.setStyleSheet("font-style: italic; font-size: 9pt;")
+        self.preset_modified_label.setVisible(False)
+        row.addWidget(self.preset_modified_label)
 
         style = self.style()
         save_btn = QPushButton(style.standardIcon(QStyle.SP_DialogSaveButton), "Save As…")
@@ -414,18 +456,43 @@ class MainWindow(QMainWindow):
                     settings, Path("input.ext"), output_path,
                     probe_audio=False, audio_codec=None,
                 )
-            self.command_preview.setPlainText(" ".join(args))
+            self.command_preview.setPlainText(self._format_preview_text(args))
         except Exception as exc:
             # build_args can hit real hardware (find_render_node) for the
             # VAAPI path -- on a machine with no Intel node this must degrade
             # to a message, not crash the control that triggered it.
             self.command_preview.setPlainText(f"(preview unavailable: {exc})")
+        self._update_preset_modified_indicator()
+
+    # Args starting a new logical group: input, video encode, stream
+    # mapping, container/finalization. Purely a display grouping -- the
+    # actual argv passed to ffmpeg is unaffected.
+    _PREVIEW_BREAK_BEFORE = {"-i", "-vf", "-map", "-sn"}
+
+    def _format_preview_text(self, args: list[str]) -> str:
+        lines, current = [], []
+        for arg in args:
+            if arg in self._PREVIEW_BREAK_BEFORE and current:
+                lines.append(" ".join(current))
+                current = []
+            current.append(arg)
+        if current:
+            lines.append(" ".join(current))
+        return "\n".join(lines)
 
     def _preview_audio_codec(self, path: Path, track_index: int) -> str | None:
         key = (path, track_index)
         if key not in self._preview_audio_cache:
             self._preview_audio_cache[key] = worker.probe_audio_codec(path, track_index)
         return self._preview_audio_cache[key]
+
+    def _update_preset_modified_indicator(self):
+        if not hasattr(self, "preset_modified_label"):
+            return
+        if self._loaded_preset_settings is None:
+            self.preset_modified_label.setVisible(False)
+            return
+        self.preset_modified_label.setVisible(self._current_settings() != self._loaded_preset_settings)
 
     # --- settings <-> controls ---
     def _current_settings(self) -> dict:
@@ -515,6 +582,10 @@ class MainWindow(QMainWindow):
         name = self.preset_combo.currentText()
         settings = next((p for p in self._all_presets() if p["name"] == name), None)
         if settings:
+            # Set before applying: _apply_settings_to_controls cascades through
+            # several _update_command_preview() calls as it sets each control,
+            # and each of those checks the modified indicator against this.
+            self._loaded_preset_settings = {k: v for k, v in settings.items() if k != "name"}
             self._apply_settings_to_controls(settings)
 
     def _save_preset_as(self):
@@ -537,7 +608,9 @@ class MainWindow(QMainWindow):
         else:
             self.user_presets.append(settings)
         save_user_presets(self.user_presets)
+        self._loaded_preset_settings = {k: v for k, v in settings.items() if k != "name"}
         self._refresh_preset_combo(select=name)
+        self._update_preset_modified_indicator()
 
     def _delete_preset(self):
         name = self.preset_combo.currentText()
@@ -585,6 +658,13 @@ class MainWindow(QMainWindow):
         self._update_command_preview()
 
     def _clear_queue(self):
+        count = self.queue_list.count()
+        if count == 0:
+            return
+        if QMessageBox.question(
+            self, "Clear queue", f"Remove all {count} file(s) from the queue?"
+        ) != QMessageBox.Yes:
+            return
         self.queue_list.clear()
         self._update_command_preview()
 
@@ -607,6 +687,13 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(True)
         self._set_queue_editable(False)
         self.log_view.clear()
+        # Jobs run strictly one at a time in this same order, and the queue
+        # is locked for the run's duration (_set_queue_editable(False)), so
+        # this position-based snapshot stays valid throughout -- job_started's
+        # 1-based index is enough to look up which row is now running.
+        self._running_items = [self.queue_list.item(i) for i in range(self.queue_list.count())]
+        for item in self._running_items:
+            item.setIcon(QIcon())  # clear any status icon left from a previous run
         self.queue.start(jobs, self.output_dir)
 
     def _stop(self):
@@ -629,6 +716,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.stats_label.setText("—")
         self.log_view.appendPlainText(f"\n=== Starting {path} ===")
+        self._current_running_item = self._running_items[index - 1]
+        self._current_running_item.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
 
     def _on_job_progress(self, fraction: float):
         self.progress_bar.setValue(int(fraction * 1000))
@@ -651,11 +740,39 @@ class MainWindow(QMainWindow):
     def _on_job_log(self, line: str):
         self.log_view.appendPlainText(line)
 
-    def _on_job_finished(self, path: str):
+    def _on_job_finished(self, path: str, output_path: str):
         self.log_view.appendPlainText(f"=== Done: {path} ===")
+        if self._current_running_item is not None:
+            self._current_running_item.setIcon(self.style().standardIcon(QStyle.SP_DialogApplyButton))
+            self._append_result_size(self._current_running_item, Path(path), Path(output_path))
 
     def _on_job_failed(self, path: str, reason: str):
         self.log_view.appendPlainText(f"=== FAILED: {path}: {reason} ===")
+        if self._current_running_item is not None:
+            self._current_running_item.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxWarning))
+            self._current_running_item.setToolTip(reason)
+
+    @staticmethod
+    def _append_result_size(item: QListWidgetItem, input_path: Path, output_path: Path):
+        try:
+            in_size = input_path.stat().st_size
+            out_size = output_path.stat().st_size
+        except OSError:
+            return
+        if in_size <= 0:
+            return
+        change_pct = 100 * (1 - out_size / in_size)
+        direction = "smaller" if change_pct >= 0 else "larger"
+        item.setText(f"{item.text()}  →  {MainWindow._format_size(out_size)} ({abs(change_pct):.0f}% {direction})")
+
+    @staticmethod
+    def _format_size(num_bytes: int) -> str:
+        size = float(num_bytes)
+        for unit in ("B", "KB", "MB", "GB"):
+            if size < 1024:
+                return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+            size /= 1024
+        return f"{size:.1f}TB"
 
     def _on_all_finished(self):
         self.status_label.setText("Idle")

@@ -173,7 +173,7 @@ class TranscodeQueue(QObject):
     job_progress = Signal(float)         # 0.0-1.0
     job_stats = Signal(dict)             # {"fps", "bitrate", "speed", "eta_seconds"} -- see _emit_stats
     job_log = Signal(str)                # one log line
-    job_finished = Signal(str)           # path
+    job_finished = Signal(str, str)      # input_path, output_path
     job_failed = Signal(str, str)        # path, reason
     all_finished = Signal()
 
@@ -292,7 +292,7 @@ class TranscodeQueue(QObject):
         # report it as cancelled instead of keeping it.
         if exit_code == 0 and output_path.exists():
             self.job_progress.emit(1.0)
-            self.job_finished.emit(str(input_path))
+            self.job_finished.emit(str(input_path), str(output_path))
         elif self._stopped:
             self._cleanup_partial(output_path)
             self.job_failed.emit(str(input_path), "stopped by user")

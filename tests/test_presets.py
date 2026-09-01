@@ -36,6 +36,26 @@ class TestUserPresets(unittest.TestCase):
         self.assertEqual(len(loaded), 1)
         self.assertEqual(loaded[0]["name"], "Second")
 
+    def test_malformed_json_returns_empty_list_instead_of_crashing(self):
+        self.path.write_text("{not valid json,,,")
+        self.assertEqual(presets.load_user_presets(self.path), [])
+
+    def test_malformed_json_is_backed_up_not_silently_discarded(self):
+        self.path.write_text("{not valid json,,,")
+        presets.load_user_presets(self.path)
+        backup = self.path.with_suffix(self.path.suffix + ".corrupt")
+        self.assertTrue(backup.exists())
+        self.assertFalse(self.path.exists())
+
+    def test_wrong_top_level_shape_returns_empty_list_instead_of_crashing(self):
+        # Valid JSON, but not the {"presets": [...]} shape this file expects.
+        self.path.write_text('["just", "a", "list"]')
+        self.assertEqual(presets.load_user_presets(self.path), [])
+
+    def test_presets_key_holding_non_list_returns_empty_list(self):
+        self.path.write_text('{"presets": "not a list"}')
+        self.assertEqual(presets.load_user_presets(self.path), [])
+
 
 if __name__ == "__main__":
     unittest.main()

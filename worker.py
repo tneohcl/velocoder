@@ -105,7 +105,8 @@ def build_args(
         upload_fmt = "p010le" if bit_depth == 10 else "nv12"
         vf = (
             f"format={upload_fmt},hwupload,"
-            f"scale_vaapi=w='min({width},iw)':h='min({height},ih)':force_original_aspect_ratio=decrease"
+            f"scale_vaapi=w='min({width},iw)':h='min({height},ih)':"
+            f"force_original_aspect_ratio=decrease:force_divisible_by=2"
         )
         args += ["-vf", vf, "-c:v", "hevc_vaapi"]
         args += ["-profile:v", "main10" if bit_depth == 10 else "main"]
@@ -119,7 +120,10 @@ def build_args(
             args += ["-rc_mode", "VBR", "-b:v", f"{quality_value}k"]
         args += ["-compression_level", str(settings["speed"])]
     else:
-        vf = f"scale=w='min({width},iw)':h='min({height},ih)':force_original_aspect_ratio=decrease"
+        vf = (
+            f"scale=w='min({width},iw)':h='min({height},ih)':"
+            f"force_original_aspect_ratio=decrease:force_divisible_by=2"
+        )
         pix_fmt = "yuv420p10le" if bit_depth == 10 else "yuv420p"
         args += ["-vf", vf, "-pix_fmt", pix_fmt, "-c:v", "libx265", "-preset", settings["speed"]]
         if rc_mode == "CRF":
@@ -132,12 +136,17 @@ def build_args(
         args += ["-x265-params", "strong-intra-smoothing=0:aq-mode=3:psy-rdoq=1.0"]
 
     audio_track = settings["audio_track"]
-    # Capital V excludes attached-pic/cover-art streams from the video map,
-    # matching ffmpeg's own default auto-selection more closely than 'v'.
-    args += ["-map", "0:V:0", "-map", f"0:a:{audio_track}"]
     if probe_audio:
         audio_codec = probe_audio_codec(input_path, audio_track)
+    # Capital V excludes attached-pic/cover-art streams from the video map,
+    # matching ffmpeg's own default auto-selection more closely than 'v'.
+    args += ["-map", "0:V:0"]
     if audio_codec is not None:
+        # Only map the audio track when it's known to exist -- probe_audio_codec
+        # (or the caller, for a preview) returning None means audio_track doesn't
+        # exist on this file, and mapping it anyway would fail the whole job on
+        # a stream ffmpeg can't find, instead of just proceeding without audio.
+        args += ["-map", f"0:a:{audio_track}"]
         if settings["audio_copy_if_compatible"] and audio_codec in ("aac", "ac3", "eac3"):
             args += ["-c:a", "copy"]
         else:
@@ -201,10 +210,19 @@ class TranscodeQueue(QObject):
         input_path: Path = job["path"]
         container = job.get("container", "mp4")
         output_path = self._output_dir / (input_path.stem + f".{container}")
-        self._duration = probe_duration(input_path)
-        self._stats_buffer = {}
 
+        if output_path.resolve() == input_path.resolve():
+            # ffmpeg's -y would truncate this file for writing while still
+            # reading from it as input -- refuse rather than destroy the source.
+            self.job_failed.emit(
+                str(input_path), "output path is the same as the input file — skipped"
+            )
+            self._run_next()
+            return
+
+        self._stats_buffer = {}
         try:
+            self._duration = probe_duration(input_path)
             args = build_args(job, input_path, output_path)
         except Exception as exc:
             self.job_failed.emit(str(input_path), str(exc))
@@ -267,12 +285,17 @@ class TranscodeQueue(QObject):
 
     def _on_finished(self, input_path: Path, output_path: Path, exit_code: int, exit_status):
         self._process = None
-        if self._stopped:
-            self._cleanup_partial(output_path)
-            self.job_failed.emit(str(input_path), "stopped by user")
-        elif exit_code == 0 and output_path.exists():
+        # A successful exit always wins, even if stop() was also called --
+        # QProcess.finished delivery is async, so a job can genuinely finish
+        # (exit 0, file written) in the same window the user clicks Stop.
+        # Checking _stopped first would then delete a completed output and
+        # report it as cancelled instead of keeping it.
+        if exit_code == 0 and output_path.exists():
             self.job_progress.emit(1.0)
             self.job_finished.emit(str(input_path))
+        elif self._stopped:
+            self._cleanup_partial(output_path)
+            self.job_failed.emit(str(input_path), "stopped by user")
         else:
             self._cleanup_partial(output_path)
             self.job_failed.emit(str(input_path), f"ffmpeg exited {exit_code}")

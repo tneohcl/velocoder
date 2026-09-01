@@ -15,12 +15,40 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 import worker  # noqa: E402
 
+from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer  # noqa: E402
+
+# TranscodeQueue tests drive a real QProcess, which needs a running Qt event
+# loop -- QCoreApplication (no GUI needed here, unlike main.py's tests).
+_app = QCoreApplication.instance() or QCoreApplication([])
+
 HAS_VAAPI = Path("/dev/dri/by-path").exists()
+
+
+def _run_queue_and_collect(queue: "worker.TranscodeQueue", jobs, output_dir, timeout_ms=15000):
+    """Run a TranscodeQueue to completion, collecting every job_* signal
+    emission as (event_name, args) tuples for direct assertion. Guards
+    against a hung ffmpeg/ffprobe wedging the test suite forever."""
+    events = []
+    loop = QEventLoop()
+    queue.job_started.connect(lambda *a: events.append(("job_started", a)))
+    queue.job_finished.connect(lambda *a: events.append(("job_finished", a)))
+    queue.job_failed.connect(lambda *a: events.append(("job_failed", a)))
+    queue.all_finished.connect(loop.quit)
+
+    timer = QTimer()
+    timer.setSingleShot(True)
+    timer.timeout.connect(loop.quit)
+    timer.start(timeout_ms)
+
+    queue.start(jobs, output_dir)
+    loop.exec()
+    return events
 
 BASE_SETTINGS = {
     "width": 1280, "height": 720, "audio_track": 0,
@@ -261,6 +289,11 @@ class TestCommandPreview(unittest.TestCase):
             probe_audio=False, audio_codec=None,
         )
         self.assertNotIn("-c:a", args)
+        # Regression: -map 0:a:N used to be added unconditionally even when
+        # audio_codec is None (the requested track doesn't exist), so ffmpeg
+        # would fail on a stream map to nothing rather than just proceeding
+        # without audio.
+        self.assertNotIn("0:a:0", args)
 
     def test_never_touches_the_filesystem(self):
         # A path that can't possibly exist -- if this tried to probe it,
@@ -270,6 +303,148 @@ class TestCommandPreview(unittest.TestCase):
             probe_audio=False, audio_codec="ac3",
         )
         self.assertEqual(args[args.index("-c:a") + 1], "copy")
+
+
+class TestNonMatchingAspectRatio(unittest.TestCase):
+    """A source whose aspect ratio doesn't exactly match the target box must
+    still produce even dimensions -- 4:2:0 formats reject odd ones outright."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        # 1920x800 (2.4:1 "scope" ratio) scaled to fit a 1280x720 box: the
+        # binding dimension (width, ratio 0.6667) leaves height at
+        # 800*0.6667 = 533.33 -- 533 is odd, 534 is the correct even round.
+        cls.clip = cls.tmpdir / "scope.mkv"
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error",
+             "-f", "lavfi", "-i", "testsrc2=size=1920x800:rate=25:duration=1",
+             "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+             "-c:v", "libx264", "-c:a", "aac", "-shortest", str(cls.clip)],
+            check=True, timeout=30,
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmpdir, ignore_errors=True)
+
+    def test_x265_encode_succeeds_with_even_dimensions(self):
+        out = self.tmpdir / "scope_x265.mp4"
+        args = worker.build_args(x265_settings(width=1280, height=720), self.clip, out)
+        self.assertIn("force_divisible_by=2", args[args.index("-vf") + 1])
+        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+             "-select_streams", "v", "-of", "csv=p=0", str(out)],
+            capture_output=True, text=True,
+        )
+        width, height = (int(x) for x in probe.stdout.strip().split(","))
+        self.assertEqual(height % 2, 0)
+        self.assertEqual((width, height), (1280, 534))
+
+    @unittest.skipUnless(HAS_VAAPI, "no VAAPI render node on this machine")
+    def test_vaapi_encode_succeeds_with_even_dimensions(self):
+        out = self.tmpdir / "scope_vaapi.mp4"
+        args = worker.build_args(vaapi_settings(width=1280, height=720), self.clip, out)
+        self.assertIn("force_divisible_by=2", args[args.index("-vf") + 1])
+        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+             "-select_streams", "v", "-of", "csv=p=0", str(out)],
+            capture_output=True, text=True,
+        )
+        width, height = (int(x) for x in probe.stdout.strip().split(","))
+        self.assertEqual(height % 2, 0)
+
+
+class TestOutputPathCollisionGuard(unittest.TestCase):
+    def test_refuses_when_output_would_equal_input(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            clip = tmpdir / "same.mp4"
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error",
+                 "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=1",
+                 "-c:v", "libx264", str(clip)],
+                check=True, timeout=30,
+            )
+            job = {"path": clip, **x265_settings(container="mp4")}
+            queue = worker.TranscodeQueue()
+            events = _run_queue_and_collect(queue, [job], tmpdir)
+
+            self.assertTrue(clip.exists(), "source file must survive")
+            failed = [e for e in events if e[0] == "job_failed"]
+            self.assertEqual(len(failed), 1)
+            self.assertIn("same as the input", failed[0][1][1])
+            self.assertEqual([e[0] for e in events if e[0] != "job_started"], ["job_failed"])
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+class TestStopRaceFix(unittest.TestCase):
+    """_on_finished must not delete a job that actually completed
+    successfully, even if stop() was also called (finished-signal delivery
+    races the user's click)."""
+
+    def test_successful_exit_wins_over_stopped_flag(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            output = tmpdir / "done.mp4"
+            output.write_bytes(b"pretend this is a completed encode")
+            queue = worker.TranscodeQueue()
+            queue._jobs = []  # nothing queued after this one
+            queue._stopped = True  # simulate: Stop was clicked
+            events = []
+            queue.job_finished.connect(lambda *a: events.append(("finished", a)))
+            queue.job_failed.connect(lambda *a: events.append(("failed", a)))
+
+            queue._on_finished(Path("in.mkv"), output, 0, None)  # exit_code=0: genuinely succeeded
+
+            self.assertTrue(output.exists(), "a successfully completed file must not be deleted")
+            self.assertEqual([e[0] for e in events], ["finished"])
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_genuine_stop_of_an_incomplete_job_still_cleans_up(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            output = tmpdir / "partial.mp4"
+            output.write_bytes(b"partial data from a killed ffmpeg")
+            queue = worker.TranscodeQueue()
+            queue._jobs = []
+            queue._stopped = True
+            events = []
+            queue.job_failed.connect(lambda *a: events.append(("failed", a)))
+
+            queue._on_finished(Path("in.mkv"), output, 1, None)  # nonzero: actually interrupted
+
+            self.assertFalse(output.exists(), "a genuinely-stopped job's partial output must be removed")
+            self.assertEqual([e[0] for e in events], ["failed"])
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+class TestProbeDurationGuarded(unittest.TestCase):
+    def test_probe_duration_failure_emits_job_failed_not_crash(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            clip = tmpdir / "clip.mkv"
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error",
+                 "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=1",
+                 "-c:v", "libx264", str(clip)],
+                check=True, timeout=30,
+            )
+            job = {"path": clip, **x265_settings()}
+            queue = worker.TranscodeQueue()
+            with patch("worker.probe_duration", side_effect=FileNotFoundError("ffprobe not found")):
+                events = _run_queue_and_collect(queue, [job], tmpdir)
+            failed = [e for e in events if e[0] == "job_failed"]
+            self.assertEqual(len(failed), 1)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 class TestFindRenderNode(unittest.TestCase):

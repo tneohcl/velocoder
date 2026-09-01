@@ -143,7 +143,11 @@ The rest is grouped into two tabs, by what kind of setting they are.
 - **Bit depth** — 8-bit or 10-bit (`main`/`nv12` vs `main10`/`p010le` for
   VAAPI; `yuv420p` vs `yuv420p10le` for x265).
 - **Resolution** — `Source (no scale)` / `1080p` / `720p` / `480p`, fit
-  within the box keeping aspect, never upscales.
+  within the box keeping aspect, never upscales. Both scale filters carry
+  `force_divisible_by=2` — without it, a source whose aspect ratio doesn't
+  exactly match the target box rounds one dimension to odd, which every
+  pixel format this app uses (4:2:0) rejects outright. Verified against a
+  real 2.4:1 "scope"-ratio source, not just reasoned about.
 - **Container** — MP4 or MKV. `-movflags +faststart` is only added for MP4
   (it's a mov/mp4-muxer-private option — ffmpeg silently ignores it on MKV,
   but there's no reason to carry a flag that means nothing there).
@@ -165,10 +169,15 @@ The rest is grouped into two tabs, by what kind of setting they are.
 **Below the tabs, left side**
 - **Effective Command** — a live, read-only preview of the actual ffmpeg
   argv the current settings resolve to (`worker.build_args(...,
-  probe_audio=False, audio_codec="aac")` — same function real jobs use, so
-  it can never drift from what actually runs; the placeholder audio codec
-  is the one inexact part, since real audio handling depends on the file's
-  actual track). Updates on every control change.
+  probe_audio=False, ...)` — same function real jobs use, so the video-side
+  flags can never drift from what actually runs). When a file is already
+  queued, the audio side is genuinely accurate too — it probes that file's
+  real audio track (cached per file+track, so dragging a slider doesn't
+  shell out to ffprobe repeatedly) instead of guessing. With an empty
+  queue there's no real track to reflect, so the audio codec decision is
+  omitted rather than asserting a codec that might be wrong. If building
+  the preview fails (e.g. VAAPI selected on a machine with no Intel render
+  node), it shows an inline message instead of taking the app down.
 - **Hardware status caption** — confirms at a glance whether a VAAPI render
   node was found (`worker.find_render_node`), and which one.
 
@@ -177,7 +186,11 @@ The rest is grouped into two tabs, by what kind of setting they are.
   *default* baked into a file the moment it's added to the queue. To make
   one queued file different, select it, change the controls, click this.
   There's no per-row editable table — deliberately, to keep the main
-  controls to one place.
+  controls to one place. Add/Remove/Clear/Apply are all disabled for the
+  duration of a run (`_set_queue_editable`) — `TranscodeQueue.start()`
+  snapshots the job list once, so editing the visible queue after Start
+  can't affect what's actually running; it can only make the list lie
+  about it.
 - **Output folder** — deliberately *not* the first thing in the window; it's
   a per-run detail, so it sits right next to Start, where it's used.
 - **Open** — opens the current output folder in the desktop file manager.
@@ -192,12 +205,19 @@ The rest is grouped into two tabs, by what kind of setting they are.
 python3 -m unittest discover -s tests -v
 ```
 
-Plain stdlib `unittest`, no extra install. Most tests check the argv
-`build_args()` produces; a few actually run ffmpeg against tiny
-synthetic clips (real hardware encode included, skipped automatically if
-`/dev/dri/by-path` doesn't exist) — the whole point of this module is
-producing a command line ffmpeg accepts, and that's not something a test
-that never calls ffmpeg can catch.
+Plain stdlib `unittest`, no extra install (main.py's tests need
+`QT_QPA_PLATFORM=offscreen` to run headless, but they set that themselves
+before importing Qt, so the plain command above works with or without a
+real display). Most `test_worker.py` tests check the argv `build_args()`
+produces; several actually run ffmpeg against tiny synthetic clips (real
+hardware encode included, skipped automatically if `/dev/dri/by-path`
+doesn't exist) or drive a real `TranscodeQueue` end to end through a Qt
+event loop — the whole point of this module is producing a command line
+ffmpeg accepts and running real jobs correctly, and neither is something a
+test that never calls ffmpeg/never starts a real QProcess can catch.
+`test_main.py` covers GUI-level behavior that isn't `build_args`'
+responsibility: startup ordering, the command preview's error handling and
+audio accuracy, and the queue being locked during a run.
 
 ## Known gaps
 
@@ -210,5 +230,10 @@ that never calls ffmpeg can catch.
   and no foreign-audio-search/burn-in — the old "Stuff Tuned" HandBrake
   preset had both, neither is replicated.
 - No batch folder-watch.
-- No error-recovery beyond the log showing FAILED and the partial output
-  file being deleted.
+- Error recovery is per-job, not per-failure-class: a bad job (missing
+  audio track that doesn't exist, output path colliding with the input,
+  `probe_duration`/`ffprobe` failing) is caught and reported via
+  `job_failed`, and the queue moves on to the next file — but there's no
+  retry, and a systemic problem (e.g. ffmpeg itself missing) will just fail
+  every remaining job in the queue one at a time rather than aborting the
+  batch early.

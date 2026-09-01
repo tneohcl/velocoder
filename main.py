@@ -56,6 +56,7 @@ class MainWindow(QMainWindow):
 
         self.user_presets: list[dict] = load_user_presets()
         self._res_label = {(r["width"], r["height"]): r["label"] for r in RESOLUTIONS}
+        self._preview_audio_cache: dict[tuple, str | None] = {}
         self.output_dir = Path.home() / "Videos" / "transcoded"
 
         self.queue = TranscodeQueue()
@@ -68,8 +69,11 @@ class MainWindow(QMainWindow):
         self.queue.all_finished.connect(self._on_all_finished)
 
         self._build_ui()
-        self._refresh_preset_combo()
+        # Must run before _refresh_preset_combo(): it's the only thing that
+        # populates rc_mode_combo, and applying a preset while that combo is
+        # still empty leaves rc_mode reading back as None.
         self._on_encoder_changed()
+        self._refresh_preset_combo()
 
     # --- UI construction ---
     def _build_ui(self):
@@ -275,18 +279,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.queue_list, 1)
 
         q_btns = QHBoxLayout()
-        add_btn = QPushButton("Add Files…")
-        add_btn.clicked.connect(self._pick_files)
-        remove_btn = QPushButton("Remove Selected")
-        remove_btn.clicked.connect(self._remove_selected)
-        clear_btn = QPushButton("Clear Queue")
-        clear_btn.clicked.connect(self._clear_queue)
-        apply_btn = QPushButton("Apply Settings to Selected")
-        apply_btn.clicked.connect(self._apply_to_selected)
-        q_btns.addWidget(add_btn)
-        q_btns.addWidget(remove_btn)
-        q_btns.addWidget(clear_btn)
-        q_btns.addWidget(apply_btn)
+        self.add_files_btn = QPushButton("Add Files…")
+        self.add_files_btn.clicked.connect(self._pick_files)
+        self.remove_btn = QPushButton("Remove Selected")
+        self.remove_btn.clicked.connect(self._remove_selected)
+        self.clear_btn = QPushButton("Clear Queue")
+        self.clear_btn.clicked.connect(self._clear_queue)
+        self.apply_btn = QPushButton("Apply Settings to Selected")
+        self.apply_btn.clicked.connect(self._apply_to_selected)
+        q_btns.addWidget(self.add_files_btn)
+        q_btns.addWidget(self.remove_btn)
+        q_btns.addWidget(self.clear_btn)
+        q_btns.addWidget(self.apply_btn)
         q_btns.addStretch()
         layout.addLayout(q_btns)
 
@@ -359,9 +363,10 @@ class MainWindow(QMainWindow):
         self._on_rc_mode_changed()
 
     def _on_rc_mode_changed(self):
+        # rc_mode_combo is always populated by this point -- __init__ calls
+        # _on_encoder_changed() (the only thing that populates it) before
+        # anything that could apply a preset and reach this method.
         rc_mode = self.rc_mode_combo.currentData()
-        if rc_mode is None:
-            return
         is_bitrate = rc_mode in BITRATE_RC_MODES
         self.quality_slider.setVisible(not is_bitrate)
         self.quality_label.setVisible(not is_bitrate)
@@ -389,11 +394,38 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "command_preview"):
             return  # widgets still being constructed
         settings = self._current_settings()
-        args = worker.build_args(
-            settings, Path("input.ext"), Path(f"output.{settings['container']}"),
-            probe_audio=False, audio_codec="aac",
-        )
-        self.command_preview.setPlainText(" ".join(args))
+        output_path = Path(f"output.{settings['container']}")
+        try:
+            if self.queue_list.count() > 0:
+                # A real file is queued -- probe its actual audio track (cached,
+                # so dragging a slider doesn't shell out to ffprobe repeatedly)
+                # instead of guessing, so the preview matches what will really run.
+                first_path = self.queue_list.item(0).data(Qt.UserRole)["path"]
+                audio_codec = self._preview_audio_codec(first_path, settings["audio_track"])
+                args = worker.build_args(
+                    settings, first_path, output_path,
+                    probe_audio=False, audio_codec=audio_codec,
+                )
+            else:
+                # No file queued yet -- there's no real audio track to reflect,
+                # so omit the audio codec decision entirely rather than assert
+                # a codec that would misrepresent what actually happens.
+                args = worker.build_args(
+                    settings, Path("input.ext"), output_path,
+                    probe_audio=False, audio_codec=None,
+                )
+            self.command_preview.setPlainText(" ".join(args))
+        except Exception as exc:
+            # build_args can hit real hardware (find_render_node) for the
+            # VAAPI path -- on a machine with no Intel node this must degrade
+            # to a message, not crash the control that triggered it.
+            self.command_preview.setPlainText(f"(preview unavailable: {exc})")
+
+    def _preview_audio_codec(self, path: Path, track_index: int) -> str | None:
+        key = (path, track_index)
+        if key not in self._preview_audio_cache:
+            self._preview_audio_cache[key] = worker.probe_audio_codec(path, track_index)
+        return self._preview_audio_cache[key]
 
     # --- settings <-> controls ---
     def _current_settings(self) -> dict:
@@ -529,6 +561,7 @@ class MainWindow(QMainWindow):
                 item = QListWidgetItem(self._format_item_text(job))
                 item.setData(Qt.UserRole, job)
                 self.queue_list.addItem(item)
+        self._update_command_preview()  # may now reflect a real queued file's audio
 
     def _pick_files(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -549,9 +582,11 @@ class MainWindow(QMainWindow):
     def _remove_selected(self):
         for item in self.queue_list.selectedItems():
             self.queue_list.takeItem(self.queue_list.row(item))
+        self._update_command_preview()
 
     def _clear_queue(self):
         self.queue_list.clear()
+        self._update_command_preview()
 
     def _apply_to_selected(self):
         settings = self._current_settings()
@@ -570,12 +605,23 @@ class MainWindow(QMainWindow):
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self._set_queue_editable(False)
         self.log_view.clear()
         self.queue.start(jobs, self.output_dir)
 
     def _stop(self):
         self.queue.stop()
         self.stop_btn.setEnabled(False)
+
+    def _set_queue_editable(self, editable: bool):
+        # TranscodeQueue.start() snapshots the job list once; editing the
+        # visible queue after that point can't affect jobs already running
+        # or already skipped, so it just makes the list lie about what's
+        # actually executing. Lock it for the duration of a run.
+        self.add_files_btn.setEnabled(editable)
+        self.remove_btn.setEnabled(editable)
+        self.clear_btn.setEnabled(editable)
+        self.apply_btn.setEnabled(editable)
 
     # --- queue signal handlers ---
     def _on_job_started(self, path: str, index: int, total: int):
@@ -615,6 +661,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Idle")
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self._set_queue_editable(True)
         self.progress_bar.setValue(0)
         self.stats_label.setText("—")
 

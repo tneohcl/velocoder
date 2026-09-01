@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QTabWidget, QSplitter, QToolBar, QGroupBox, QListWidget, QListWidgetItem,
+    QTabWidget, QSplitter, QGroupBox, QListWidget, QListWidgetItem,
     QPushButton, QComboBox, QLabel, QProgressBar, QPlainTextEdit, QFileDialog,
     QLineEdit, QSlider, QSpinBox, QCheckBox, QInputDialog, QMessageBox,
     QSizePolicy, QStyle,
@@ -77,8 +77,6 @@ class MainWindow(QMainWindow):
 
     # --- UI construction ---
     def _build_ui(self):
-        self.addToolBar(self._build_preset_toolbar())
-
         splitter = QSplitter(Qt.Horizontal)
         self.setCentralWidget(splitter)
         splitter.addWidget(self._build_left_panel())
@@ -86,43 +84,39 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
 
-    def _build_preset_toolbar(self) -> QToolBar:
+    def _build_preset_row(self) -> QHBoxLayout:
         # Preset is the main lever -- it sets every other control at once --
-        # so it lives in a toolbar, not buried as a tab among its own
-        # dependents. QToolBar also gets correct native theming for free.
-        toolbar = QToolBar("Preset")
-        toolbar.setMovable(False)
-        toolbar.setFloatable(False)
-        toolbar.setContentsMargins(6, 4, 6, 4)
-
-        label = QLabel(" Preset: ")
+        # so it sits above the tabs, not buried as one of them. Previously a
+        # QToolBar, but that spans the full window and draws a separator
+        # below it; a plain row scoped to the left column reads as part of
+        # the settings panel instead of a distinct chrome region.
+        row = QHBoxLayout()
+        label = QLabel("Preset:")
         bold = QFont()
         bold.setBold(True)
         label.setFont(bold)
-        toolbar.addWidget(label)
+        row.addWidget(label)
 
         self.preset_combo = QComboBox()
-        self.preset_combo.setMinimumWidth(320)
         self.preset_combo.currentIndexChanged.connect(self._on_preset_selected)
-        toolbar.addWidget(self.preset_combo)
-        toolbar.addSeparator()
+        row.addWidget(self.preset_combo, 1)
 
         style = self.style()
-        save_action = toolbar.addAction(
-            style.standardIcon(QStyle.SP_DialogSaveButton), "Save As…"
-        )
-        save_action.triggered.connect(self._save_preset_as)
-        delete_action = toolbar.addAction(
-            style.standardIcon(QStyle.SP_TrashIcon), "Delete"
-        )
-        delete_action.triggered.connect(self._delete_preset)
-        return toolbar
+        save_btn = QPushButton(style.standardIcon(QStyle.SP_DialogSaveButton), "Save As…")
+        save_btn.clicked.connect(self._save_preset_as)
+        delete_btn = QPushButton(style.standardIcon(QStyle.SP_TrashIcon), "Delete")
+        delete_btn.clicked.connect(self._delete_preset)
+        row.addWidget(save_btn)
+        row.addWidget(delete_btn)
+        return row
 
     def _build_left_panel(self) -> QWidget:
         left = QWidget()
         layout = QVBoxLayout(left)
         layout.setContentsMargins(PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN)
         layout.setSpacing(PANEL_SPACING)
+
+        layout.addLayout(self._build_preset_row())
 
         tabs = QTabWidget()
         tabs.addTab(self._build_video_tab(), "Video")

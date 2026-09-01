@@ -161,9 +161,10 @@ The rest is grouped into two tabs, by what kind of setting they are.
   is deliberately not offered** — it's a real x265 tune name in general, but
   this exact libx265 build rejects it outright (`Error setting preset/tune
   (null)/film.`, confirmed by actually running it, not assumed).
-- **Deinterlace** — off by default, manual only (not auto-detected — see
-  Known gaps). This exists because a container's progressive/interlaced
-  flag is frequently just wrong: a real user file was tagged
+- **Deinterlace** — auto-detected the moment a file is added (see
+  "The queue itself" below), and still a manual checkbox on top of that.
+  This exists because a container's progressive/interlaced flag is
+  frequently just wrong: a real user file was tagged
   `yuv420p(progressive)` in its own metadata, played back with visible
   combing, and `ffmpeg -vf idet` on the actual pixel data showed 100% of
   sampled frames as TFF-interlaced — camcorder/broadcast-sourced footage
@@ -214,23 +215,34 @@ The rest is grouped into two tabs, by what kind of setting they are.
 - **The queue itself** — drag files in from a file manager to add them, or
   drag existing rows to reorder them (`QAbstractItemView.InternalMove`;
   `DropListWidget` tells the two apart by whether the drag carries URLs).
-  Shows placeholder text when empty instead of a blank box. Each row picks
-  up a status icon once a run starts (▶ encoding, ✓ done, ⚠ failed — a
-  failed row's tooltip holds the failure reason), and a finished row gets
+  Shows placeholder text when empty instead of a blank box. Each added file
+  immediately kicks off an async, non-blocking interlace probe
+  (`worker.build_idet_args`/`parse_idet_output`, ~20s sample) and flips
+  Deinterlace on the *individual file* on or off once it lands — a real
+  override in both directions, not a one-way ratchet, so a progressive file
+  added after an interlaced one doesn't inherit a stale "on." Each row also
+  picks up a status icon once a run starts (▶ encoding, ✓ done, ⚠ failed —
+  a failed row's tooltip holds the failure reason), and a finished row gets
   its result appended: `movie.mkv [...]  →  301.1MB (73% smaller)`.
-- **Apply Settings to Selected** — every control above is only the
-  *default* baked into a file the moment it's added to the queue. To make
-  one queued file different, select it, change the controls, click this.
-  There's no per-row editable table — deliberately, to keep the main
-  controls to one place. Add/Remove/Clear/Apply (and reordering) are all
-  disabled for the duration of a run (`_set_queue_editable`) —
+- **Selecting a row edits it live** — every control above is only the
+  *default* baked into a file the moment it's added. Select one or more
+  queued rows and the controls populate from the first one; change any
+  control from there and it applies to every selected row immediately —
+  no separate "Apply" step. (`_on_queue_selection_changed` populates
+  controls from a selection; `_sync_settings_to_selected_queue_items`,
+  reached through `_on_control_changed`, pushes control changes back out.
+  `_syncing_controls_from_selection` guards the loop between them — without
+  it, merely *selecting* several differently-configured rows would
+  silently homogenize them to the first one's settings before any control
+  was even touched.) Add/Remove/Clear (and reordering, and selection-edits)
+  are all disabled for the duration of a run (`_set_queue_editable`) —
   `TranscodeQueue.start()` snapshots the job list once, so editing the
   visible queue after Start can't affect what's actually running; it can
-  only make the list lie about it.
+  only make the list lie about it, or (for selection-edits specifically)
+  overwrite a finished row's now-historical settings.
 - **Clear Queue** asks for confirmation first (skipped entirely if the
-  queue is already empty) — it can discard real per-file setup done via
-  Apply Settings to Selected, so it gets the same treatment Delete Preset
-  already had.
+  queue is already empty) — it can discard real per-file setup, so it
+  gets the same treatment Delete Preset already had.
 - **Output folder** — deliberately *not* the first thing in the window; it's
   a per-run detail, so it sits right next to Start, where it's used.
 - **Open** — opens the current output folder in the desktop file manager.
@@ -267,14 +279,20 @@ offscreen platform.
 
 ## Known gaps
 
-- Deinterlace is manual-only, not auto-detected. `ffmpeg -vf idet` (see
-  Deinterlace above) is a real, cheap-ish per-file check that could drive
-  this automatically; not built because it costs a decode-only pre-pass
-  per file (roughly proportional to however much of the file gets
-  sampled) even for files that turn out not to need it, and a
-  sampled-region check can misjudge a file that's only partially
-  interlaced. Worth adding as an explicit "Auto-detect" mode alongside
-  the current on/off if it comes up again.
+- Deinterlace auto-detect samples ~20s per file, not the whole thing — a
+  file that's only partially interlaced (spliced from multiple sources)
+  can be misjudged depending on which part gets sampled. Also: the sample
+  is a real decode-only ffmpeg pass per file, so it costs some CPU even for
+  files that turn out not to need it (async/non-blocking, so it doesn't
+  freeze the UI, but it's not free).
+
+  Testing note if you touch this: `ffmpeg -vf idet` itself false-positives
+  on bare `testsrc2` test patterns (confirmed: 100% TFF on a genuinely
+  progressive synthetic clip) — its high-frequency edges apparently read as
+  combing to idet's heuristic. `tests/test_main.py`'s
+  `_make_progressive_clip` works around this with a mild blur; don't swap
+  in a bare `testsrc2` source for a "confirmed progressive" fixture without
+  re-checking it against `idet` first.
 - `-compression_level 1` not A/B'd against remembered QSV output quality —
   try the range (1–7, lower = slower/better) if output doesn't match
   expectations.

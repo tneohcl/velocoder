@@ -305,6 +305,44 @@ class TestCommandPreview(unittest.TestCase):
         self.assertEqual(args[args.index("-c:a") + 1], "copy")
 
 
+class TestIdetHelpers(unittest.TestCase):
+    """Pure-logic tests for the auto-detect building blocks -- the real
+    end-to-end behavior (does detection actually flip the checkbox) is
+    covered in test_main.py, since it's GUI-driven async wiring."""
+
+    def test_build_idet_args_caps_sample_duration(self):
+        args = worker.build_idet_args(Path("in.mkv"), sample_seconds=15)
+        self.assertIn("-t", args)
+        self.assertEqual(args[args.index("-t") + 1], "15")
+        self.assertIn("idet", args[args.index("-vf") + 1])
+
+    def test_parse_idet_output_all_interlaced(self):
+        stderr = "[Parsed_idet_0] Multi frame detection: TFF:   100 BFF:     0 Progressive:     0 Undetermined:     0\n"
+        self.assertEqual(worker.parse_idet_output(stderr), 1.0)
+
+    def test_parse_idet_output_all_progressive(self):
+        stderr = "[Parsed_idet_0] Multi frame detection: TFF:     0 BFF:     0 Progressive:   100 Undetermined:     0\n"
+        self.assertEqual(worker.parse_idet_output(stderr), 0.0)
+
+    def test_parse_idet_output_mixed(self):
+        stderr = "[Parsed_idet_0] Multi frame detection: TFF:    30 BFF:    20 Progressive:    50 Undetermined:     0\n"
+        self.assertEqual(worker.parse_idet_output(stderr), 0.5)
+
+    def test_parse_idet_output_uses_last_line_not_first(self):
+        # idet logs one line per filter instance in the graph; the final one
+        # is the real per-stream summary (matches how the real ffmpeg -vf
+        # idet output looks -- see the docstring on _detect_interlace_fraction
+        # above for why this matters).
+        stderr = (
+            "Multi frame detection: TFF:     0 BFF:     0 Progressive:     0 Undetermined:     0\n"
+            "Multi frame detection: TFF:   100 BFF:     0 Progressive:     0 Undetermined:     0\n"
+        )
+        self.assertEqual(worker.parse_idet_output(stderr), 1.0)
+
+    def test_parse_idet_output_no_stats_returns_zero(self):
+        self.assertEqual(worker.parse_idet_output("ffmpeg: command not found\n"), 0.0)
+
+
 class TestNonMatchingAspectRatio(unittest.TestCase):
     """A source whose aspect ratio doesn't exactly match the target box must
     still produce even dimensions -- 4:2:0 formats reject odd ones outright."""
@@ -359,24 +397,24 @@ class TestNonMatchingAspectRatio(unittest.TestCase):
         self.assertEqual(height % 2, 0)
 
 
-def _detect_interlace_fraction(path: Path) -> float:
+def _detect_interlace_fraction(path: Path, sample_seconds: float = 9999) -> float:
     """Fraction of frames ffmpeg's idet filter classifies as interlaced
     (TFF+BFF) rather than progressive. The real ground-truth check used
     throughout this suite -- container-level progressive/interlaced flags
     are frequently wrong (this feature exists because of exactly that, on a
-    real user file: tagged yuv420p(progressive), 100% TFF by idet)."""
+    real user file: tagged yuv420p(progressive), 100% TFF by idet).
+
+    Reuses worker.parse_idet_output for the parsing itself -- this is a test
+    helper for checking *outputs of an encode*, not the same job as
+    worker.build_idet_args/parse_idet_output (which drive the GUI's
+    pre-encode auto-detect), but the underlying idet-output parsing is
+    identical and shouldn't be maintained in two places.
+    """
     result = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-i", str(path), "-vf", "idet", "-f", "null", "-"],
+        worker.build_idet_args(path, sample_seconds=sample_seconds),
         capture_output=True, text=True, timeout=30,
     )
-    # idet logs one "Multi frame detection" line per filter instance touched;
-    # the real per-stream stats are the last one in stderr.
-    lines = [ln for ln in result.stderr.splitlines() if "Multi frame detection" in ln]
-    tff = int(lines[-1].split("TFF:")[1].split()[0])
-    bff = int(lines[-1].split("BFF:")[1].split()[0])
-    progressive = int(lines[-1].split("Progressive:")[1].split()[0])
-    total = tff + bff + progressive
-    return (tff + bff) / total if total else 0.0
+    return worker.parse_idet_output(result.stderr)
 
 
 class TestDeinterlace(unittest.TestCase):

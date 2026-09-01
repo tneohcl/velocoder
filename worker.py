@@ -14,6 +14,13 @@ INTEL_VENDOR_ID = "0x8086"
 BITRATE_RC_MODES = {"VBR", "bitrate"}
 _OUT_TIME_RE = re.compile(r"^out_time=(\d+):(\d+):(\d+)\.(\d+)$")
 
+# Fraction of sampled frames idet must classify as interlaced (TFF+BFF) for
+# auto-detect to enable deinterlacing. Both real-world cases seen so far
+# (see README's Deinterlace section) came back unambiguous -- 100% either
+# way, no messy middle ground -- so this doesn't need to be finely tuned.
+INTERLACE_DETECT_THRESHOLD = 0.5
+INTERLACE_DETECT_SAMPLE_SECONDS = 20
+
 _render_node_cache: dict[str, str] = {}
 
 
@@ -63,6 +70,36 @@ def probe_audio_codec(path: Path, track_index: int = 0) -> str | None:
     )
     codec = result.stdout.strip()
     return codec or None
+
+
+def build_idet_args(input_path: Path, sample_seconds: float = INTERLACE_DETECT_SAMPLE_SECONDS) -> list[str]:
+    """ffmpeg argv for a decode-only interlace-detection sample. Container
+    progressive/interlaced flags are frequently wrong (see README's
+    Deinterlace section for a real example: tagged progressive, 100%
+    TFF-interlaced by actual pixel content), so this checks real frames
+    rather than trusting metadata."""
+    return [
+        "ffmpeg", "-hide_banner", "-t", str(sample_seconds),
+        "-i", str(input_path), "-vf", "idet", "-an", "-f", "null", "-",
+    ]
+
+
+def parse_idet_output(stderr_text: str) -> float:
+    """Fraction of sampled frames idet's final "Multi frame detection" line
+    classifies as interlaced (TFF+BFF) rather than progressive. 0.0 if the
+    text has no usable stats (e.g. the process was killed before finishing)."""
+    lines = [ln for ln in stderr_text.splitlines() if "Multi frame detection" in ln]
+    if not lines:
+        return 0.0
+    last = lines[-1]
+    try:
+        tff = int(last.split("TFF:")[1].split()[0])
+        bff = int(last.split("BFF:")[1].split()[0])
+        progressive = int(last.split("Progressive:")[1].split()[0])
+    except (IndexError, ValueError):
+        return 0.0
+    total = tff + bff + progressive
+    return (tff + bff) / total if total else 0.0
 
 
 def build_args(

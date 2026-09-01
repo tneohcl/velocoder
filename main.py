@@ -3,7 +3,7 @@
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl, QSettings
+from PySide6.QtCore import Qt, QUrl, QSettings, QProcess
 from PySide6.QtGui import QDesktopServices, QFont, QIcon, QPainter, QPalette
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
@@ -79,6 +79,9 @@ class MainWindow(QMainWindow):
         self._loaded_preset_settings: dict | None = None
         self._running_items: list[QListWidgetItem] = []
         self._current_running_item: QListWidgetItem | None = None
+        self._syncing_controls_from_selection = False
+        self._queue_editable = True
+        self._detection_processes: list[QProcess] = []  # keep references alive; Qt won't
         self.output_dir = Path.home() / "Videos" / "transcoded"
         self._qsettings = QSettings("TITAN-i", "Transcoder")
 
@@ -231,7 +234,7 @@ class MainWindow(QMainWindow):
         self.bitrate_spin.setRange(200, 50000)
         self.bitrate_spin.setSingleStep(100)
         self.bitrate_spin.setSuffix(" kbps")
-        self.bitrate_spin.valueChanged.connect(self._update_command_preview)
+        self.bitrate_spin.valueChanged.connect(self._on_control_changed)
         quality_row.addWidget(self.quality_slider, 1)
         quality_row.addWidget(self.quality_label)
         quality_row.addWidget(self.bitrate_spin, 1)
@@ -245,7 +248,7 @@ class MainWindow(QMainWindow):
         self.speed_combo = QComboBox()
         self.speed_combo.addItems(X265_PRESETS)
         self.speed_combo.setCurrentText("medium")
-        self.speed_combo.currentIndexChanged.connect(self._update_command_preview)
+        self.speed_combo.currentIndexChanged.connect(self._on_control_changed)
         speed_row.addWidget(self.speed_slider, 1)
         speed_row.addWidget(self.speed_label)
         speed_row.addWidget(self.speed_combo, 1)
@@ -254,12 +257,12 @@ class MainWindow(QMainWindow):
         self.bitdepth_combo = QComboBox()
         self.bitdepth_combo.addItems(["8-bit", "10-bit"])
         self.bitdepth_combo.setCurrentText("10-bit")
-        self.bitdepth_combo.currentIndexChanged.connect(self._update_command_preview)
+        self.bitdepth_combo.currentIndexChanged.connect(self._on_control_changed)
         form.addRow("Bit depth:", self.bitdepth_combo)
 
         self.tune_combo = QComboBox()
         self.tune_combo.addItems(X265_TUNES)
-        self.tune_combo.currentIndexChanged.connect(self._update_command_preview)
+        self.tune_combo.currentIndexChanged.connect(self._on_control_changed)
         form.addRow("Tune (x265 only):", self.tune_combo)
 
         self.deinterlace_check = QCheckBox("Deinterlace (interlaced or telecined source)")
@@ -268,7 +271,7 @@ class MainWindow(QMainWindow):
             "especially on camcorder-sourced footage -- this isn't auto-detected,\n"
             "turn it on if the output shows combing/interlacing artifacts."
         )
-        self.deinterlace_check.stateChanged.connect(self._update_command_preview)
+        self.deinterlace_check.stateChanged.connect(self._on_control_changed)
         form.addRow("", self.deinterlace_check)
 
         outer.addWidget(encoding_group)
@@ -280,12 +283,12 @@ class MainWindow(QMainWindow):
         for r in RESOLUTIONS:
             self.res_combo.addItem(r["label"])
         self.res_combo.setCurrentIndex(2)  # 720p
-        self.res_combo.currentIndexChanged.connect(self._update_command_preview)
+        self.res_combo.currentIndexChanged.connect(self._on_control_changed)
         out_form.addRow("Resolution:", self.res_combo)
 
         self.container_combo = QComboBox()
         self.container_combo.addItems(CONTAINERS)
-        self.container_combo.currentIndexChanged.connect(self._update_command_preview)
+        self.container_combo.currentIndexChanged.connect(self._on_control_changed)
         out_form.addRow("Container:", self.container_combo)
 
         outer.addWidget(output_group)
@@ -300,18 +303,18 @@ class MainWindow(QMainWindow):
 
         self.audio_combo = QComboBox()
         self.audio_combo.addItems(AUDIO_TRACK_LABELS)
-        self.audio_combo.currentIndexChanged.connect(self._update_command_preview)
+        self.audio_combo.currentIndexChanged.connect(self._on_control_changed)
         form.addRow("Audio track:", self.audio_combo)
 
         self.audio_copy_check = QCheckBox("Copy audio if compatible (aac/ac3/eac3)")
         self.audio_copy_check.setChecked(True)
-        self.audio_copy_check.stateChanged.connect(self._update_command_preview)
+        self.audio_copy_check.stateChanged.connect(self._on_control_changed)
         form.addRow("", self.audio_copy_check)
 
         self.audio_bitrate_combo = QComboBox()
         self.audio_bitrate_combo.addItems(AUDIO_BITRATES)
         self.audio_bitrate_combo.setCurrentText("160k")
-        self.audio_bitrate_combo.currentIndexChanged.connect(self._update_command_preview)
+        self.audio_bitrate_combo.currentIndexChanged.connect(self._on_control_changed)
         form.addRow("Audio bitrate (if transcoded):", self.audio_bitrate_combo)
 
         outer.addWidget(group)
@@ -323,8 +326,11 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN)
         layout.setSpacing(PANEL_SPACING)
 
-        layout.addWidget(QLabel("Queue (drag files here, or use Add Files):"))
+        layout.addWidget(QLabel(
+            "Queue (drag files here, or use Add Files — select a row to edit its settings live):"
+        ))
         self.queue_list = DropListWidget(self.add_files)
+        self.queue_list.itemSelectionChanged.connect(self._on_queue_selection_changed)
         layout.addWidget(self.queue_list, 1)
 
         q_btns = QHBoxLayout()
@@ -334,12 +340,9 @@ class MainWindow(QMainWindow):
         self.remove_btn.clicked.connect(self._remove_selected)
         self.clear_btn = QPushButton("Clear Queue")
         self.clear_btn.clicked.connect(self._clear_queue)
-        self.apply_btn = QPushButton("Apply Settings to Selected")
-        self.apply_btn.clicked.connect(self._apply_to_selected)
         q_btns.addWidget(self.add_files_btn)
         q_btns.addWidget(self.remove_btn)
         q_btns.addWidget(self.clear_btn)
-        q_btns.addWidget(self.apply_btn)
         q_btns.addStretch()
         layout.addLayout(q_btns)
 
@@ -433,16 +436,53 @@ class MainWindow(QMainWindow):
             self.quality_slider.blockSignals(False)
             self._on_quality_changed()
         else:
-            self._update_command_preview()
+            self._on_control_changed()
 
     def _on_quality_changed(self):
         rc_mode = self.rc_mode_combo.currentData()
         self.quality_label.setText(f"{self.quality_slider.value()} ({rc_mode})")
-        self._update_command_preview()
+        self._on_control_changed()
 
     def _on_speed_slider_changed(self):
         self.speed_label.setText(f"{self.speed_slider.value()} (compression_level)")
+        self._on_control_changed()
+
+    def _on_control_changed(self):
+        """Fired by real user interaction with any settings control (not by
+        _apply_settings_to_controls populating widgets from a preset or a
+        queue selection -- _sync_settings_to_selected_queue_items guards
+        against that itself)."""
         self._update_command_preview()
+        self._sync_settings_to_selected_queue_items()
+
+    def _sync_settings_to_selected_queue_items(self):
+        # Selecting a queue item to inspect its settings (see
+        # _on_queue_selection_changed) populates these same controls, which
+        # would otherwise loop right back and stomp every other selected
+        # item's settings with the first one's, just from clicking to select.
+        if self._syncing_controls_from_selection or not self._queue_editable:
+            return
+        settings = self._current_settings()
+        for item in self.queue_list.selectedItems():
+            job = item.data(Qt.UserRole)
+            job.update(settings)
+            item.setData(Qt.UserRole, job)
+            item.setText(self._format_item_text(job))
+
+    def _on_queue_selection_changed(self):
+        selected = self.queue_list.selectedItems()
+        if not selected:
+            return
+        # Multiple items selected with different settings: show the first
+        # one's. Any control change from here applies to all of them --
+        # this is the direct-manipulation replacement for the old "Apply
+        # Settings to Selected" button.
+        job = selected[0].data(Qt.UserRole)
+        self._syncing_controls_from_selection = True
+        try:
+            self._apply_settings_to_controls(job)
+        finally:
+            self._syncing_controls_from_selection = False
 
     def _update_command_preview(self):
         if not hasattr(self, "command_preview"):
@@ -649,7 +689,48 @@ class MainWindow(QMainWindow):
                 item = QListWidgetItem(self._format_item_text(job))
                 item.setData(Qt.UserRole, job)
                 self.queue_list.addItem(item)
+                self._start_interlace_detection(item, path)
         self._update_command_preview()  # may now reflect a real queued file's audio
+
+    def _start_interlace_detection(self, item: QListWidgetItem, path: Path):
+        # Runs async (real files can take tens of seconds to sample) --
+        # never blocks adding files, the item just updates once this lands.
+        args = worker.build_idet_args(path)
+        proc = QProcess(self)
+        proc.setProgram(args[0])
+        proc.setArguments(args[1:])
+        stderr_chunks: list[str] = []
+        proc.readyReadStandardError.connect(
+            lambda: stderr_chunks.append(bytes(proc.readAllStandardError()).decode(errors="replace"))
+        )
+        proc.finished.connect(lambda code, status: self._on_interlace_detected(item, "".join(stderr_chunks)))
+        self._detection_processes.append(proc)
+        proc.start()
+
+    def _on_interlace_detected(self, item: QListWidgetItem, stderr_text: str):
+        self._detection_processes = [p for p in self._detection_processes if p.state() != QProcess.NotRunning]
+        try:
+            job = item.data(Qt.UserRole)
+        except RuntimeError:
+            return  # item's C++ object was deleted (e.g. Clear Queue) before detection finished
+        if job is None:
+            return
+        fraction = worker.parse_idet_output(stderr_text)
+        job["deinterlace"] = fraction > worker.INTERLACE_DETECT_THRESHOLD
+        item.setData(Qt.UserRole, job)
+        item.setText(self._format_item_text(job))
+        # Reflect it in the checkbox if this item happens to be selected, but
+        # guarded: without this, updating just this one item's checkbox would
+        # cascade into _sync_settings_to_selected_queue_items and stamp this
+        # single file's detected value onto every OTHER currently-selected
+        # item too, if more than one happens to be selected at that moment.
+        selected = self.queue_list.selectedItems()
+        if selected == [item]:
+            self._syncing_controls_from_selection = True
+            try:
+                self.deinterlace_check.setChecked(job["deinterlace"])
+            finally:
+                self._syncing_controls_from_selection = False
 
     def _pick_files(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -683,14 +764,6 @@ class MainWindow(QMainWindow):
         self.queue_list.clear()
         self._update_command_preview()
 
-    def _apply_to_selected(self):
-        settings = self._current_settings()
-        for item in self.queue_list.selectedItems():
-            job = item.data(Qt.UserRole)
-            job.update(settings)
-            item.setData(Qt.UserRole, job)
-            item.setText(self._format_item_text(job))
-
     # --- run control ---
     def _start(self):
         jobs = [self.queue_list.item(i).data(Qt.UserRole) for i in range(self.queue_list.count())]
@@ -719,11 +792,14 @@ class MainWindow(QMainWindow):
         # TranscodeQueue.start() snapshots the job list once; editing the
         # visible queue after that point can't affect jobs already running
         # or already skipped, so it just makes the list lie about what's
-        # actually executing. Lock it for the duration of a run.
+        # actually executing. Lock it for the duration of a run -- this also
+        # gates live selection-editing (_sync_settings_to_selected_queue_items),
+        # so selecting an already-finished row to check its tooltip during a
+        # run can't accidentally overwrite its (now purely historical) settings.
+        self._queue_editable = editable
         self.add_files_btn.setEnabled(editable)
         self.remove_btn.setEnabled(editable)
         self.clear_btn.setEnabled(editable)
-        self.apply_btn.setEnabled(editable)
 
     # --- queue signal handlers ---
     def _on_job_started(self, path: str, index: int, total: int):

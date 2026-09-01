@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Generated runtime state, not source -- the user's own saved presets.
+user_presets.json

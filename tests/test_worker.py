@@ -9,6 +9,7 @@ accepts, and only real hardware/driver combinations can confirm the VAAPI
 flags this app relies on (e.g. -rc_mode CQP needing -qp, not
 -global_quality) are actually valid, not just plausible-looking.
 """
+import json
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,22 @@ from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer  # noqa: E402
 _app = QCoreApplication.instance() or QCoreApplication([])
 
 HAS_VAAPI = Path("/dev/dri/by-path").exists()
+
+
+def _has_vendor_render_node(vendor_id: str) -> bool:
+    try:
+        worker.find_render_node(vendor_id)
+        return True
+    except RuntimeError:
+        return False
+
+
+# Distinct from HAS_VAAPI (which only checks /dev/dri/by-path exists at all,
+# true whenever *any* render node is present) -- this machine has both an
+# Intel iGPU and a real discrete AMD GPU (confirmed via vainfo + real
+# encodes, see constants.RC_MODES's comment), but a machine with only one
+# or the other shouldn't spuriously run/skip the wrong vendor's tests.
+HAS_AMD_VAAPI = _has_vendor_render_node(worker.AMD_VENDOR_ID)
 
 
 def _run_queue_and_collect(queue: "worker.TranscodeQueue", jobs, output_dir, timeout_ms=15000):
@@ -157,6 +174,22 @@ class TestBuildArgsVaapi(ClipTestCase):
         self.assertIn("-vaapi_device", args)
         self.assertEqual(args[args.index("-c:v") + 1], "hevc_vaapi")
 
+    def test_sets_noautoscale(self):
+        # A source with no container-level color metadata (confirmed on a
+        # real ~2-hour file: ffprobe showed color_range/space/transfer/
+        # primaries all "unknown") can signal a genuine mid-stream
+        # parameter change as ffmpeg decodes it -- when that happens,
+        # ffmpeg's default auto-inserted scale filter can't bridge a vaapi
+        # hardware surface and crashes the whole job ("Impossible to
+        # convert between the formats supported by ... 'auto_scale_1'").
+        # Reproduced against that real file, at the exact same timestamp,
+        # every time; -noautoscale eliminates the auto-insert and the same
+        # reconfiguration then succeeds instead (confirmed against the
+        # same file: the "Reconfiguring filter graph" log line still
+        # appears, encoding just continues past it now).
+        args = worker.build_args(vaapi_settings(), self.clip, self.out_path)
+        self.assertIn("-noautoscale", args)
+
 
 class TestBuildArgsX265(ClipTestCase):
     def test_crf_uses_crf_flag(self):
@@ -191,6 +224,15 @@ class TestBuildArgsX265(ClipTestCase):
     def test_no_vaapi_device_for_cpu_encoder(self):
         args = worker.build_args(x265_settings(), self.clip, self.out_path)
         self.assertNotIn("-vaapi_device", args)
+
+    def test_no_noautoscale_for_cpu_encoder(self):
+        # -noautoscale (see TestBuildArgsVaapi.test_sets_noautoscale) works
+        # around a vaapi-hardware-surface-specific ffmpeg failure -- x265
+        # has no such surface in its pipeline at all, so there's nothing
+        # here for the flag to fix, and it shouldn't carry an untested
+        # behavior change for a path that was never broken.
+        args = worker.build_args(x265_settings(), self.clip, self.out_path)
+        self.assertNotIn("-noautoscale", args)
 
 
 class TestSizeToBitrate(unittest.TestCase):
@@ -387,6 +429,77 @@ class TestIdetHelpers(unittest.TestCase):
 
     def test_parse_idet_output_no_stats_returns_zero(self):
         self.assertEqual(worker.parse_idet_output("ffmpeg: command not found\n"), 0.0)
+
+
+class TestSourceProbeHelpers(unittest.TestCase):
+    """Pure-logic tests for the queue table's source-metadata probe -- the
+    real end-to-end behavior (does a queued row's columns actually fill in)
+    is covered in test_main.py, since it's GUI-driven async wiring. Same
+    split as TestIdetHelpers above."""
+
+    def test_build_probe_args_is_header_only(self):
+        args = worker.build_probe_args(Path("in.mkv"))
+        self.assertNotIn("-vf", args)  # no decoding -- contrast build_idet_args
+        self.assertIn("-show_entries", args)
+        self.assertIn("in.mkv", args)
+
+    def test_parse_probe_output_full_fixture(self):
+        # ffprobe's real -of json output reports numeric fields (duration,
+        # here) as JSON strings, not numbers -- matched deliberately.
+        stdout = json.dumps({
+            "format": {"duration": "125.5"},
+            "streams": [
+                {"codec_type": "video", "codec_name": "hevc", "width": 1920,
+                 "height": 1080, "r_frame_rate": "24000/1001"},
+                {"codec_type": "audio", "codec_name": "aac", "channels": 6},
+                {"codec_type": "audio", "codec_name": "ac3", "channels": 2},
+            ],
+        })
+        info = worker.parse_probe_output(stdout)
+        self.assertEqual(info["duration"], 125.5)
+        self.assertEqual(info["video_codec"], "hevc")
+        self.assertEqual(info["width"], 1920)
+        self.assertEqual(info["height"], 1080)
+        self.assertAlmostEqual(info["frame_rate"], 23.976, places=2)
+        self.assertEqual(info["audio_codec"], "aac")  # first audio stream, not the last
+        self.assertEqual(info["audio_channels"], 6)
+        self.assertEqual(info["audio_track_count"], 2)
+
+    def test_parse_probe_output_no_video_stream(self):
+        stdout = json.dumps({
+            "format": {"duration": "10"},
+            "streams": [{"codec_type": "audio", "codec_name": "mp3", "channels": 2}],
+        })
+        info = worker.parse_probe_output(stdout)
+        self.assertNotIn("video_codec", info)
+        self.assertEqual(info["audio_codec"], "mp3")
+
+    def test_parse_probe_output_no_audio_stream(self):
+        stdout = json.dumps({
+            "format": {"duration": "10"},
+            "streams": [{"codec_type": "video", "codec_name": "h264", "width": 640,
+                         "height": 480, "r_frame_rate": "30/1"}],
+        })
+        info = worker.parse_probe_output(stdout)
+        self.assertNotIn("audio_codec", info)
+        self.assertEqual(info["video_codec"], "h264")
+
+    def test_parse_probe_output_malformed_json_returns_empty(self):
+        self.assertEqual(worker.parse_probe_output("not json"), {})
+
+    def test_parse_probe_output_empty_string_returns_empty(self):
+        self.assertEqual(worker.parse_probe_output(""), {})
+
+    def test_frame_rate_zero_denominator_is_zero_not_a_crash(self):
+        # A still-image "stream" some containers report alongside the real
+        # video track -- r_frame_rate of "0/0" must not raise ZeroDivisionError.
+        stdout = json.dumps({
+            "format": {},
+            "streams": [{"codec_type": "video", "codec_name": "mjpeg", "width": 100,
+                         "height": 100, "r_frame_rate": "0/0"}],
+        })
+        info = worker.parse_probe_output(stdout)
+        self.assertEqual(info["frame_rate"], 0.0)
 
 
 class TestNonMatchingAspectRatio(unittest.TestCase):
@@ -636,6 +749,42 @@ class TestFindRenderNode(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             worker.find_render_node("0xdead")
 
+    @unittest.skipUnless(HAS_AMD_VAAPI, "no AMD render node on this machine")
+    def test_resolves_amd_node_when_present(self):
+        node = worker.find_render_node(worker.AMD_VENDOR_ID)
+        self.assertTrue(Path(node).exists())
+
+    @unittest.skipUnless(HAS_VAAPI and HAS_AMD_VAAPI, "needs both vendors present")
+    def test_intel_and_amd_resolve_to_different_nodes(self):
+        self.assertNotEqual(
+            worker.find_render_node(worker.INTEL_VENDOR_ID),
+            worker.find_render_node(worker.AMD_VENDOR_ID),
+        )
+
+
+class TestGpuVendorSelection(ClipTestCase):
+    """gpu_vendor picks which GPU's render node build_args opens -- separate
+    from HAS_AMD_VAAPI-gated tests below since these only check which flag
+    value gets used, not that the chosen device actually works."""
+
+    def test_defaults_to_intel_when_absent(self):
+        # Presets/queue jobs saved before gpu_vendor existed have no such
+        # key -- must still resolve to the same device Intel-only builds
+        # of this app always used, not raise a KeyError.
+        settings = vaapi_settings()
+        self.assertNotIn("gpu_vendor", settings)
+        with patch.object(worker, "find_render_node") as mock_find:
+            mock_find.return_value = "/dev/dri/renderD999"
+            worker.build_args(settings, self.clip, self.out_path)
+        mock_find.assert_called_once_with(worker.INTEL_VENDOR_ID)
+
+    def test_amd_vendor_opens_the_amd_device(self):
+        settings = vaapi_settings(gpu_vendor="amd", rc_mode="CQP")
+        with patch.object(worker, "find_render_node") as mock_find:
+            mock_find.return_value = "/dev/dri/renderD999"
+            worker.build_args(settings, self.clip, self.out_path)
+        mock_find.assert_called_once_with(worker.AMD_VENDOR_ID)
+
 
 class TestIntegrationRealEncode(unittest.TestCase):
     """Actually run ffmpeg end to end -- the part a pure arg-list check can't catch."""
@@ -657,6 +806,27 @@ class TestIntegrationRealEncode(unittest.TestCase):
         # not an upscale and not a naive same-aspect assumption.
         out = self.tmpdir / "vaapi_out.mp4"
         args = worker.build_args(vaapi_settings(width=320, height=320), self.clip, out)
+        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_name,width,height",
+             "-of", "csv=p=0", str(out)],
+            capture_output=True, text=True,
+        )
+        self.assertIn("hevc", probe.stdout)
+        self.assertIn("320,180", probe.stdout.replace("\n", ","))
+
+    @unittest.skipUnless(HAS_AMD_VAAPI, "no AMD render node on this machine")
+    def test_amd_vaapi_encode_runs_and_produces_correct_output(self):
+        # CQP, not ICQ -- confirmed by actually running it that this AMD
+        # driver rejects ICQ outright ("Driver does not support ICQ RC
+        # mode"), unlike Intel's iHD driver which is what the rest of this
+        # suite's VAAPI tests exercise.
+        out = self.tmpdir / "amd_vaapi_out.mp4"
+        args = worker.build_args(
+            vaapi_settings(gpu_vendor="amd", rc_mode="CQP", width=320, height=320),
+            self.clip, out,
+        )
         result = subprocess.run(args, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
         probe = subprocess.run(

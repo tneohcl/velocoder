@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,6 +26,20 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 _app = QApplication.instance() or QApplication([])
 
 import main  # noqa: E402
+
+
+@contextmanager
+def _empty_qsettings():
+    """Patches QSettings.value at the class level to simulate a fresh
+    config store with nothing persisted yet. A bare MainWindow() otherwise
+    reads whatever this machine's real ~/.config/TITAN-i/Transcoder.conf
+    happens to have -- real ambient state (e.g. the user actually expanded
+    Effective Command, or picked a theme, while using the real app) that
+    has nothing to do with what a test asserting a *default* means."""
+    def _empty_store(key, default=None):
+        return default
+    with patch.object(main.QSettings, "value", side_effect=_empty_store):
+        yield
 
 
 def _make_clip(path: Path, audio_codec: str):
@@ -86,15 +101,14 @@ def _wait_for_detection(window, timeout_ms=15000):
     timeout_timer.stop()
 
 
-def _add_dummy_item(window, name: str, **overrides) -> "main.QListWidgetItem":
+def _add_dummy_item(window, name: str, **overrides) -> "main.QTreeWidgetItem":
     """Add a queue item bypassing add_files() -- no on-disk file needed
     (add_files requires path.is_file()) and no real detection subprocess
     spawned, for tests that only care about the selection/settings sync."""
     job = {"path": Path(name), **window._current_settings()}
     job.update(overrides)
-    item = main.QListWidgetItem(window._format_item_text(job))
-    item.setData(main.Qt.UserRole, job)
-    window.queue_list.addItem(item)
+    item = window._make_queue_row(job)
+    window.queue_list.addTopLevelItem(item)
     return item
 
 
@@ -116,6 +130,138 @@ class TestStylesheetLoading(unittest.TestCase):
         app = _FakeApp()
         main._load_stylesheet(app, style_path=REPO_ROOT / "style.qss")
         self.assertIn("QPushButton", app.received)
+
+    def test_every_token_gets_substituted(self):
+        # A leftover "$TOKEN" is exactly the failure mode a naive
+        # shortest-match-first replace() would hit for tokens that are a
+        # literal prefix of another (e.g. $BG_CONTROL / $BG_CONTROL_HOVER)
+        # -- see _load_stylesheet's own comment on why tokens are sorted
+        # longest-first before substitution.
+        app = _FakeApp()
+        main._load_stylesheet(app, "dark", style_path=REPO_ROOT / "style.qss")
+        self.assertNotIn("$", app.received)
+
+    def test_dark_and_light_produce_different_output(self):
+        dark_app, light_app = _FakeApp(), _FakeApp()
+        main._load_stylesheet(dark_app, "dark", style_path=REPO_ROOT / "style.qss")
+        main._load_stylesheet(light_app, "light", style_path=REPO_ROOT / "style.qss")
+        self.assertNotEqual(dark_app.received, light_app.received)
+        self.assertIn(main.themes.DARK["ACCENT"], dark_app.received)
+        self.assertIn(main.themes.LIGHT["ACCENT"], light_app.received)
+
+    def test_unknown_theme_name_falls_back_to_dark(self):
+        app = _FakeApp()
+        main._load_stylesheet(app, "not-a-real-theme", style_path=REPO_ROOT / "style.qss")
+        self.assertIn(main.themes.DARK["ACCENT"], app.received)
+
+
+class TestResolveTheme(unittest.TestCase):
+    def test_dark_and_light_pass_through_unchanged(self):
+        self.assertEqual(main._resolve_theme("dark"), "dark")
+        self.assertEqual(main._resolve_theme("light"), "light")
+
+    def test_system_resolves_light(self):
+        with patch.object(main.QApplication, "instance") as mock_instance:
+            mock_instance.return_value.styleHints.return_value.colorScheme.return_value = main.Qt.ColorScheme.Light
+            self.assertEqual(main._resolve_theme("system"), "light")
+
+    def test_system_resolves_dark_for_anything_else(self):
+        # Covers both a real Dark preference and Unknown (a platform that
+        # doesn't expose one, or -- confirmed directly -- this app's own
+        # offscreen/headless test environment) -- either way, falls back to
+        # dark rather than erroring or guessing.
+        for scheme in (main.Qt.ColorScheme.Dark, main.Qt.ColorScheme.Unknown):
+            with patch.object(main.QApplication, "instance") as mock_instance:
+                mock_instance.return_value.styleHints.return_value.colorScheme.return_value = scheme
+                self.assertEqual(main._resolve_theme("system"), "dark")
+
+
+class TestThemeIntegration(unittest.TestCase):
+    def test_default_theme_choice_is_dark(self):
+        with _empty_qsettings():
+            window = main.MainWindow()
+        self.assertEqual(window._theme_choice, "dark")
+        self.assertEqual(window.theme_combo.currentData(), "dark")
+
+    def test_no_menu_bar(self):
+        # Theme picking moved to a footer combo (see the status-bar tests
+        # below) -- a whole menu bar for one three-item setting was more
+        # chrome than the setting warranted. Guards against it quietly
+        # coming back if this is touched again.
+        window = main.MainWindow()
+        self.assertEqual(window.menuBar().actions(), [])
+
+    def test_invalid_persisted_choice_falls_back_to_dark(self):
+        # __init__ applies this same guard to whatever QSettings hands back
+        # -- exercised directly against the real function here rather than
+        # via a real corrupted config file, since it's a pure function with
+        # nothing QSettings-specific about the fallback logic itself.
+        for bogus in (None, "", "not-a-theme", 42, "Dark"):  # case-sensitive too
+            self.assertEqual(main._validate_theme_choice(bogus), "dark")
+
+    def test_valid_choices_pass_through_unchanged(self):
+        for value in ("dark", "light", "system"):
+            self.assertEqual(main._validate_theme_choice(value), value)
+
+    def test_apply_theme_updates_choice_and_persists(self):
+        # Mocking setValue rather than using a real (even if scratch)
+        # QSettings avoids touching the filesystem at all for this --
+        # this only needs to confirm _apply_theme's two effects, not that
+        # QSettings itself round-trips a value, which every other persisted
+        # bit of window state in this app (geometry, splitter, collapsed
+        # sections) already relies on unverified at this level too.
+        window = main.MainWindow()
+        with patch.object(window._qsettings, "setValue") as mock_set:
+            window._apply_theme("light")
+        self.assertEqual(window._theme_choice, "light")
+        mock_set.assert_called_once_with("theme_choice", "light")
+
+    def test_system_theme_signal_only_reapplies_when_choice_is_system(self):
+        window = main.MainWindow()
+        window._theme_choice = "dark"
+        with patch.object(main, "_load_stylesheet") as mock_load:
+            window._on_system_theme_changed(main.Qt.ColorScheme.Light)
+            mock_load.assert_not_called()
+        window._theme_choice = "system"
+        with patch.object(main, "_load_stylesheet") as mock_load:
+            window._on_system_theme_changed(main.Qt.ColorScheme.Light)
+            mock_load.assert_called_once()
+
+    def test_footer_combo_reflects_persisted_choice(self):
+        # Exercised through real construction, not by poking _theme_choice
+        # after the fact -- the combo's initial selection is set once,
+        # during __init__, from whatever QSettings handed back.
+        def _fake_value(key, default=None):
+            return "light" if key == "theme_choice" else default
+        with patch.object(main.QSettings, "value", side_effect=_fake_value):
+            window = main.MainWindow()
+        self.assertEqual(window.theme_combo.currentData(), "light")
+
+    def test_selecting_the_combo_applies_the_theme(self):
+        # Constructed with an isolated (guaranteed-"dark") starting choice
+        # -- selecting "light" against this machine's real ambient choice
+        # would be a no-op (no currentIndexChanged, nothing to assert on)
+        # on whatever day that real choice already happens to be "light".
+        with _empty_qsettings():
+            window = main.MainWindow()
+        light_index = window.theme_combo.findData("light")
+        with patch.object(window._qsettings, "setValue"), \
+             patch.object(main, "_load_stylesheet") as mock_load:
+            window.theme_combo.setCurrentIndex(light_index)
+        self.assertEqual(window._theme_choice, "light")
+        mock_load.assert_called_once()
+
+    def test_selecting_the_combo_refreshes_save_delete_icons(self):
+        # _refresh_themed_icons re-reads the SVG for the new theme -- a
+        # stale icon object from construction time would otherwise keep
+        # showing the old theme's colors after switching.
+        with _empty_qsettings():
+            window = main.MainWindow()
+        light_index = window.theme_combo.findData("light")
+        with patch.object(window._qsettings, "setValue"):
+            with patch.object(window, "_refresh_themed_icons") as mock_refresh:
+                window.theme_combo.setCurrentIndex(light_index)
+        mock_refresh.assert_called_once()
 
 
 class TestStartupOrdering(unittest.TestCase):
@@ -173,7 +319,7 @@ class TestRateControlButtons(unittest.TestCase):
         window = main.MainWindow()
         window.show()
         window.encoder_combo.setCurrentText("CPU")
-        window.encoder_combo.setCurrentText("Hardware (iGPU)")
+        window.encoder_combo.setCurrentText("Intel (iGPU)")
         self.assertTrue(window.rc_advanced_btn.isVisible())
 
     def test_buttons_resync_to_combo_across_an_encoder_switch(self):
@@ -195,6 +341,28 @@ class TestRateControlButtons(unittest.TestCase):
         window.encoder_combo.setCurrentText("CPU")
         self.assertEqual(window.rc_mode_combo.currentData(), "CRF")
         self.assertTrue(window.rc_quality_btn.isChecked())
+
+
+class TestSpeedTierLabelVisibility(unittest.TestCase):
+    """speed_tier_label lives inside speed_group's QVBoxLayout (see
+    #fuzzyGroup in style.qss, grouping the Speed slider with its fuzzy
+    caption in one outlined box) -- switching it from setRowVisible to
+    plain setVisible when that box was introduced relies on QVBoxLayout
+    itself collapsing a hidden child's space, unlike the QFormLayout-row
+    case setRowVisible was originally written to work around."""
+
+    def test_hidden_for_x265(self):
+        window = main.MainWindow()
+        window.show()
+        window.encoder_combo.setCurrentText("CPU")
+        self.assertFalse(window.speed_tier_label.isVisible())
+
+    def test_visible_for_vaapi(self):
+        window = main.MainWindow()
+        window.show()
+        window.encoder_combo.setCurrentText("CPU")
+        window.encoder_combo.setCurrentText("Intel (iGPU)")
+        self.assertTrue(window.speed_tier_label.isVisible())
 
 
 class TestTargetSizeSettings(unittest.TestCase):
@@ -219,15 +387,6 @@ class TestTargetSizeSettings(unittest.TestCase):
         self.assertEqual(window.size_spin.value(), 2500)
         self.assertTrue(window.size_spin.isVisible())
         self.assertFalse(window.quality_slider.isVisible())
-
-    def test_format_item_text_shows_mb_not_kbps_for_size_mode(self):
-        window = main.MainWindow()
-        window.rc_filesize_btn.click()
-        window.size_spin.setValue(500)
-        job = {"path": Path("clip.mkv"), **window._current_settings()}
-        text = window._format_item_text(job)
-        self.assertIn("500MB", text)
-        self.assertNotIn("kbps", text)
 
 
 class TestSizeEstimateLabel(unittest.TestCase):
@@ -257,12 +416,19 @@ class TestSizeEstimateLabel(unittest.TestCase):
 
 class TestCollapsibleSections(unittest.TestCase):
     def test_effective_command_collapsed_by_default(self):
-        window = main.MainWindow()
+        with _empty_qsettings():
+            window = main.MainWindow()
         self.assertFalse(window._command_group.isChecked())
         self.assertFalse(window.command_preview.isVisible())
 
     def test_log_collapsed_by_default(self):
-        window = main.MainWindow()
+        # Passes today even without _empty_qsettings (this machine's real
+        # log_expanded happens to already be false), but that's luck, not
+        # correctness -- isolated the same way as the Effective Command
+        # test above so it can't start failing just because someone
+        # expanded Log for real while using the app.
+        with _empty_qsettings():
+            window = main.MainWindow()
         self.assertFalse(window._log_group.isChecked())
         self.assertFalse(window.log_view.isVisible())
 
@@ -272,15 +438,32 @@ class TestCollapsibleSections(unittest.TestCase):
         window._command_group.setChecked(True)
         self.assertTrue(window.command_preview.isVisible())
 
+    def test_title_text_shows_arrow_reflecting_state(self):
+        with _empty_qsettings():
+            window = main.MainWindow()
+        self.assertEqual(window._command_group.title(), "Effective Command  ▸")
+        window._command_group.setChecked(True)
+        self.assertEqual(window._command_group.title(), "Effective Command  ▾")
+
 
 class TestCommandPreviewErrorHandling(unittest.TestCase):
     def test_no_vaapi_device_shows_message_not_crash(self):
         window = main.MainWindow()
+        # Found by content, not a hardcoded index -- constants.ENCODERS'
+        # own order (CPU/Intel/AMD, matching the dropdown) isn't the same
+        # thing as "which one is VAAPI," and a previous version of this
+        # test hardcoding index 0 for "VAAPI HEVC" broke silently (still
+        # ran, just against the CPU encoder instead) the moment that order
+        # changed to put CPU first.
+        intel_index = next(
+            i for i, (encoder, vendor, _) in enumerate(main.ENCODERS)
+            if encoder == "hevc_vaapi" and vendor == "intel"
+        )
         with patch.object(
             main.worker, "find_render_node",
             side_effect=RuntimeError("no render node found"),
         ):
-            window.encoder_combo.setCurrentIndex(0)  # VAAPI HEVC -- triggers a rebuild + preview
+            window.encoder_combo.setCurrentIndex(intel_index)  # triggers a rebuild + preview
             window._update_command_preview()  # must not raise
         self.assertIn("preview unavailable", window.command_preview.toPlainText())
 
@@ -316,17 +499,17 @@ class TestCommandPreviewAudioAccuracy(unittest.TestCase):
 class TestClearQueueConfirmation(unittest.TestCase):
     def test_declining_confirmation_keeps_the_queue(self):
         window = main.MainWindow()
-        window.queue_list.addItem(main.QListWidgetItem("dummy"))
+        window.queue_list.addTopLevelItem(main.QTreeWidgetItem(["dummy"]))
         with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.No):
             window._clear_queue()
-        self.assertEqual(window.queue_list.count(), 1)
+        self.assertEqual(window.queue_list.topLevelItemCount(), 1)
 
     def test_confirming_clears_the_queue(self):
         window = main.MainWindow()
-        window.queue_list.addItem(main.QListWidgetItem("dummy"))
+        window.queue_list.addTopLevelItem(main.QTreeWidgetItem(["dummy"]))
         with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
             window._clear_queue()
-        self.assertEqual(window.queue_list.count(), 0)
+        self.assertEqual(window.queue_list.topLevelItemCount(), 0)
 
     def test_empty_queue_skips_the_dialog_entirely(self):
         window = main.MainWindow()
@@ -348,9 +531,9 @@ class TestResultSizeFormatting(unittest.TestCase):
             out = tmpdir / "out.mp4"
             src.write_bytes(b"x" * 1000)
             out.write_bytes(b"x" * 250)  # 75% smaller
-            item = main.QListWidgetItem("in.mkv")
+            item = main.QTreeWidgetItem()
             main.MainWindow._append_result_size(item, src, out)
-            self.assertIn("75% smaller", item.text())
+            self.assertIn("75% smaller", item.text(main.RESULT_COL))
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -361,42 +544,43 @@ class TestResultSizeFormatting(unittest.TestCase):
             out = tmpdir / "out.mp4"
             src.write_bytes(b"x" * 100)
             out.write_bytes(b"x" * 200)  # larger output (e.g. a tiny/simple source)
-            item = main.QListWidgetItem("in.mkv")
+            item = main.QTreeWidgetItem()
             main.MainWindow._append_result_size(item, src, out)
-            self.assertIn("larger", item.text())
+            self.assertIn("larger", item.text(main.RESULT_COL))
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_missing_output_file_does_not_crash(self):
-        item = main.QListWidgetItem("in.mkv")
+        item = main.QTreeWidgetItem()
         main.MainWindow._append_result_size(item, Path("/nonexistent/in.mkv"), Path("/nonexistent/out.mp4"))
-        self.assertEqual(item.text(), "in.mkv")  # left untouched
+        self.assertEqual(item.text(main.RESULT_COL), "")  # left untouched
 
 
 class TestPresetModifiedIndicator(unittest.TestCase):
-    # isVisible() reflects the whole ancestor chain, not just this widget's
-    # own setVisible() calls -- it's always False until the top-level window
-    # has been shown at least once (true even under the offscreen platform).
+    # A dynamic property on preset_combo itself (QSS: QComboBox[modified=
+    # "true"] recolors its text), not a separate "(modified)" label --
+    # that label's appearing/disappearing changed the preset row's width
+    # and visibly reflowed the window every time a control was touched
+    # (confirmed by screenshot). No window.show() needed here unlike most
+    # other visibility-flavored tests in this file: a plain widget property
+    # doesn't depend on the ancestor chain the way QWidget.isVisible() does.
 
-    def test_hidden_immediately_after_loading_a_preset(self):
+    def test_false_immediately_after_loading_a_preset(self):
         window = main.MainWindow()
-        window.show()
-        self.assertFalse(window.preset_modified_label.isVisible())
+        self.assertFalse(window.preset_combo.property("modified"))
 
-    def test_shown_after_changing_a_setting(self):
+    def test_true_after_changing_a_setting(self):
         window = main.MainWindow()
-        window.show()
         window.quality_slider.setValue(window.quality_slider.value() + 1)
-        self.assertTrue(window.preset_modified_label.isVisible())
+        self.assertTrue(window.preset_combo.property("modified"))
 
-    def test_hidden_again_after_reverting_the_change(self):
+    def test_false_again_after_reverting_the_change(self):
         window = main.MainWindow()
-        window.show()
         original = window.quality_slider.value()
         window.quality_slider.setValue(original + 1)
-        self.assertTrue(window.preset_modified_label.isVisible())
+        self.assertTrue(window.preset_combo.property("modified"))
         window.quality_slider.setValue(original)
-        self.assertFalse(window.preset_modified_label.isVisible())
+        self.assertFalse(window.preset_combo.property("modified"))
 
 
 class TestCommandPreviewGrouping(unittest.TestCase):
@@ -425,17 +609,17 @@ class TestJobStatusIcons(unittest.TestCase):
     def test_started_job_gets_an_icon(self):
         window = main.MainWindow()
         window.add_files([self.clip])
-        window._running_items = [window.queue_list.item(0)]
+        window._running_items = [window.queue_list.topLevelItem(0)]
         window._on_job_started(str(self.clip), 1, 1)
-        self.assertFalse(window._running_items[0].icon().isNull())
+        self.assertFalse(window._running_items[0].icon(main.STATUS_COL).isNull())
 
     def test_failed_job_gets_a_tooltip_with_the_reason(self):
         window = main.MainWindow()
         window.add_files([self.clip])
-        window._running_items = [window.queue_list.item(0)]
-        window._current_running_item = window.queue_list.item(0)
+        window._running_items = [window.queue_list.topLevelItem(0)]
+        window._current_running_item = window.queue_list.topLevelItem(0)
         window._on_job_failed(str(self.clip), "ffmpeg exited 1")
-        self.assertEqual(window._running_items[0].toolTip(), "ffmpeg exited 1")
+        self.assertEqual(window._running_items[0].toolTip(main.STATUS_COL), "ffmpeg exited 1")
 
 
 class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
@@ -459,15 +643,16 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         window = main.MainWindow()
         window.add_files([self.interlaced_clip])
         _wait_for_detection(window)
-        job = window.queue_list.item(0).data(main.Qt.UserRole)
+        item = window.queue_list.topLevelItem(0)
+        job = item.data(main.STATUS_COL, main.Qt.UserRole)
         self.assertTrue(job["deinterlace"])
-        self.assertIn("Deinterlace", window.queue_list.item(0).text())
+        self.assertIn("(interlaced)", item.text(main.VIDEO_COL))
 
     def test_progressive_file_stays_off(self):
         window = main.MainWindow()
         window.add_files([self.progressive_clip])
         _wait_for_detection(window)
-        job = window.queue_list.item(0).data(main.Qt.UserRole)
+        job = window.queue_list.topLevelItem(0).data(main.STATUS_COL, main.Qt.UserRole)
         self.assertFalse(job["deinterlace"])
 
     def test_detection_overrides_a_manually_checked_box_when_source_is_progressive(self):
@@ -479,12 +664,159 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         window.deinterlace_check.setChecked(True)
         window.add_files([self.progressive_clip])
         _wait_for_detection(window)
-        job = window.queue_list.item(0).data(main.Qt.UserRole)
+        job = window.queue_list.topLevelItem(0).data(main.STATUS_COL, main.Qt.UserRole)
         self.assertFalse(job["deinterlace"])
 
     def test_removing_the_item_before_detection_finishes_does_not_crash(self):
         window = main.MainWindow()
         window.add_files([self.interlaced_clip])
+        window.queue_list.clear()  # deletes the C++ item object, not just detaches it
+        _wait_for_detection(window)  # must not raise from the now-deleted item
+
+
+class TestVideoAudioLabels(unittest.TestCase):
+    """Pure-logic tests for the queue table's codec/channel friendly-name
+    helpers -- worker.parse_probe_output's own field extraction is covered
+    in test_worker.TestSourceProbeHelpers; this is just the display layer."""
+
+    def test_known_video_codec_gets_friendly_name(self):
+        self.assertEqual(main.MainWindow._video_codec_label("hevc"), "HEVC")
+        self.assertEqual(main.MainWindow._video_codec_label("h264"), "H.264")
+
+    def test_unknown_video_codec_falls_back_to_uppercased_raw_name(self):
+        self.assertEqual(main.MainWindow._video_codec_label("theora"), "THEORA")
+
+    def test_missing_video_codec_is_a_question_mark(self):
+        self.assertEqual(main.MainWindow._video_codec_label(None), "?")
+
+    def test_known_audio_codec_gets_friendly_name(self):
+        self.assertEqual(main.MainWindow._audio_codec_label("eac3"), "E-AC3")
+
+    def test_channel_count_maps_to_surround_label(self):
+        self.assertEqual(main.MainWindow._audio_channel_label(2), "Stereo")
+        self.assertEqual(main.MainWindow._audio_channel_label(6), "5.1")
+
+    def test_unusual_channel_count_falls_back_to_raw_number(self):
+        self.assertEqual(main.MainWindow._audio_channel_label(3), "3ch")
+
+    def test_missing_channel_count_is_a_question_mark(self):
+        self.assertEqual(main.MainWindow._audio_channel_label(None), "?")
+
+
+class TestRefreshVideoCell(unittest.TestCase):
+    """The Video cell's text depends on two independent async results (see
+    _refresh_video_cell's own comment in main.py) that can land in either
+    order -- both orders must produce the same final text."""
+
+    def test_codec_label_landing_first_then_deinterlace_flag(self):
+        window = main.MainWindow()
+        item = _add_dummy_item(window, "a.mkv")
+        item.setData(main.VIDEO_COL, main.Qt.UserRole, "HEVC 1920x1080")
+        window._refresh_video_cell(item)
+        self.assertEqual(item.text(main.VIDEO_COL), "HEVC 1920x1080")
+        job = item.data(main.STATUS_COL, main.Qt.UserRole)
+        job["deinterlace"] = True
+        item.setData(main.STATUS_COL, main.Qt.UserRole, job)
+        window._refresh_video_cell(item)
+        self.assertEqual(item.text(main.VIDEO_COL), "HEVC 1920x1080 (interlaced)")
+
+    def test_deinterlace_flag_landing_first_then_codec_label(self):
+        window = main.MainWindow()
+        item = _add_dummy_item(window, "a.mkv")
+        job = item.data(main.STATUS_COL, main.Qt.UserRole)
+        job["deinterlace"] = True
+        item.setData(main.STATUS_COL, main.Qt.UserRole, job)
+        window._refresh_video_cell(item)
+        self.assertEqual(item.text(main.VIDEO_COL), "")  # nothing to show yet
+        item.setData(main.VIDEO_COL, main.Qt.UserRole, "HEVC 1920x1080")
+        window._refresh_video_cell(item)
+        self.assertEqual(item.text(main.VIDEO_COL), "HEVC 1920x1080 (interlaced)")
+
+    def test_progressive_source_gets_no_suffix(self):
+        window = main.MainWindow()
+        item = _add_dummy_item(window, "a.mkv")  # deinterlace defaults False
+        item.setData(main.VIDEO_COL, main.Qt.UserRole, "H.264 1280x720")
+        window._refresh_video_cell(item)
+        self.assertEqual(item.text(main.VIDEO_COL), "H.264 1280x720")
+
+
+class TestMakeQueueRow(unittest.TestCase):
+    """_make_queue_row fills in what's known synchronously (file name, size)
+    -- everything ffprobe-derived (resolution, duration, codecs) arrives
+    later via _on_source_probed, covered end-to-end in
+    TestSourceMetadataOnAdd below."""
+
+    def test_file_name_and_size_are_set_immediately(self):
+        window = main.MainWindow()
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_gui_test_"))
+        try:
+            clip = tmpdir / "movie.mkv"
+            clip.write_bytes(b"x" * 2048)
+            job = {"path": clip, **window._current_settings()}
+            item = window._make_queue_row(job)
+            self.assertEqual(item.text(main.FILE_COL), "movie.mkv")
+            self.assertEqual(item.text(main.SIZE_COL), "2.0KB")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_output_settings_are_not_shown_in_any_cell(self):
+        # The whole point of this table: output settings (encoder, quality,
+        # container, ...) live in and edit from the right-hand panel, not
+        # duplicated here -- see _make_queue_row's own comment in main.py.
+        window = main.MainWindow()
+        job = {"path": Path("movie.mkv"), **window._current_settings()}
+        item = window._make_queue_row(job)
+        all_text = " ".join(item.text(c) for c in range(window.queue_list.columnCount()))
+        self.assertNotIn(job["container"], all_text)
+        self.assertNotIn(job["encoder"], all_text)
+
+    def test_missing_file_size_does_not_crash(self):
+        window = main.MainWindow()
+        job = {"path": Path("/nonexistent/movie.mkv"), **window._current_settings()}
+        item = window._make_queue_row(job)  # must not raise
+        self.assertEqual(item.text(main.SIZE_COL), "")
+
+
+class TestSourceMetadataOnAdd(unittest.TestCase):
+    """Dropping a file in should probe its real source properties and fill
+    in the queue row -- see TestAutoDetectInterlaceOnAdd above for the
+    sibling deinterlace-detection probe this runs alongside."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_gui_test_"))
+        cls.clip = cls.tmpdir / "source.mkv"
+        _make_clip(cls.clip, "aac")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmpdir, ignore_errors=True)
+
+    def test_probed_row_shows_real_source_properties(self):
+        window = main.MainWindow()
+        window.add_files([self.clip])
+        _wait_for_detection(window)
+        item = window.queue_list.topLevelItem(0)
+        self.assertIn("H.264", item.text(main.VIDEO_COL))
+        self.assertIn("320x240", item.text(main.VIDEO_COL))
+        self.assertEqual(item.text(main.DURATION_COL), "0:01")
+        self.assertIn("AAC", item.text(main.AUDIO_COL))
+
+    def test_probe_does_not_affect_the_jobs_output_settings(self):
+        # width/height on the job dict are the chosen OUTPUT target
+        # resolution -- the source probe must never overwrite them with the
+        # source file's own (unrelated) dimensions.
+        window = main.MainWindow()
+        settings = window._current_settings()
+        window.add_files([self.clip])
+        _wait_for_detection(window)
+        job = window.queue_list.topLevelItem(0).data(main.STATUS_COL, main.Qt.UserRole)
+        self.assertEqual(job["width"], settings["width"])
+        self.assertEqual(job["height"], settings["height"])
+
+    def test_removing_the_item_before_probe_finishes_does_not_crash(self):
+        window = main.MainWindow()
+        window.add_files([self.clip])
         window.queue_list.clear()  # deletes the C++ item object, not just detaches it
         _wait_for_detection(window)  # must not raise from the now-deleted item
 
@@ -505,7 +837,7 @@ class TestLiveSelectionEditing(unittest.TestCase):
         item = _add_dummy_item(window, "a.mkv")
         item.setSelected(True)
         window.quality_slider.setValue(window.quality_slider.value() + 3)
-        job = item.data(main.Qt.UserRole)
+        job = item.data(main.STATUS_COL, main.Qt.UserRole)
         self.assertEqual(job["quality_value"], window.quality_slider.value())
 
     def test_changing_a_control_does_not_touch_unselected_items(self):
@@ -513,9 +845,9 @@ class TestLiveSelectionEditing(unittest.TestCase):
         item_a = _add_dummy_item(window, "a.mkv")
         item_b = _add_dummy_item(window, "b.mkv")
         item_a.setSelected(True)
-        before_b = dict(item_b.data(main.Qt.UserRole))
+        before_b = dict(item_b.data(main.STATUS_COL, main.Qt.UserRole))
         window.quality_slider.setValue(window.quality_slider.value() + 3)
-        self.assertEqual(item_b.data(main.Qt.UserRole), before_b)
+        self.assertEqual(item_b.data(main.STATUS_COL, main.Qt.UserRole), before_b)
 
     def test_selecting_multiple_differently_configured_items_does_not_homogenize_them(self):
         # Regression: populating controls from item_a on selection must not
@@ -523,10 +855,10 @@ class TestLiveSelectionEditing(unittest.TestCase):
         window = main.MainWindow()
         item_a = _add_dummy_item(window, "a.mkv", quality_value=20)
         item_b = _add_dummy_item(window, "b.mkv", quality_value=35)
-        before_b = dict(item_b.data(main.Qt.UserRole))
+        before_b = dict(item_b.data(main.STATUS_COL, main.Qt.UserRole))
         item_a.setSelected(True)
         item_b.setSelected(True)
-        self.assertEqual(item_b.data(main.Qt.UserRole), before_b)
+        self.assertEqual(item_b.data(main.STATUS_COL, main.Qt.UserRole), before_b)
 
     def test_multi_select_then_control_change_applies_to_all_selected(self):
         window = main.MainWindow()
@@ -535,48 +867,98 @@ class TestLiveSelectionEditing(unittest.TestCase):
         item_a.setSelected(True)
         item_b.setSelected(True)
         window.quality_slider.setValue(17)
-        self.assertEqual(item_a.data(main.Qt.UserRole)["quality_value"], 17)
-        self.assertEqual(item_b.data(main.Qt.UserRole)["quality_value"], 17)
+        self.assertEqual(item_a.data(main.STATUS_COL, main.Qt.UserRole)["quality_value"], 17)
+        self.assertEqual(item_b.data(main.STATUS_COL, main.Qt.UserRole)["quality_value"], 17)
 
     def test_locked_queue_during_a_run_ignores_selection_edits(self):
         window = main.MainWindow()
         item = _add_dummy_item(window, "a.mkv")
         item.setSelected(True)
         window._set_queue_editable(False)
-        before = dict(item.data(main.Qt.UserRole))
+        before = dict(item.data(main.STATUS_COL, main.Qt.UserRole))
         window.quality_slider.setValue(window.quality_slider.value() + 3)
-        self.assertEqual(item.data(main.Qt.UserRole), before)
+        self.assertEqual(item.data(main.STATUS_COL, main.Qt.UserRole), before)
 
 
 class TestQueueLockingDuringRun(unittest.TestCase):
-    def test_set_queue_editable_toggles_buttons(self):
+    def test_set_queue_editable_toggles_remove_and_clear_only(self):
+        # Add Files is deliberately excluded -- see TestLiveAppendDuringRun,
+        # it's meant to keep working during a run.
         window = main.MainWindow()
         window._set_queue_editable(False)
-        self.assertFalse(window.add_files_btn.isEnabled())
         self.assertFalse(window.remove_btn.isEnabled())
         self.assertFalse(window.clear_btn.isEnabled())
         self.assertFalse(window._queue_editable)
-        window._set_queue_editable(True)
         self.assertTrue(window.add_files_btn.isEnabled())
+        window._set_queue_editable(True)
         self.assertTrue(window._queue_editable)
 
-    def test_start_locks_queue_before_handing_off_to_the_engine(self):
+    def test_add_files_button_stays_enabled_through_a_run(self):
+        window = main.MainWindow()
+        window._set_queue_editable(False)
+        self.assertTrue(window.add_files_btn.isEnabled())
+
+    def test_start_locks_remove_and_clear_before_handing_off_to_the_engine(self):
         window = main.MainWindow()
         job = {"path": Path("dummy.mkv"), **window._current_settings()}
-        window.queue_list.addItem(main.QListWidgetItem("dummy"))
-        window.queue_list.item(0).setData(main.Qt.UserRole, job)
+        window.queue_list.addTopLevelItem(main.QTreeWidgetItem(["dummy"]))
+        window.queue_list.topLevelItem(0).setData(main.STATUS_COL, main.Qt.UserRole, job)
         with patch.object(window.queue, "start") as mock_start:
             window._start()
             mock_start.assert_called_once()
-        self.assertFalse(window.add_files_btn.isEnabled())
+        self.assertFalse(window.remove_btn.isEnabled())
         self.assertFalse(window._queue_editable)
 
     def test_on_all_finished_unlocks_queue(self):
         window = main.MainWindow()
         window._set_queue_editable(False)
         window._on_all_finished()
-        self.assertTrue(window.add_files_btn.isEnabled())
         self.assertTrue(window.clear_btn.isEnabled())
+        self.assertTrue(window._queue_editable)
+
+
+class TestLiveAppendDuringRun(unittest.TestCase):
+    """A file added (button or drag-drop -- both go through add_files())
+    while a run is already in progress should join that run automatically,
+    not just sit in the visible list until Start is clicked again."""
+
+    def test_adding_a_file_mid_run_pushes_it_into_the_running_queue(self):
+        window = main.MainWindow()
+        window._set_queue_editable(False)  # simulates a run in progress
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            _make_clip(clip, "aac")
+            self.assertEqual(len(window.queue._jobs), 0)
+            window.add_files([clip])
+            _wait_for_detection(window)
+        self.assertEqual(len(window.queue._jobs), 1)
+        self.assertEqual(window.queue._jobs[0]["path"], clip)
+        self.assertEqual(len(window._running_items), 1)
+
+    def test_not_added_to_the_engine_when_no_run_is_in_progress(self):
+        window = main.MainWindow()
+        self.assertTrue(window._queue_editable)  # idle, no run
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            _make_clip(clip, "aac")
+            window.add_files([clip])
+            _wait_for_detection(window)
+        self.assertEqual(len(window.queue._jobs), 0)
+        self.assertEqual(len(window._running_items), 0)
+
+    def test_detection_result_patches_the_already_queued_copy(self):
+        # The dict handed to queue.add_job is a snapshot, not a live
+        # reference (QTreeWidgetItem.setData/.data() round-trips a copy,
+        # confirmed empirically) -- update_pending_job is what's supposed
+        # to keep it in sync once async interlace detection lands.
+        window = main.MainWindow()
+        window._set_queue_editable(False)
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "interlaced.mkv"
+            _make_interlaced_clip(clip)
+            window.add_files([clip])
+            _wait_for_detection(window)
+        self.assertEqual(window.queue._jobs[0]["deinterlace"], True)
 
 
 if __name__ == "__main__":

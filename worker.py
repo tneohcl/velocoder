@@ -4,6 +4,7 @@ Takes a plain settings dict per job — no preset catalog here. Presets are a
 GUI-side convenience for naming/saving/loading a settings snapshot; the
 engine only ever sees the resolved values.
 """
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -11,6 +12,8 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QProcess, Signal
 
 INTEL_VENDOR_ID = "0x8086"
+AMD_VENDOR_ID = "0x1002"
+GPU_VENDOR_IDS = {"intel": INTEL_VENDOR_ID, "amd": AMD_VENDOR_ID}
 BITRATE_RC_MODES = {"VBR", "bitrate"}
 _OUT_TIME_RE = re.compile(r"^out_time=(\d+):(\d+):(\d+)\.(\d+)$")
 
@@ -70,6 +73,64 @@ def probe_audio_codec(path: Path, track_index: int = 0) -> str | None:
     )
     codec = result.stdout.strip()
     return codec or None
+
+
+def build_probe_args(input_path: Path) -> list[str]:
+    """ffprobe argv for a single-shot source-metadata query: container
+    duration plus every stream's key fields. Header-only (no decoding, unlike
+    build_idet_args), so this is fast even for large files -- run async via
+    QProcess anyway (see MainWindow._start_source_probe) since "fast" still
+    isn't instant on a slow disk or network share, and add_files() may be
+    probing a whole dropped batch at once."""
+    return [
+        "ffprobe", "-v", "error", "-of", "json",
+        "-show_entries",
+        "format=duration:stream=codec_type,codec_name,width,height,r_frame_rate,channels",
+        str(input_path),
+    ]
+
+
+def _parse_frame_rate(raw: str | None) -> float:
+    """ffprobe reports r_frame_rate as "num/den" (e.g. "24000/1001"); 0.0 if
+    missing or the denominator is 0 (a still-image "stream" some containers
+    report alongside the real video track)."""
+    if not raw or "/" not in raw:
+        return 0.0
+    num, _, den = raw.partition("/")
+    try:
+        num, den = float(num), float(den)
+    except ValueError:
+        return 0.0
+    return num / den if den else 0.0
+
+
+def parse_probe_output(stdout_text: str) -> dict:
+    """Pulls the fields the queue table's source-property columns need out
+    of build_probe_args's JSON. Missing or unparseable pieces are just
+    absent from the result rather than raising -- a probe hiccup shouldn't
+    ever block a file from being queued, only leave that column blank."""
+    try:
+        data = json.loads(stdout_text)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    result = {}
+    try:
+        result["duration"] = float(data.get("format", {}).get("duration", 0.0))
+    except (TypeError, ValueError):
+        pass
+    streams = data.get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if video:
+        result["video_codec"] = video.get("codec_name")
+        result["width"] = video.get("width")
+        result["height"] = video.get("height")
+        result["frame_rate"] = _parse_frame_rate(video.get("r_frame_rate"))
+    audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
+    if audio_streams:
+        result["audio_codec"] = audio_streams[0].get("codec_name")
+        result["audio_channels"] = audio_streams[0].get("channels")
+        result["audio_track_count"] = len(audio_streams)
+    return result
 
 
 def audio_bitrate_kbps(audio_bitrate: str) -> int:
@@ -135,18 +196,23 @@ def build_args(
 ) -> list[str]:
     """Build the full ffmpeg argv for one job from a resolved settings dict.
 
-    settings keys: encoder ("hevc_vaapi"|"libx265"), rc_mode, quality_value
-    (quality units for a quality-family rc_mode; target output size in MB
-    for a bitrate-family one -- VBR/bitrate mean "hit roughly this file
-    size", not "encode at exactly this bitrate", so the number the user
-    sets is size, and the bitrate ffmpeg actually gets is derived from it
-    plus this specific file's duration, below), speed (compression_level
-    1-7 as str, or an x265 preset name), bit_depth (8|10), width, height,
-    container ("mp4"|"mkv", default mp4), tune (an x265 tune name or
-    "None", ignored for hevc_vaapi), deinterlace (bool, default False --
-    container-level progressive/interlaced flags are frequently wrong,
-    especially on camcorder-sourced footage; this is a manual override, not
-    auto-detected), audio_track, audio_copy_if_compatible, audio_bitrate.
+    settings keys: encoder ("hevc_vaapi"|"libx265"), gpu_vendor ("intel"|"amd",
+    only meaningful when encoder is hevc_vaapi -- picks which GPU's render
+    node opens; defaults to "intel" if absent, for presets saved before this
+    key existed), rc_mode, quality_value (quality units for a quality-family
+    rc_mode; target output size in MB for a bitrate-family one -- VBR/bitrate
+    mean "hit roughly this file size", not "encode at exactly this bitrate",
+    so the number the user sets is size, and the bitrate ffmpeg actually
+    gets is derived from it plus this specific file's duration, below),
+    speed (compression_level 1-7 as str, or an x265 preset name -- lower
+    compression_level is slower but more size-efficient at the same quality
+    target, confirmed by timing real encodes at levels 1/4/7, not assumed),
+    bit_depth (8|10), width, height, container ("mp4"|"mkv", default mp4),
+    tune (an x265 tune name or "None", ignored for hevc_vaapi), deinterlace
+    (bool, default False -- container-level progressive/interlaced flags
+    are frequently wrong, especially on camcorder-sourced footage; this is
+    a manual override, not auto-detected), audio_track,
+    audio_copy_if_compatible, audio_bitrate.
 
     probe_audio=False skips the real ffprobe call and uses audio_codec as
     given instead -- for building a representative command line to *show*
@@ -181,7 +247,8 @@ def build_args(
     args = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "info"]
 
     if is_vaapi:
-        args += ["-vaapi_device", find_render_node(INTEL_VENDOR_ID)]
+        gpu_vendor = settings.get("gpu_vendor", "intel")
+        args += ["-vaapi_device", find_render_node(GPU_VENDOR_IDS[gpu_vendor])]
     args += ["-i", str(input_path)]
 
     if is_vaapi:
@@ -254,6 +321,31 @@ def build_args(
         # ignores it for other muxers, but omit it for mkv anyway so the
         # command line doesn't carry a flag that means nothing there.
         args += ["-movflags", "+faststart"]
+    if is_vaapi:
+        # A source with inconsistent color-range/matrix signaling across
+        # its own GOPs (no container-level color metadata around to
+        # override it, so ffmpeg has to infer this from the bitstream as
+        # it decodes -- confirmed on a real ~2-hour file: ffprobe showed
+        # color_range/space/transfer/primaries all "unknown" at the
+        # container level) can trigger a mid-stream filter-graph
+        # reconfiguration. When that happens, ffmpeg's default behavior
+        # tries to auto-insert a software scale filter to bridge an
+        # apparent format mismatch -- which can never actually work
+        # against a vaapi hardware-surface pipeline, and crashes the whole
+        # job instead ("Impossible to convert between the formats
+        # supported by ... 'auto_scale_1'"). Reproduced consistently
+        # against that real file at the exact same timestamp every time;
+        # -noautoscale eliminates the auto-inserted filter, and the same
+        # mid-stream reconfiguration then succeeds cleanly instead
+        # (confirmed against the same file/timestamp: the "Reconfiguring
+        # filter graph" log line still appears, encoding just continues
+        # past it now). Harmless when the trigger never happens, the
+        # normal case -- this only disables an auto-insert this app's own
+        # explicit scale_vaapi already makes unnecessary anyway. x265 has
+        # no vaapi surface in its pipeline at all, so it doesn't get this
+        # flag -- nothing here to fix for it, and an untested behavior
+        # change for a path that was never broken isn't worth the risk.
+        args += ["-noautoscale"]
     args += ["-progress", "pipe:1", "-nostats"]
     args += [str(output_path)]
     return args
@@ -285,6 +377,31 @@ class TranscodeQueue(QObject):
         self._index = 0
         self._stopped = False
         self._run_next()
+
+    def add_job(self, job: dict):
+        """Append a job to the run already in progress -- _run_next picks it
+        up automatically the next time it looks for one (it just checks
+        self._index against len(self._jobs), both of which keep working
+        correctly as this list grows). No separate "resume" call needed;
+        harmless if called with nothing running, though callers only do
+        that mid-run today (main.py's add_files, gated on _queue_editable)."""
+        self._jobs.append(job)
+
+    def update_pending_job(self, path: Path, updates: dict):
+        """Patch fields on any not-yet-started job(s) matching path.
+
+        Needed because a job handed to add_job is a plain snapshot dict, not
+        a live reference to whatever the GUI's queue row holds -- confirmed
+        empirically that QTreeWidgetItem.setData/.data() round-trips a copy,
+        not the original object, so mutating the GUI-side dict later (e.g.
+        auto-detected deinterlace landing after this job was already queued)
+        would silently never reach this one without an explicit patch like
+        this. Jobs at or before self._index are already running or finished
+        and are deliberately left alone.
+        """
+        for pending in self._jobs[self._index:]:
+            if pending["path"] == path:
+                pending.update(updates)
 
     def stop(self):
         self._stopped = True

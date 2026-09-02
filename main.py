@@ -7,17 +7,18 @@ from PySide6.QtCore import Qt, QUrl, QSettings, QProcess
 from PySide6.QtGui import QDesktopServices, QFont, QIcon, QPainter, QPalette
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QTabWidget, QSplitter, QGroupBox, QListWidget, QListWidgetItem,
+    QTabWidget, QSplitter, QGroupBox, QTreeWidget, QTreeWidgetItem,
     QPushButton, QComboBox, QLabel, QProgressBar, QPlainTextEdit, QFileDialog,
     QLineEdit, QSlider, QSpinBox, QCheckBox, QInputDialog, QMessageBox,
     QSizePolicy, QStyle, QAbstractItemView, QButtonGroup,
 )
 
 import worker
+import themes
 from constants import (
     VIDEO_FILTER, AUDIO_TRACK_LABELS, ENCODERS, RC_MODES, RC_MODE_FRIENDLY,
-    QUALITY_RANGES, X265_PRESETS, RESOLUTIONS, AUDIO_BITRATES, CONTAINERS,
-    X265_TUNES, BUILTIN_PRESETS, BUILTIN_PRESET_NAMES,
+    encoder_profile_key, QUALITY_RANGES, X265_PRESETS, RESOLUTIONS,
+    AUDIO_BITRATES, CONTAINERS, X265_TUNES, BUILTIN_PRESETS, BUILTIN_PRESET_NAMES,
 )
 from presets import load_user_presets, save_user_presets
 from worker import TranscodeQueue, BITRATE_RC_MODES
@@ -25,18 +26,61 @@ from worker import TranscodeQueue, BITRATE_RC_MODES
 PANEL_MARGIN = 12
 PANEL_SPACING = 10
 
+THEME_CHOICES = [("dark", "Dark"), ("light", "Light"), ("system", "Match System")]
 
-class DropListWidget(QListWidget):
-    """QListWidget that accepts files dragged in from a file manager, and
-    also supports dragging its own rows to reorder the queue."""
+# Queue table columns -- source-file properties only (see DropTreeWidget);
+# output settings live in the right-hand panel and apply live to whatever
+# row is selected instead of being duplicated here. Resolution rides along
+# in the Video cell ("H.264 1280x720") rather than getting its own column --
+# the panel this table lives in isn't wide enough to give lots of columns
+# room without squeezing File down to nothing (confirmed against this
+# app's own real persisted window geometry, not just its fresh-install
+# default).
+FILE_COL, VIDEO_COL, DURATION_COL, AUDIO_COL, SIZE_COL, RESULT_COL = range(6)
+# The run-status icon (play/done/failed) lives on the File cell itself --
+# QTreeWidgetItem supports an icon and text on the same column
+# simultaneously -- rather than a dedicated narrow column of its own. A
+# separate status column started out at 24px, as unobtrusive as it could
+# reasonably be, but an empty, unlabeled column with nothing in it (every
+# row's icon is blank until a run actually starts) still read as a stray
+# gap rather than a deliberate part of the design -- confirmed by
+# feedback, not just a guess. STATUS_COL is kept as a name (rather than
+# writing FILE_COL at every icon/tooltip call site below) purely so those
+# call sites stay self-explanatory about *why* they're touching this
+# column.
+STATUS_COL = FILE_COL
+QUEUE_COLUMN_HEADERS = ["File", "Video", "Duration", "Audio", "Size", "Result"]
+
+_VIDEO_CODEC_LABELS = {
+    "h264": "H.264", "hevc": "HEVC", "vp9": "VP9", "av1": "AV1",
+    "mpeg2video": "MPEG-2", "mpeg4": "MPEG-4", "vc1": "VC-1", "prores": "ProRes",
+}
+_AUDIO_CODEC_LABELS = {
+    "aac": "AAC", "ac3": "AC3", "eac3": "E-AC3", "dts": "DTS", "mp3": "MP3",
+    "flac": "FLAC", "truehd": "TrueHD", "opus": "Opus", "vorbis": "Vorbis",
+    "pcm_s16le": "PCM", "pcm_s24le": "PCM",
+}
+_AUDIO_CHANNEL_LABELS = {1: "Mono", 2: "Stereo", 6: "5.1", 8: "7.1"}
+
+
+class DropTreeWidget(QTreeWidget):
+    """Flat (no hierarchy) QTreeWidget -- gives the queue a real multi-column
+    grid with a header bar while keeping the same "one item per row, holding
+    its job dict via Qt.UserRole" shape QListWidgetItem had, so drag-drop and
+    row reordering carry over unchanged. Accepts files dragged in from a file
+    manager, and also supports dragging its own rows to reorder the queue."""
 
     PLACEHOLDER_TEXT = "Drag video files here,\nor click “Add Files…”"
 
     def __init__(self, on_files_dropped, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
-        self.setSelectionMode(QListWidget.ExtendedSelection)
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setDragDropMode(QAbstractItemView.InternalMove)
+        self.setRootIsDecorated(False)
+        self.setUniformRowHeights(True)
+        self.setAlternatingRowColors(True)
         self._on_files_dropped = on_files_dropped
 
     def dragEnterEvent(self, event):
@@ -60,7 +104,7 @@ class DropListWidget(QListWidget):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self.count() == 0:
+        if self.topLevelItemCount() == 0:
             painter = QPainter(self.viewport())
             painter.setPen(self.palette().color(QPalette.PlaceholderText))
             painter.drawText(self.viewport().rect(), Qt.AlignCenter, self.PLACEHOLDER_TEXT)
@@ -78,13 +122,20 @@ class MainWindow(QMainWindow):
         self._preview_audio_cache: dict[tuple, str | None] = {}
         self._preview_duration_cache: dict[Path, float] = {}
         self._loaded_preset_settings: dict | None = None
-        self._running_items: list[QListWidgetItem] = []
-        self._current_running_item: QListWidgetItem | None = None
+        self._running_items: list[QTreeWidgetItem] = []
+        self._current_running_item: QTreeWidgetItem | None = None
         self._syncing_controls_from_selection = False
         self._queue_editable = True
         self._detection_processes: list[QProcess] = []  # keep references alive; Qt won't
         self.output_dir = Path.home() / "Videos" / "transcoded"
         self._qsettings = QSettings("TITAN-i", "Transcoder")
+
+        self._theme_choice = _validate_theme_choice(self._qsettings.value("theme_choice", "dark"))
+        _load_stylesheet(QApplication.instance(), _resolve_theme(self._theme_choice))
+        # "System" needs to react live, not just at launch -- confirmed this
+        # signal actually exists and fires on this Qt/PySide6 version before
+        # relying on it (see the git history for the real check).
+        QApplication.instance().styleHints().colorSchemeChanged.connect(self._on_system_theme_changed)
 
         self.queue = TranscodeQueue()
         self.queue.job_started.connect(self._on_job_started)
@@ -100,7 +151,15 @@ class MainWindow(QMainWindow):
         # populates rc_mode_combo, and applying a preset while that combo is
         # still empty leaves rc_mode reading back as None.
         self._on_encoder_changed()
-        self._refresh_preset_combo()
+        # Explicit select=, not just "whatever's first" -- BUILTIN_PRESETS'
+        # own order is CPU/Intel/AMD (matches the Encoder dropdown's display
+        # order), but this app exists to get real hardware encoding working
+        # again, so every launch should still land on Intel by default
+        # regardless of where it sits in that list. Preset selection isn't
+        # otherwise persisted across launches at all (unlike window
+        # geometry/theme/etc.), so this runs on every single startup, not
+        # just a first install.
+        self._refresh_preset_combo(select="720p QSV Balanced (Hardware / VAAPI)")
         self._restore_window_state()
 
     def closeEvent(self, event):
@@ -137,12 +196,53 @@ class MainWindow(QMainWindow):
         self._splitter.setStretchFactor(1, 1)
         self._build_status_bar()
 
+    def _apply_theme(self, choice: str):
+        self._theme_choice = choice
+        self._qsettings.setValue("theme_choice", choice)
+        _load_stylesheet(QApplication.instance(), _resolve_theme(choice))
+        self._refresh_themed_icons()
+
+    def _on_system_theme_changed(self, _scheme):
+        if self._theme_choice == "system":
+            _load_stylesheet(QApplication.instance(), _resolve_theme("system"))
+            self._refresh_themed_icons()
+
     def _build_status_bar(self):
         # A qBittorrent-style footer strip: ambient, persistent, out of the
-        # way of the actual controls. addPermanentWidget (not showMessage)
-        # so nothing that later calls the status bar's temporary-message API
-        # can silently clobber this -- there's no such call today, but this
-        # is the only status-bar API that's actually immune to one.
+        # way of the actual controls. Theme picker lives here rather than a
+        # menu bar -- a whole menu bar for one three-item setting was more
+        # chrome than the setting warranted.
+        #
+        # QStatusBar has two genuinely different widget areas, not just a
+        # single row: addWidget puts something on the left (also where a
+        # showMessage() temporary message would appear -- it temporarily
+        # hides addWidget widgets specifically, though nothing here calls
+        # showMessage today) and addPermanentWidget puts something on the
+        # right, immune to that. Theme goes left/addWidget, hardware status
+        # stays right/addPermanentWidget -- deliberately different APIs, not
+        # just visual left/right positioning of the same call.
+        #
+        # setContentsMargins, not a QSS padding rule -- QStatusBar manages
+        # its own internal layout for addWidget/addPermanentWidget content,
+        # which a stylesheet padding rule turned out not to reach at all
+        # (tried it, confirmed by screenshot: zero visible difference).
+        # Contents margins are a plain widget property, not something QSS
+        # has to cooperate with, so they reliably do give the whole footer
+        # strip some vertical breathing room instead of sitting flush
+        # against its own top/bottom edge.
+        self.statusBar().setContentsMargins(8, 4, 8, 4)
+        theme_label = QLabel("Theme:")
+        theme_label.setStyleSheet("font-size: 9pt;")
+        self.statusBar().addWidget(theme_label)
+        self.theme_combo = QComboBox()
+        for value, label in THEME_CHOICES:
+            self.theme_combo.addItem(label, userData=value)
+        self.theme_combo.setCurrentIndex(self.theme_combo.findData(self._theme_choice))
+        self.theme_combo.currentIndexChanged.connect(
+            lambda: self._apply_theme(self.theme_combo.currentData())
+        )
+        self.statusBar().addWidget(self.theme_combo)
+
         self.hw_status_label = QLabel(self._hardware_status_text())
         self.hw_status_label.setStyleSheet("font-size: 9pt;")
         self.statusBar().addPermanentWidget(self.hw_status_label)
@@ -170,19 +270,29 @@ class MainWindow(QMainWindow):
         self.preset_combo.currentIndexChanged.connect(self._on_preset_selected)
         row.addWidget(self.preset_combo, 1)
 
-        self.preset_modified_label = QLabel("(modified)")
-        self.preset_modified_label.setStyleSheet("font-style: italic; font-size: 9pt;")
-        self.preset_modified_label.setVisible(False)
-        row.addWidget(self.preset_modified_label)
-
-        style = self.style()
-        save_btn = QPushButton(style.standardIcon(QStyle.SP_DialogSaveButton), "Save As…")
-        save_btn.clicked.connect(self._save_preset_as)
-        delete_btn = QPushButton(style.standardIcon(QStyle.SP_TrashIcon), "Delete")
-        delete_btn.clicked.connect(self._delete_preset)
-        row.addWidget(save_btn)
-        row.addWidget(delete_btn)
+        # Custom icons, not style().standardIcon(...) -- Fusion's standard
+        # icons are colored from the app's QPalette, which this app never
+        # sets of its own (only this stylesheet), so they stayed locked to
+        # whatever Fusion's default happens to be regardless of the chosen
+        # theme -- confirmed by screenshot: SP_TrashIcon in particular was
+        # all but invisible against a light-theme button. _refresh_themed_icons
+        # re-applies these on every theme change, same reason the SVGs
+        # style.qss references have separate dark/light files.
+        self.save_btn = QPushButton(self._themed_icon("save"), "Save As…")
+        self.save_btn.clicked.connect(self._save_preset_as)
+        self.delete_btn = QPushButton(self._themed_icon("delete"), "Delete")
+        self.delete_btn.clicked.connect(self._delete_preset)
+        row.addWidget(self.save_btn)
+        row.addWidget(self.delete_btn)
         return row
+
+    def _themed_icon(self, name: str) -> QIcon:
+        theme = _resolve_theme(self._theme_choice)
+        return QIcon(str(Path(__file__).parent / "assets" / f"{name}_{theme}.svg"))
+
+    def _refresh_themed_icons(self):
+        self.save_btn.setIcon(self._themed_icon("save"))
+        self.delete_btn.setIcon(self._themed_icon("delete"))
 
     def _build_left_panel(self) -> QWidget:
         left = QWidget()
@@ -212,42 +322,57 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _hardware_status_text() -> str:
-        try:
-            node = worker.find_render_node(worker.INTEL_VENDOR_ID)
-            return f"Hardware encode available via {node} (Intel iGPU)"
-        except RuntimeError:
-            return "No Intel VAAPI render node detected — hardware encoding unavailable"
+        found = []
+        for vendor, label in (("intel", "Intel iGPU"), ("amd", "AMD GPU")):
+            try:
+                node = worker.find_render_node(worker.GPU_VENDOR_IDS[vendor])
+                found.append(f"{label} ({node})")
+            except RuntimeError:
+                pass
+        if found:
+            return "Hardware encode available: " + ", ".join(found)
+        return "No VAAPI render node detected — hardware encoding unavailable"
 
     @staticmethod
     def _make_collapsible_group(title: str, content: QWidget, *, expanded: bool) -> QGroupBox:
-        # A checkable QGroupBox's title-bar checkbox is normally an
-        # enable/disable toggle for its children (Fusion just grays them
-        # out) -- repurposed here as a show/hide disclosure instead, so
-        # collapsing a section actually reclaims its space rather than just
-        # dimming content that's still sitting there taking up room.
+        # A real title string, via the exact same native QGroupBox::title
+        # subcontrol every other section (Encoding, Format, Audio Settings)
+        # uses -- same font, color, border-overlapping position, no
+        # separate mechanism to keep visually in sync with those. The only
+        # difference is the checkbox indicator's rendered size is zeroed
+        # out in style.qss (QGroupBox#collapsibleGroup::indicator), with a
+        # trailing arrow baked into the title text instead of a checkbox
+        # glyph -- confirmed empirically that hiding the indicator doesn't
+        # shrink the *clickable* area down to where the glyph would have
+        # been: Qt/Fusion already treats a checkable QGroupBox's whole
+        # title bar as one hit region, glyph size notwithstanding, so this
+        # is a skin change, not a rebuild of how clicking it works. (An
+        # earlier version of this used a separate flat QPushButton sitting
+        # below the border instead -- functioned fine, but visually broke
+        # from every other section's title, which sits overlapping the
+        # border -- reverted for exactly that inconsistency.)
         group = QGroupBox(title)
+        group.setObjectName("collapsibleGroup")
         group.setCheckable(True)
-        group.setChecked(expanded)
+        group.setCursor(Qt.PointingHandCursor)
         layout = QVBoxLayout(group)
         layout.addWidget(content)
 
-        # setVisible(False) on the content alone isn't enough when this
-        # group has a stretch factor in its parent layout (the Log group
-        # does, to share space with the queue list): a stretch factor still
-        # applies to the *group*, not its content, so a collapsed group with
-        # a hidden child kept claiming its full stretch share of the panel
-        # instead of shrinking away -- confirmed by screenshot, a large
-        # empty box where the log used to be. Fixed vertical policy while
-        # collapsed makes the group take exactly its own size hint (just
-        # the title bar) instead of whatever stretch would otherwise hand it.
+        # A stretch factor in the parent layout (the Log group has one, to
+        # share space with the queue list) still applies to the *group*
+        # even with its content hidden, so collapsing needs a fixed size
+        # policy too or the group keeps claiming its full stretch share --
+        # confirmed by screenshot, a large empty box where the log used to be.
         expanded_policy = group.sizePolicy()
         collapsed_policy = QSizePolicy(expanded_policy.horizontalPolicy(), QSizePolicy.Fixed)
 
         def _toggle(checked):
+            group.setTitle(f"{title}  {'▾' if checked else '▸'}")
             content.setVisible(checked)
             group.setSizePolicy(expanded_policy if checked else collapsed_policy)
             group.updateGeometry()
 
+        group.setChecked(expanded)
         _toggle(expanded)
         group.toggled.connect(_toggle)
         return group
@@ -256,14 +381,6 @@ class MainWindow(QMainWindow):
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 0, 0)
-
-        copy_row = QHBoxLayout()
-        copy_row.addStretch()
-        copy_btn = QPushButton("Copy")
-        copy_btn.setToolTip("Copy the full command to the clipboard")
-        copy_btn.clicked.connect(self._copy_command_to_clipboard)
-        copy_row.addWidget(copy_btn)
-        layout.addLayout(copy_row)
 
         self.command_preview = QPlainTextEdit()
         self.command_preview.setReadOnly(True)
@@ -278,6 +395,19 @@ class MainWindow(QMainWindow):
         # only that one line scroll horizontally instead.
         self.command_preview.setLineWrapMode(QPlainTextEdit.NoWrap)
         layout.addWidget(self.command_preview)
+
+        # Below the text, not above it, and visibly smaller -- this is a
+        # power-user convenience for a section that's already collapsed by
+        # default, not an action worth the same visual weight as Start or
+        # the preset buttons.
+        copy_row = QHBoxLayout()
+        copy_row.addStretch()
+        copy_btn = QPushButton("Copy")
+        copy_btn.setToolTip("Copy the full command to the clipboard")
+        copy_btn.setStyleSheet("padding: 2px 10px; font-size: 8pt;")
+        copy_btn.clicked.connect(self._copy_command_to_clipboard)
+        copy_row.addWidget(copy_btn)
+        layout.addLayout(copy_row)
 
         # Collapsed by default: this is the one control in the whole left
         # panel aimed at a technical reader double-checking the exact ffmpeg
@@ -294,9 +424,13 @@ class MainWindow(QMainWindow):
 
         encoding_group = QGroupBox("Encoding")
         self.video_form = form = QFormLayout(encoding_group)
+        # Default Fusion spacing reads as cramped once every row has a small
+        # secondary line under it (quality/speed tiers, the bit-depth combo's
+        # own description) -- confirmed by screenshot, this is the fix.
+        form.setVerticalSpacing(14)
 
         self.encoder_combo = QComboBox()
-        for _, label in ENCODERS:
+        for _, _, label in ENCODERS:
             self.encoder_combo.addItem(label)
         self.encoder_combo.currentIndexChanged.connect(self._on_encoder_changed)
         form.addRow("Encoder:", self.encoder_combo)
@@ -334,18 +468,31 @@ class MainWindow(QMainWindow):
             self.rc_button_group.addButton(btn)
             rc_row.addWidget(btn, 1)
         self.rc_quality_btn.clicked.connect(
-            lambda: self._set_rc_mode(RC_MODE_FRIENDLY[self._current_encoder_id()]["quality"])
+            lambda: self._set_rc_mode(RC_MODE_FRIENDLY[self._current_encoder_key()]["quality"])
         )
         self.rc_filesize_btn.clicked.connect(
-            lambda: self._set_rc_mode(RC_MODE_FRIENDLY[self._current_encoder_id()]["file_size"])
+            lambda: self._set_rc_mode(RC_MODE_FRIENDLY[self._current_encoder_key()]["file_size"])
         )
         self.rc_advanced_btn.clicked.connect(
-            lambda: self._set_rc_mode(RC_MODE_FRIENDLY[self._current_encoder_id()]["advanced"])
+            lambda: self._set_rc_mode(RC_MODE_FRIENDLY[self._current_encoder_key()]["advanced"])
         )
         form.addRow("Rate control:", rc_row)
 
         quality_row = QHBoxLayout()
         self.quality_slider = QSlider(Qt.Horizontal)
+        # Left = worse quality/smaller, right = better quality/larger --
+        # the intuitive direction for a horizontal slider. The underlying
+        # ICQ/CQP/CRF value this drives is the opposite (lower number is
+        # better quality), so invertedAppearance/-Controls flips the visual
+        # and interaction direction while .value() keeps returning the real
+        # number untouched -- Qt handles the remapping, nothing downstream
+        # (settings, presets, build_args) needs to know this happened.
+        self.quality_slider.setInvertedAppearance(True)
+        self.quality_slider.setInvertedControls(True)
+        self.quality_slider.setToolTip(
+            "Left: more compression, smaller file.\n"
+            "Right: higher quality, larger file."
+        )
         self.quality_slider.valueChanged.connect(self._on_quality_changed)
         self.quality_label = QLabel()
         self.quality_label.setStyleSheet("font-size: 9pt;")
@@ -359,17 +506,53 @@ class MainWindow(QMainWindow):
         quality_row.addWidget(self.quality_slider, 1)
         quality_row.addWidget(self.quality_label)
         quality_row.addWidget(self.size_spin, 1)
-        form.addRow("Quality:", quality_row)
 
+        # Only one of these two is ever visible at a time (is_bitrate in
+        # _on_rc_mode_changed) -- same one-row-two-widgets pattern as
+        # quality_slider/size_spin just above, rather than two separate rows
+        # where one is always an empty gap.
+        # stretch=1 on both (only one is ever visible at a time) so each
+        # claims the row's full width and its own AlignCenter has something
+        # to center within -- otherwise a shrink-wrapped label sits flush
+        # left with nothing to visually tie it to the slider above it.
+        quality_detail_row = QHBoxLayout()
+        self.quality_tier_label = QLabel()
+        self.quality_tier_label.setAlignment(Qt.AlignCenter)
+        self.quality_tier_label.setStyleSheet("font-size: 9pt;")
         self.size_estimate_label = QLabel()
+        self.size_estimate_label.setAlignment(Qt.AlignCenter)
         self.size_estimate_label.setStyleSheet("font-size: 9pt;")
-        form.addRow("", self.size_estimate_label)
+        quality_detail_row.addWidget(self.quality_tier_label, 1)
+        quality_detail_row.addWidget(self.size_estimate_label, 1)
+
+        # The slider and its fuzzy caption underneath share one outlined
+        # box (objectName carries the QSS rule -- see style.qss's
+        # #fuzzyGroup, shared with Speed's identical box below) instead of
+        # being two independent-looking form rows -- the caption explains
+        # *that specific slider*, so it reads better visually grouped with
+        # it rather than just sitting in the row underneath.
+        quality_group = QWidget()
+        quality_group.setObjectName("fuzzyGroup")
+        quality_group_layout = QVBoxLayout(quality_group)
+        quality_group_layout.setContentsMargins(8, 6, 8, 6)
+        quality_group_layout.addLayout(quality_row)
+        quality_group_layout.addLayout(quality_detail_row)
+        form.addRow("Quality:", quality_group)
 
         speed_row = QHBoxLayout()
         self.speed_faster_label = QLabel("Faster")
         speed_row.addWidget(self.speed_faster_label)
         self.speed_slider = QSlider(Qt.Horizontal)
         self.speed_slider.setRange(1, 7)
+        # Same reasoning as the Quality slider's inversion above: left=fast,
+        # right=thorough is the intuitive direction, and it's now also the
+        # *correct* one -- confirmed by timing real encodes at
+        # compression_level 1/4/7 (22.4s/18.8s/11.3s, smallest to largest
+        # output in that order too), a lower value is genuinely slower, not
+        # just assumed. Before this, "Faster" sat on the end that was
+        # actually the slowest.
+        self.speed_slider.setInvertedAppearance(True)
+        self.speed_slider.setInvertedControls(True)
         self.speed_slider.valueChanged.connect(self._on_speed_slider_changed)
         speed_row.addWidget(self.speed_slider, 1)
         self.speed_thorough_label = QLabel("More Thorough")
@@ -379,17 +562,30 @@ class MainWindow(QMainWindow):
         self.speed_combo.setCurrentText("medium")
         self.speed_combo.currentIndexChanged.connect(self._on_control_changed)
         speed_row.addWidget(self.speed_combo, 1)
-        form.addRow("Speed:", speed_row)
 
+        self.speed_tier_label = QLabel()
+        self.speed_tier_label.setAlignment(Qt.AlignCenter)
+        self.speed_tier_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.speed_tier_label.setStyleSheet("font-size: 9pt;")
+
+        # Same outlined-box grouping as Quality above, same #fuzzyGroup rule.
+        speed_group = QWidget()
+        speed_group.setObjectName("fuzzyGroup")
+        speed_group_layout = QVBoxLayout(speed_group)
+        speed_group_layout.setContentsMargins(8, 6, 8, 6)
+        speed_group_layout.addLayout(speed_row)
+        speed_group_layout.addWidget(self.speed_tier_label)
+        form.addRow("Speed:", speed_group)
+
+        # Bit depth's tradeoff used to live in a separate caption row below
+        # the combo -- folded directly into the item text instead (one less
+        # row fighting Quality/Speed for space, and the tradeoff is right
+        # there the moment the dropdown opens rather than a beat later).
         self.bitdepth_combo = QComboBox()
-        self.bitdepth_combo.addItems(["8-bit", "10-bit"])
-        self.bitdepth_combo.setCurrentText("10-bit")
+        self.bitdepth_combo.addItem("10-bit -- smoother gradients, larger file", userData=10)
+        self.bitdepth_combo.addItem("8-bit -- smaller, maximum compatibility", userData=8)
         self.bitdepth_combo.currentIndexChanged.connect(self._on_control_changed)
         form.addRow("Bit depth:", self.bitdepth_combo)
-
-        bitdepth_hint = QLabel("10-bit: smoother gradients, larger file  ·  8-bit: smaller, maximum compatibility")
-        bitdepth_hint.setStyleSheet("font-size: 9pt;")
-        form.addRow("", bitdepth_hint)
 
         self.tune_combo = QComboBox()
         self.tune_combo.addItems(X265_TUNES)
@@ -462,7 +658,26 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel(
             "Queue (drag files here, or use Add Files — select a row to edit its settings live):"
         ))
-        self.queue_list = DropListWidget(self.add_files)
+        self.queue_list = DropTreeWidget(self.add_files)
+        self.queue_list.setColumnCount(len(QUEUE_COLUMN_HEADERS))
+        self.queue_list.setHeaderLabels(QUEUE_COLUMN_HEADERS)
+        # File is Interactive/user-resizable, not Stretch (which auto-
+        # claims leftover space but also makes Qt refuse to let it be
+        # dragged at all, silently, with no visible resize handle) --
+        # explicit initial widths below instead of Qt's generic default,
+        # sized to each column's actual content ("H.264 1280x720",
+        # "392.2KB", ...). Result, the last column, is the one exception:
+        # setStretchLastSection(True) makes *it* claim whatever's left
+        # over on the right rather than leaving a bare gap between it and
+        # the panel's edge -- losing manual-resize on Result specifically
+        # is an easy trade, unlike File, since its content ("612.3MB (71%
+        # smaller)") doesn't vary anywhere near as much as a filename does.
+        self.queue_list.header().setStretchLastSection(True)
+        for col, width in (
+            (FILE_COL, 150), (VIDEO_COL, 130), (DURATION_COL, 70),
+            (AUDIO_COL, 60), (SIZE_COL, 52), (RESULT_COL, 85),
+        ):
+            self.queue_list.setColumnWidth(col, width)
         self.queue_list.itemSelectionChanged.connect(self._on_queue_selection_changed)
         layout.addWidget(self.queue_list, 1)
 
@@ -483,7 +698,13 @@ class MainWindow(QMainWindow):
         # makes -- it lives right next to Start, where it's actually used.
         out_row = QHBoxLayout()
         self.output_edit = QLineEdit(str(self.output_dir))
-        self.output_edit.setReadOnly(True)
+        # Typing a path directly, not just Change...'s browse dialog -- the
+        # dialog only ever hands back a real, already-existing directory,
+        # so unlike there, a typed path isn't checked to exist here either;
+        # it's created on demand (mkdir(parents=True, exist_ok=True)) the
+        # same way a browsed-to path already was, right before it's
+        # actually used (Start, Open).
+        self.output_edit.editingFinished.connect(self._on_output_edit_changed)
         browse_btn = QPushButton("Change…")
         browse_btn.clicked.connect(self._pick_output_dir)
         open_btn = QPushButton("Open")
@@ -539,24 +760,45 @@ class MainWindow(QMainWindow):
     def _current_encoder_id(self) -> str:
         return ENCODERS[self.encoder_combo.currentIndex()][0]
 
+    def _current_gpu_vendor(self) -> str | None:
+        return ENCODERS[self.encoder_combo.currentIndex()][1]
+
+    def _current_encoder_key(self) -> str:
+        """RC_MODES/RC_MODE_FRIENDLY lookup key -- encoder id alone isn't
+        specific enough once two GPU vendors share "hevc_vaapi" but support
+        different rc_modes (AMD's driver rejects ICQ outright)."""
+        return encoder_profile_key(self._current_encoder_id(), self._current_gpu_vendor())
+
     def _on_encoder_changed(self):
         encoder = self._current_encoder_id()
+        encoder_key = self._current_encoder_key()
         is_vaapi = encoder == "hevc_vaapi"
 
         self.rc_mode_combo.blockSignals(True)
         self.rc_mode_combo.clear()
-        for value, label in RC_MODES[encoder]:
+        for value, label in RC_MODES[encoder_key]:
             self.rc_mode_combo.addItem(label, userData=value)
         self.rc_mode_combo.blockSignals(False)
 
-        # CQP (the Advanced button) has no libx265 equivalent in RC_MODES.
-        self.rc_advanced_btn.setVisible(RC_MODE_FRIENDLY[encoder]["advanced"] is not None)
+        # CQP (the Advanced button) has no libx265 equivalent, and AMD's
+        # driver has no ICQ to demote it in favor of in the first place.
+        self.rc_advanced_btn.setVisible(RC_MODE_FRIENDLY[encoder_key]["advanced"] is not None)
 
         self.speed_slider.setVisible(is_vaapi)
         self.speed_faster_label.setVisible(is_vaapi)
         self.speed_thorough_label.setVisible(is_vaapi)
         self.speed_combo.setVisible(not is_vaapi)
         self._on_speed_slider_changed()
+        # Plain setVisible here, not setRowVisible -- speed_tier_label
+        # used to be the sole widget on its own dedicated form row, where
+        # setVisible(False) alone left that row's spacing/margin reserved
+        # (confirmed by screenshot, a slight extra gap under Speed
+        # specifically when x265 was selected that Intel/AMD didn't have).
+        # Now that it's nested in speed_group's QVBoxLayout instead (see
+        # #fuzzyGroup above), a plain QVBoxLayout already collapses a
+        # hidden child's space correctly on its own -- that gap was
+        # QFormLayout-row-specific behavior, not a general Qt quirk.
+        self.speed_tier_label.setVisible(is_vaapi)
         self.video_form.setRowVisible(self.tune_combo, not is_vaapi)
 
         # Repopulating above ran with signals blocked (clearing/adding items
@@ -575,6 +817,7 @@ class MainWindow(QMainWindow):
         is_bitrate = rc_mode in BITRATE_RC_MODES
         self.quality_slider.setVisible(not is_bitrate)
         self.quality_label.setVisible(not is_bitrate)
+        self.quality_tier_label.setVisible(not is_bitrate)
         self.size_spin.setVisible(is_bitrate)
         self.size_estimate_label.setVisible(is_bitrate)
         if not is_bitrate:
@@ -587,9 +830,31 @@ class MainWindow(QMainWindow):
         else:
             self._on_control_changed()
 
+    @staticmethod
+    def _fraction_of(slider: QSlider) -> float:
+        lo, hi = slider.minimum(), slider.maximum()
+        return (slider.value() - lo) / (hi - lo) if hi > lo else 0.0
+
+    @staticmethod
+    def _tier_label(fraction: float, low_text: str, mid_text: str, high_text: str) -> str:
+        if fraction < 0.34:
+            return low_text
+        if fraction < 0.67:
+            return mid_text
+        return high_text
+
     def _on_quality_changed(self):
         rc_mode = self.rc_mode_combo.currentData()
         self.quality_label.setText(f"{self.quality_slider.value()} ({rc_mode})")
+        # Fraction 0 = the lowest ICQ/CQP/CRF number = the *best* quality
+        # end (these all share the same lower-is-better convention) -- so
+        # low_text here is what belongs at that end, not what reads first.
+        self.quality_tier_label.setText(self._tier_label(
+            self._fraction_of(self.quality_slider),
+            "Production / archival -- near-lossless, largest files",
+            "Movies & TV -- a solid general-purpose target",
+            "Documentary / lighter footage -- more compression, smaller files",
+        ))
         self._on_control_changed()
 
     def _set_rc_mode(self, value: str):
@@ -605,7 +870,7 @@ class MainWindow(QMainWindow):
         # repopulating it, or a preset/queue-selection load -- rather than
         # scattering a sync call across every one of those call sites.
         value = self.rc_mode_combo.currentData()
-        friendly = RC_MODE_FRIENDLY[self._current_encoder_id()]
+        friendly = RC_MODE_FRIENDLY[self._current_encoder_key()]
         if value == friendly["quality"]:
             self.rc_quality_btn.setChecked(True)
         elif value == friendly["file_size"]:
@@ -614,7 +879,20 @@ class MainWindow(QMainWindow):
             self.rc_advanced_btn.setChecked(True)
 
     def _on_speed_slider_changed(self):
-        self.speed_slider.setToolTip(f"{self.speed_slider.value()} / {self.speed_slider.maximum()}")
+        self.speed_slider.setToolTip(
+            "Left: faster encode.\n"
+            "Right: slower, more size-efficient at the same quality.\n"
+            f"(compression_level {self.speed_slider.value()}/{self.speed_slider.maximum()})"
+        )
+        # Fraction 0 = compression_level 1 = confirmed (real timing test:
+        # 22.4s vs. 11.3s at level 7, smaller output too) the slowest and
+        # most size-efficient end, not just the visually-leftmost one.
+        self.speed_tier_label.setText(self._tier_label(
+            self._fraction_of(self.speed_slider),
+            "Thorough -- best efficiency, worth it for archival masters",
+            "Balanced -- a solid default for most encodes",
+            "Fast -- good for quick previews or large batches",
+        ))
         self._on_control_changed()
 
     def _on_control_changed(self):
@@ -634,10 +912,9 @@ class MainWindow(QMainWindow):
             return
         settings = self._current_settings()
         for item in self.queue_list.selectedItems():
-            job = item.data(Qt.UserRole)
+            job = item.data(STATUS_COL, Qt.UserRole)
             job.update(settings)
-            item.setData(Qt.UserRole, job)
-            item.setText(self._format_item_text(job))
+            item.setData(STATUS_COL, Qt.UserRole, job)
 
     def _on_queue_selection_changed(self):
         selected = self.queue_list.selectedItems()
@@ -647,7 +924,7 @@ class MainWindow(QMainWindow):
         # one's. Any control change from here applies to all of them --
         # this is the direct-manipulation replacement for the old "Apply
         # Settings to Selected" button.
-        job = selected[0].data(Qt.UserRole)
+        job = selected[0].data(STATUS_COL, Qt.UserRole)
         self._syncing_controls_from_selection = True
         try:
             self._apply_settings_to_controls(job)
@@ -660,12 +937,12 @@ class MainWindow(QMainWindow):
         settings = self._current_settings()
         output_path = Path(f"output.{settings['container']}")
         try:
-            if self.queue_list.count() > 0:
+            if self.queue_list.topLevelItemCount() > 0:
                 # A real file is queued -- probe its actual audio track and
                 # duration (both cached, so dragging a slider doesn't shell
                 # out to ffprobe repeatedly) instead of guessing, so the
                 # preview matches what will really run.
-                first_path = self.queue_list.item(0).data(Qt.UserRole)["path"]
+                first_path = self.queue_list.topLevelItem(0).data(STATUS_COL, Qt.UserRole)["path"]
                 audio_codec = self._preview_audio_codec(first_path, settings["audio_track"])
                 args = worker.build_args(
                     settings, first_path, output_path,
@@ -723,10 +1000,10 @@ class MainWindow(QMainWindow):
     def _update_size_estimate_label(self, settings: dict):
         if not hasattr(self, "size_estimate_label") or settings["rc_mode"] not in BITRATE_RC_MODES:
             return
-        if self.queue_list.count() == 0:
+        if self.queue_list.topLevelItemCount() == 0:
             self.size_estimate_label.setText("Add a file to estimate the resulting bitrate")
             return
-        first_path = self.queue_list.item(0).data(Qt.UserRole)["path"]
+        first_path = self.queue_list.topLevelItem(0).data(STATUS_COL, Qt.UserRole)["path"]
         duration = self._preview_duration(first_path)
         if duration <= 0:
             self.size_estimate_label.setText("Couldn't read this file's duration to estimate bitrate")
@@ -737,12 +1014,20 @@ class MainWindow(QMainWindow):
         self.size_estimate_label.setText(f"≈ {video_kbps:,} kbps video for this file's length (estimate)")
 
     def _update_preset_modified_indicator(self):
-        if not hasattr(self, "preset_modified_label"):
+        # A dynamic property + QSS[modified="true"] recoloring the combo's
+        # own text, not a separate "(modified)" label -- that label's
+        # appearing/disappearing changed the preset row's width and visibly
+        # reflowed the window every time a control was touched, confirmed
+        # by screenshot. Recoloring in place needs no space of its own.
+        if not hasattr(self, "preset_combo"):
             return
-        if self._loaded_preset_settings is None:
-            self.preset_modified_label.setVisible(False)
-            return
-        self.preset_modified_label.setVisible(self._current_settings() != self._loaded_preset_settings)
+        modified = (
+            self._loaded_preset_settings is not None
+            and self._current_settings() != self._loaded_preset_settings
+        )
+        self.preset_combo.setProperty("modified", modified)
+        self.preset_combo.style().unpolish(self.preset_combo)
+        self.preset_combo.style().polish(self.preset_combo)
 
     # --- settings <-> controls ---
     def _current_settings(self) -> dict:
@@ -752,10 +1037,11 @@ class MainWindow(QMainWindow):
         res = RESOLUTIONS[self.res_combo.currentIndex()]
         return {
             "encoder": encoder,
+            "gpu_vendor": self._current_gpu_vendor(),
             "rc_mode": rc_mode,
             "quality_value": self.size_spin.value() if is_bitrate else self.quality_slider.value(),
             "speed": self.speed_combo.currentText() if encoder == "libx265" else str(self.speed_slider.value()),
-            "bit_depth": 10 if self.bitdepth_combo.currentText() == "10-bit" else 8,
+            "bit_depth": self.bitdepth_combo.currentData(),
             "width": res["width"],
             "height": res["height"],
             "container": self.container_combo.currentText(),
@@ -767,7 +1053,14 @@ class MainWindow(QMainWindow):
         }
 
     def _apply_settings_to_controls(self, settings: dict):
-        encoder_index = 0 if settings["encoder"] == "hevc_vaapi" else 1
+        # .get("gpu_vendor", "intel"): presets/queue jobs saved before this
+        # key existed only ever meant the Intel path (it was the only VAAPI
+        # option then), so that's the correct default for anything missing it.
+        wanted_vendor = settings.get("gpu_vendor", "intel") if settings["encoder"] == "hevc_vaapi" else None
+        encoder_index = next(
+            (i for i, (enc, vendor, _) in enumerate(ENCODERS)
+             if enc == settings["encoder"] and vendor == wanted_vendor), 0
+        )
         self.encoder_combo.setCurrentIndex(encoder_index)  # cascades rc_mode/speed/tune rebuild
 
         rc_index = next(
@@ -786,7 +1079,9 @@ class MainWindow(QMainWindow):
         else:
             self.speed_slider.setValue(int(settings["speed"]))
 
-        self.bitdepth_combo.setCurrentText("10-bit" if settings["bit_depth"] == 10 else "8-bit")
+        bitdepth_index = self.bitdepth_combo.findData(settings["bit_depth"])
+        if bitdepth_index >= 0:
+            self.bitdepth_combo.setCurrentIndex(bitdepth_index)
 
         res_index = next(
             (i for i, r in enumerate(RESOLUTIONS)
@@ -801,18 +1096,54 @@ class MainWindow(QMainWindow):
         self.audio_bitrate_combo.setCurrentText(settings["audio_bitrate"])
         self._update_command_preview()
 
-    def _format_item_text(self, job: dict) -> str:
-        enc_tag = "VAAPI" if job["encoder"] == "hevc_vaapi" else "x265"
-        rc = job["rc_mode"]
-        qv = job["quality_value"]
-        q_str = f"{qv}MB" if rc in BITRATE_RC_MODES else f"{rc}{qv}"
-        res_label = self._res_label.get((job["width"], job["height"]), f"{job['width']}x{job['height']}")
-        deinterlace_tag = " · Deinterlace" if job.get("deinterlace") else ""
-        return (
-            f"{job['path'].name}   "
-            f"[{enc_tag} {job['bit_depth']}b · {q_str} · {res_label} · "
-            f"{AUDIO_TRACK_LABELS[job['audio_track']]} · {job.get('container', 'mp4')}{deinterlace_tag}]"
-        )
+    @staticmethod
+    def _video_codec_label(codec_name: str | None) -> str:
+        if not codec_name:
+            return "?"
+        return _VIDEO_CODEC_LABELS.get(codec_name, codec_name.upper())
+
+    @staticmethod
+    def _audio_codec_label(codec_name: str | None) -> str:
+        if not codec_name:
+            return "?"
+        return _AUDIO_CODEC_LABELS.get(codec_name, codec_name.upper())
+
+    @staticmethod
+    def _audio_channel_label(channels: int | None) -> str:
+        if not channels:
+            return "?"
+        return _AUDIO_CHANNEL_LABELS.get(channels, f"{channels}ch")
+
+    def _refresh_video_cell(self, item: QTreeWidgetItem):
+        # Video-column text depends on two independent async results (the
+        # source probe's codec+resolution label, stashed on this column's
+        # own UserRole slot, and the interlace detector's job["deinterlace"]
+        # flag) that can land in either order -- recomputing from both each
+        # time either one arrives, rather than concatenating piecemeal,
+        # keeps the result correct regardless of which finishes first.
+        base_label = item.data(VIDEO_COL, Qt.UserRole)
+        if not base_label:
+            return
+        job = item.data(STATUS_COL, Qt.UserRole)
+        suffix = " (interlaced)" if job and job.get("deinterlace") else ""
+        item.setText(VIDEO_COL, f"{base_label}{suffix}")
+
+    def _make_queue_row(self, job: dict) -> QTreeWidgetItem:
+        # Deliberately source-properties-only (file/resolution/duration/
+        # codecs/size) -- the chosen output settings (encoder, quality,
+        # container, ...) already live in and edit live from the right-hand
+        # panel for whichever row is selected, so repeating them here would
+        # just be the same information twice.
+        item = QTreeWidgetItem()
+        item.setData(STATUS_COL, Qt.UserRole, job)
+        item.setText(FILE_COL, job["path"].name)
+        for col in range(len(QUEUE_COLUMN_HEADERS)):
+            item.setToolTip(col, str(job["path"]))
+        try:
+            item.setText(SIZE_COL, self._format_size(job["path"].stat().st_size))
+        except OSError:
+            pass
+        return item
 
     # --- preset management ---
     def _all_presets(self) -> list[dict]:
@@ -885,13 +1216,25 @@ class MainWindow(QMainWindow):
         for path in paths:
             if path.is_file():
                 job = {"path": path, **self._current_settings()}
-                item = QListWidgetItem(self._format_item_text(job))
-                item.setData(Qt.UserRole, job)
-                self.queue_list.addItem(item)
+                item = self._make_queue_row(job)
+                self.queue_list.addTopLevelItem(item)
                 self._start_interlace_detection(item, path)
+                self._start_source_probe(item, path)
+                if not self._queue_editable:
+                    # A run is already in progress -- keep it going instead
+                    # of silently adding a row that would otherwise just sit
+                    # there until the user noticed and clicked Start again.
+                    # add_job takes a plain snapshot dict, not a live
+                    # reference to this item's data (QTreeWidgetItem.setData/
+                    # .data() round-trips a copy, confirmed empirically, so
+                    # a shared reference wouldn't see the interlace-detection
+                    # update below anyway) -- self._running_items grows in
+                    # lockstep so _on_job_started's index lookup stays valid.
+                    self.queue.add_job(dict(job))
+                    self._running_items.append(item)
         self._update_command_preview()  # may now reflect a real queued file's audio
 
-    def _start_interlace_detection(self, item: QListWidgetItem, path: Path):
+    def _start_interlace_detection(self, item: QTreeWidgetItem, path: Path):
         # Runs async (real files can take tens of seconds to sample) --
         # never blocks adding files, the item just updates once this lands.
         args = worker.build_idet_args(path)
@@ -906,18 +1249,24 @@ class MainWindow(QMainWindow):
         self._detection_processes.append(proc)
         proc.start()
 
-    def _on_interlace_detected(self, item: QListWidgetItem, stderr_text: str):
+    def _on_interlace_detected(self, item: QTreeWidgetItem, stderr_text: str):
         self._detection_processes = [p for p in self._detection_processes if p.state() != QProcess.NotRunning]
         try:
-            job = item.data(Qt.UserRole)
+            job = item.data(STATUS_COL, Qt.UserRole)
         except RuntimeError:
             return  # item's C++ object was deleted (e.g. Clear Queue) before detection finished
         if job is None:
             return
         fraction = worker.parse_idet_output(stderr_text)
         job["deinterlace"] = fraction > worker.INTERLACE_DETECT_THRESHOLD
-        item.setData(Qt.UserRole, job)
-        item.setText(self._format_item_text(job))
+        item.setData(STATUS_COL, Qt.UserRole, job)
+        self._refresh_video_cell(item)
+        # If this file was added mid-run (see add_files), the running queue
+        # got its own snapshot copy of job at add time, made before this
+        # detection result was known -- patch that copy too, or a file
+        # added while encoding was in progress would always encode with
+        # deinterlace off regardless of what detection actually found.
+        self.queue.update_pending_job(job["path"], {"deinterlace": job["deinterlace"]})
         # Reflect it in the checkbox if this item happens to be selected, but
         # guarded: without this, updating just this one item's checkbox would
         # cascade into _sync_settings_to_selected_queue_items and stamp this
@@ -931,6 +1280,44 @@ class MainWindow(QMainWindow):
             finally:
                 self._syncing_controls_from_selection = False
 
+    def _start_source_probe(self, item: QTreeWidgetItem, path: Path):
+        # Async for the same reason as _start_interlace_detection above --
+        # ffprobe's header-only read is fast, but "fast" still isn't free
+        # for a large dropped batch or a file on slow/network storage, and
+        # this must never block adding files either.
+        args = worker.build_probe_args(path)
+        proc = QProcess(self)
+        proc.setProgram(args[0])
+        proc.setArguments(args[1:])
+        stdout_chunks: list[str] = []
+        proc.readyReadStandardOutput.connect(
+            lambda: stdout_chunks.append(bytes(proc.readAllStandardOutput()).decode(errors="replace"))
+        )
+        proc.finished.connect(lambda code, status: self._on_source_probed(item, "".join(stdout_chunks)))
+        self._detection_processes.append(proc)
+        proc.start()
+
+    def _on_source_probed(self, item: QTreeWidgetItem, stdout_text: str):
+        self._detection_processes = [p for p in self._detection_processes if p.state() != QProcess.NotRunning]
+        try:
+            item.text(FILE_COL)  # touch the item; raises RuntimeError if its C++ object is gone
+        except RuntimeError:
+            return  # item deleted (e.g. Clear Queue) before the probe landed
+        info = worker.parse_probe_output(stdout_text)
+        if info.get("duration"):
+            item.setText(DURATION_COL, self._format_eta(info["duration"]))
+        if info.get("video_codec"):
+            label = self._video_codec_label(info["video_codec"])
+            if info.get("width") and info.get("height"):
+                label += f" {info['width']}x{info['height']}"
+            item.setData(VIDEO_COL, Qt.UserRole, label)
+            self._refresh_video_cell(item)
+        if info.get("audio_codec"):
+            extra = info.get("audio_track_count", 1) - 1
+            suffix = f"  +{extra} more" if extra > 0 else ""
+            channel_label = self._audio_channel_label(info.get("audio_channels"))
+            item.setText(AUDIO_COL, f"{self._audio_codec_label(info['audio_codec'])} {channel_label}{suffix}")
+
     def _pick_files(self):
         files, _ = QFileDialog.getOpenFileNames(
             self, "Add video files", str(Path.home()), VIDEO_FILTER
@@ -943,17 +1330,22 @@ class MainWindow(QMainWindow):
             self.output_dir = Path(d)
             self.output_edit.setText(d)
 
+    def _on_output_edit_changed(self):
+        text = self.output_edit.text().strip()
+        if text:
+            self.output_dir = Path(text)
+
     def _open_output_dir(self):
         self.output_dir.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.output_dir)))
 
     def _remove_selected(self):
         for item in self.queue_list.selectedItems():
-            self.queue_list.takeItem(self.queue_list.row(item))
+            self.queue_list.takeTopLevelItem(self.queue_list.indexOfTopLevelItem(item))
         self._update_command_preview()
 
     def _clear_queue(self):
-        count = self.queue_list.count()
+        count = self.queue_list.topLevelItemCount()
         if count == 0:
             return
         if QMessageBox.question(
@@ -965,7 +1357,8 @@ class MainWindow(QMainWindow):
 
     # --- run control ---
     def _start(self):
-        jobs = [self.queue_list.item(i).data(Qt.UserRole) for i in range(self.queue_list.count())]
+        jobs = [self.queue_list.topLevelItem(i).data(STATUS_COL, Qt.UserRole)
+                 for i in range(self.queue_list.topLevelItemCount())]
         if not jobs:
             self.status_label.setText("Queue is empty")
             return
@@ -978,9 +1371,10 @@ class MainWindow(QMainWindow):
         # is locked for the run's duration (_set_queue_editable(False)), so
         # this position-based snapshot stays valid throughout -- job_started's
         # 1-based index is enough to look up which row is now running.
-        self._running_items = [self.queue_list.item(i) for i in range(self.queue_list.count())]
+        self._running_items = [self.queue_list.topLevelItem(i) for i in range(self.queue_list.topLevelItemCount())]
         for item in self._running_items:
-            item.setIcon(QIcon())  # clear any status icon left from a previous run
+            item.setIcon(STATUS_COL, QIcon())  # clear any status icon left from a previous run
+            item.setText(RESULT_COL, "")  # clear a previous run's result too
         self.queue.start(jobs, self.output_dir)
 
     def _stop(self):
@@ -988,15 +1382,17 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(False)
 
     def _set_queue_editable(self, editable: bool):
-        # TranscodeQueue.start() snapshots the job list once; editing the
-        # visible queue after that point can't affect jobs already running
-        # or already skipped, so it just makes the list lie about what's
-        # actually executing. Lock it for the duration of a run -- this also
-        # gates live selection-editing (_sync_settings_to_selected_queue_items),
-        # so selecting an already-finished row to check its tooltip during a
+        # Add Files is deliberately NOT gated by this -- add_files() pushes
+        # a file dropped in mid-run straight into the run in progress
+        # (queue.add_job/update_pending_job), matching drag-and-drop, which
+        # was never blocked by this flag either. Remove/Clear stay locked
+        # during a run, though: removing or reordering can't affect a job
+        # already running or already finished, so it'd just make the list
+        # lie about what's actually executing. This also gates live
+        # selection-editing (_sync_settings_to_selected_queue_items), so
+        # selecting an already-finished row to check its tooltip during a
         # run can't accidentally overwrite its (now purely historical) settings.
         self._queue_editable = editable
-        self.add_files_btn.setEnabled(editable)
         self.remove_btn.setEnabled(editable)
         self.clear_btn.setEnabled(editable)
 
@@ -1007,7 +1403,7 @@ class MainWindow(QMainWindow):
         self.stats_label.setText("—")
         self.log_view.appendPlainText(f"\n=== Starting {path} ===")
         self._current_running_item = self._running_items[index - 1]
-        self._current_running_item.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self._current_running_item.setIcon(STATUS_COL, self.style().standardIcon(QStyle.SP_MediaPlay))
 
     def _on_job_progress(self, fraction: float):
         self.progress_bar.setValue(int(fraction * 1000))
@@ -1033,17 +1429,17 @@ class MainWindow(QMainWindow):
     def _on_job_finished(self, path: str, output_path: str):
         self.log_view.appendPlainText(f"=== Done: {path} ===")
         if self._current_running_item is not None:
-            self._current_running_item.setIcon(self.style().standardIcon(QStyle.SP_DialogApplyButton))
+            self._current_running_item.setIcon(STATUS_COL, self.style().standardIcon(QStyle.SP_DialogApplyButton))
             self._append_result_size(self._current_running_item, Path(path), Path(output_path))
 
     def _on_job_failed(self, path: str, reason: str):
         self.log_view.appendPlainText(f"=== FAILED: {path}: {reason} ===")
         if self._current_running_item is not None:
-            self._current_running_item.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxWarning))
-            self._current_running_item.setToolTip(reason)
+            self._current_running_item.setIcon(STATUS_COL, self.style().standardIcon(QStyle.SP_MessageBoxWarning))
+            self._current_running_item.setToolTip(STATUS_COL, reason)
 
     @staticmethod
-    def _append_result_size(item: QListWidgetItem, input_path: Path, output_path: Path):
+    def _append_result_size(item: QTreeWidgetItem, input_path: Path, output_path: Path):
         try:
             in_size = input_path.stat().st_size
             out_size = output_path.stat().st_size
@@ -1053,7 +1449,7 @@ class MainWindow(QMainWindow):
             return
         change_pct = 100 * (1 - out_size / in_size)
         direction = "smaller" if change_pct >= 0 else "larger"
-        item.setText(f"{item.text()}  →  {MainWindow._format_size(out_size)} ({abs(change_pct):.0f}% {direction})")
+        item.setText(RESULT_COL, f"{MainWindow._format_size(out_size)} ({abs(change_pct):.0f}% {direction})")
 
     @staticmethod
     def _format_size(num_bytes: int) -> str:
@@ -1073,19 +1469,56 @@ class MainWindow(QMainWindow):
         self.stats_label.setText("—")
 
 
-def _load_stylesheet(app, style_path: Path = Path(__file__).parent / "style.qss"):
+def _load_stylesheet(app, theme_name: str = "dark", style_path: Path = Path(__file__).parent / "style.qss"):
     try:
         text = style_path.read_text()
         # QSS url() is resolved relative to the process's working directory,
         # not the .qss file's location -- not safe to hardcode given launch.sh
         # cd's first but a direct `python3 main.py` from elsewhere wouldn't.
-        # Substituting an absolute path here keeps style.qss itself portable.
+        # Substituting an absolute path in for each *_ICON token below (e.g.
+        # $CHECK_ICON) keeps style.qss itself portable.
         assets_dir = style_path.parent / "assets"
-        app.setStyleSheet(text.replace("$ASSETS", str(assets_dir)))
+        palette = themes.THEMES.get(theme_name, themes.THEMES["dark"])
+        # Longest token first: "$BG_CONTROL" is a literal prefix of
+        # "$BG_CONTROL_HOVER" and "$BG_CONTROL_PRESSED" (same for
+        # $ACCENT/$ACCENT_HOVER/$ACCENT_PRESSED, $BORDER/$BORDER_STRONG/
+        # $BORDER_HOVER) -- replacing the short one first would consume
+        # the start of the longer token's name too, corrupting it before
+        # its own turn came up. Sorting longest-first is what makes plain
+        # str.replace() safe here regardless of which tokens exist.
+        for token in sorted(palette, key=len, reverse=True):
+            value = palette[token]
+            if token.endswith("_ICON"):
+                value = str(assets_dir / value)
+            text = text.replace(f"${token}", value)
+        app.setStyleSheet(text)
     except OSError as exc:
         # Missing/unreadable style.qss shouldn't take the whole app down --
         # fall back to plain Fusion rather than crash at startup over theming.
         print(f"Warning: couldn't load {style_path} ({exc}); using unstyled Fusion.")
+
+
+def _validate_theme_choice(value) -> str:
+    """QSettings hands back whatever was last stored there, which could be
+    anything -- a hand-edited config file, a future/foreign version of this
+    app, or simply nothing yet on first launch. Anything other than one of
+    the three real choices falls back to dark rather than propagating into
+    _resolve_theme (which only knows what to do with those three)."""
+    return value if value in ("dark", "light", "system") else "dark"
+
+
+def _resolve_theme(choice: str) -> str:
+    """"dark"/"light" pass straight through; "system" resolves against the
+    desktop's actual live color-scheme preference (confirmed this reports
+    correctly on this machine's real desktop, not just assumed available
+    because the Qt version is new enough) -- Unknown (a platform that
+    doesn't expose one) falls back to dark, this app's original default."""
+    if choice != "system":
+        return choice
+    scheme = QApplication.instance().styleHints().colorScheme()
+    if scheme == Qt.ColorScheme.Light:
+        return "light"
+    return "dark"
 
 
 def main():
@@ -1094,7 +1527,6 @@ def main():
     # Windows) silently ignore some of the subcontrols the theme relies on,
     # e.g. the slider groove/handle and the combobox popup background.
     app.setStyle("Fusion")
-    _load_stylesheet(app)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

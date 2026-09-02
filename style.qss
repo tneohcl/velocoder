@@ -1,24 +1,53 @@
-/* TITAN-i Transcoder theme. Dark palette, one accent color (blue). Loaded
-   once in main() via app.setStyleSheet() — see that function for why
-   app.setStyle("Fusion") has to be called first (native styles like Breeze
-   ignore several of the subcontrols this file relies on, e.g. the slider
-   groove/handle and the combobox popup). */
+/* TITAN-i Transcoder theme. Every color is a placeholder token (a dollar
+   sign followed by a name, e.g. BG_WINDOW), substituted by
+   _load_stylesheet() in main.py against themes.py's DARK/LIGHT palettes
+   before this ever reaches setStyleSheet() -- same mechanism the asset
+   path placeholder already used, extended to colors. Layout/spacing
+   values (padding, radius, sizes) are NOT tokenized -- they're
+   theme-independent by design, only color should ever differ between
+   Dark/Light/System.
 
+   Loaded once in main() via app.setStyleSheet() -- see that function for
+   why app.setStyle("Fusion") has to be called first (native styles like
+   Breeze ignore several of the subcontrols this file relies on, e.g. the
+   slider groove/handle and the combobox popup). */
+
+/* Transparent by default, not $BG_WINDOW -- this used to paint every
+   plain QWidget (QLabel, QCheckBox, QSlider, and every bare QWidget()
+   used purely as a layout container, e.g. the one holding Effective
+   Command's text box + Copy button) opaquely in $BG_WINDOW regardless of
+   what it was actually nested inside, usually a QGroupBox/QTabWidget pane
+   at $BG_PANEL instead. $BG_WINDOW/$BG_PANEL are close enough in Dark
+   (#1a1d23/#21252c) that this was invisible there; Light's aren't
+   (#eef0f3/#ffffff), and it showed up as labels, checkboxes, and
+   button-adjacent empty space all sitting in a visibly mismatched grey
+   box -- confirmed by screenshot, not assumed, and confirmed latent since
+   before Light theme existed. Every widget that DOES need an opaque
+   background of its own (QMainWindow/QSplitter below, QGroupBox,
+   QPushButton, the form fields, QTreeWidget, ...) already has its own
+   more-specific rule, which still wins regardless of this default. */
 QWidget {
-    background-color: #1a1d23;
-    color: #e6e8eb;
+    background-color: transparent;
+    color: $TEXT_PRIMARY;
     font-size: 10pt;
 }
 
 QMainWindow, QSplitter {
-    background-color: #1a1d23;
+    background-color: $BG_WINDOW;
 }
 
+/* margin-top used to be 14px, just about exactly the title text's own
+   rendered height at 10pt bold -- the title sat straddling the border
+   line instead of clearing it, the classic "native GroupBox" look (a
+   rounded corner visibly cutting through the title text) that reads as
+   dated once the rest of the app is flat and themed. The extra headroom
+   here puts the title fully above the border instead, like a heading over
+   a card rather than a legend embedded in the box's own edge. */
 QGroupBox {
-    background-color: #21252c;
-    border: 1px solid #333944;
+    background-color: $BG_PANEL;
+    border: 1px solid $BORDER;
     border-radius: 8px;
-    margin-top: 14px;
+    margin-top: 22px;
     padding-top: 14px;
     font-weight: 600;
 }
@@ -26,78 +55,128 @@ QGroupBox {
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    left: 12px;
+    /* left: 0, not 12px -- 12px plus this padding's own 6px left a ~18px
+       gap before the title text actually started, well past what the
+       6px padding everything else in this app uses would suggest.
+       top: 0, not a negative offset -- a negative top was tried to nudge
+       the title further up within the margin area, but it pushed the
+       text above the QGroupBox's own bounding box entirely, clipping it
+       (confirmed by screenshot) rather than just tightening the gap to
+       the border below. margin-top above already reserves enough room
+       that no offset is needed at all. */
+    left: 0px;
     padding: 0 6px;
-    color: #4fa8e0;
+    color: $ACCENT;
+}
+
+/* Effective Command / Log -- an ordinary checkable QGroupBox otherwise
+   identical to every other section (same title subcontrol, same border,
+   same everything -- deliberately not styled differently, so collapsing a
+   section doesn't also make its title look unlike Encoding/Format/Audio
+   Settings). Only the checkbox glyph itself is zeroed out here; the
+   trailing arrow that replaces it lives in the title *text*
+   (main.py's _make_collapsible_group), and the whole title bar stays
+   clickable regardless of the glyph's rendered size -- confirmed
+   empirically, not just assumed, since that's the entire premise this
+   relies on. */
+QGroupBox#collapsibleGroup::indicator {
+    width: 0px;
+    height: 0px;
 }
 
 QTabWidget::pane {
-    border: 1px solid #333944;
+    border: 1px solid $BORDER;
     border-radius: 8px;
     top: -1px;
-    background: #21252c;
+    background: $BG_PANEL;
 }
 
+/* Four iterations to get here. A plain underline (no fill, no border)
+   read as floating clickable text, not an actual tab shape. A filled
+   $BG_PANEL selected-tab plus a full $BORDER box read as too heavy a
+   highlight next to unselected tabs' plain outline. Uniform $BG_WINDOW
+   fill on both states (an outline-only middle ground) still wasn't right
+   either -- the selected tab is supposed to represent the *content pane
+   right below it*, and that pane is $BG_PANEL, not $BG_WINDOW, so a
+   selected tab colored like the window instead of its own content still
+   didn't visually belong to what it was selecting. $BG_PANEL fill with
+   the border color *also* set to $BG_PANEL (next attempt) went a step
+   too far -- border-bottom: none below is what actually produces the
+   seamless-with-content look on the one edge that should have it; setting
+   border-color killed the color on all four sides, not just the bottom
+   one that needed it, leaving the selected tab with no visible outline of
+   its own at all. Landed on: border-bottom stays none (seamless into the
+   pane), but the remaining three sides keep a real, visible color --
+   $ACCENT for the selected tab specifically, marking it "active" the same
+   way this app already uses accent color elsewhere, $BORDER for
+   unselected so the tab shape reads even before it's selected. */
 QTabBar::tab {
-    background: transparent;
-    color: #8b93a1;
+    background: $BG_WINDOW;
+    color: $TEXT_SECONDARY;
     padding: 6px 18px;
     margin-right: 2px;
-    border-bottom: 2px solid transparent;
+    margin-top: 2px;
+    border: 1px solid $BORDER;
+    border-bottom: none;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
 }
 
 QTabBar::tab:selected {
-    color: #e6e8eb;
-    border-bottom: 2px solid #4fa8e0;
+    background: $BG_PANEL;
+    color: $TEXT_PRIMARY;
+    border-color: $ACCENT;
+    font-weight: 600;
 }
 
 QTabBar::tab:hover:!selected {
-    color: #c3c8d1;
+    color: $TEXT_TERTIARY;
+    border-color: $BORDER_HOVER;
 }
 
 QPushButton {
-    background-color: #2a2f38;
-    border: 1px solid #3a4049;
+    background-color: $BG_CONTROL;
+    border: 1px solid $BORDER_STRONG;
     border-radius: 6px;
     padding: 6px 14px;
-    color: #e6e8eb;
+    color: $TEXT_PRIMARY;
 }
 
 QPushButton:hover {
-    background-color: #333a45;
-    border-color: #4fa8e0;
+    background-color: $BG_CONTROL_HOVER;
+    border-color: $ACCENT;
 }
 
 QPushButton:pressed {
-    background-color: #23272e;
+    background-color: $BG_CONTROL_PRESSED;
 }
 
 QPushButton:disabled {
-    color: #5a616c;
-    border-color: #2a2f38;
-    background-color: #1e2127;
+    color: $TEXT_DISABLED;
+    border-color: $BG_CONTROL;
+    background-color: $BG_DISABLED;
 }
 
 /* Start/Stop get object names in main.py so they read as the primary and
    destructive actions instead of blending into every other button. */
 QPushButton#startButton {
-    background-color: #4fa8e0;
+    background-color: $ACCENT;
     border: none;
-    color: #0d1117;
+    color: $TEXT_ON_ACCENT;
     font-weight: 600;
 }
 
-QPushButton#startButton:hover { background-color: #6bb8e8; }
-QPushButton#startButton:pressed { background-color: #3d8ec4; }
-QPushButton#startButton:disabled { background-color: #29394a; color: #5a6b7a; }
+QPushButton#startButton:hover { background-color: $ACCENT_HOVER; }
+QPushButton#startButton:pressed { background-color: $ACCENT_PRESSED; }
+QPushButton#startButton:disabled { background-color: $BG_ACCENT_DISABLED; color: $TEXT_ACCENT_DISABLED; }
 
 QPushButton#stopButton:enabled {
-    border-color: #e0614f;
-    color: #e0614f;
+    border-color: $DESTRUCTIVE;
+    color: $DESTRUCTIVE;
 }
 
 QPushButton#stopButton:enabled:hover {
-    background-color: #3a2a28;
+    background-color: $BG_DESTRUCTIVE_HOVER;
 }
 
 /* Rate Control's Quality / File Size / Advanced row -- three adjacent
@@ -128,44 +207,57 @@ QPushButton#segRight {
    tell which of the three was actually selected. font-weight is a second,
    non-color cue riding along with the fill/text-color change. */
 QPushButton#segLeft:checked, QPushButton#segMid:checked, QPushButton#segRight:checked {
-    background-color: #4fa8e0;
-    border-color: #4fa8e0;
-    color: #0d1117;
+    background-color: $ACCENT;
+    border-color: $ACCENT;
+    color: $TEXT_ON_ACCENT;
     font-weight: 600;
 }
 
 QPushButton#segLeft:checked:hover, QPushButton#segMid:checked:hover, QPushButton#segRight:checked:hover {
-    background-color: #6bb8e8;
+    background-color: $ACCENT_HOVER;
 }
 
 QComboBox, QLineEdit, QSpinBox, QPlainTextEdit {
-    background-color: #171a1f;
-    border: 1px solid #333944;
+    background-color: $BG_FIELD;
+    border: 1px solid $BORDER;
     border-radius: 6px;
     padding: 4px 8px;
-    selection-background-color: #4fa8e0;
-    selection-color: #0d1117;
+    selection-background-color: $ACCENT;
+    selection-color: $TEXT_ON_ACCENT;
 }
 
 QComboBox:hover, QLineEdit:hover, QSpinBox:hover {
-    border-color: #454c59;
+    border-color: $BORDER_HOVER;
 }
 
 QComboBox:focus, QLineEdit:focus, QSpinBox:focus, QPlainTextEdit:focus {
-    border-color: #4fa8e0;
+    border-color: $ACCENT;
 }
 
-/* Without these, the up/down buttons inherit QSpinBox's own near-black
-   field background with no border between them and the text, and Fusion's
-   default arrow glyph color (from the palette, never set to a dark-mode
+/* Preset row's "you've changed something since loading this preset"
+   indicator -- recolors the combo's own text rather than a separate
+   "(modified)" label next to it, which took/gave back layout space every
+   time it appeared or disappeared and visibly reflowed the whole window
+   (confirmed by screenshot). main.py's _update_preset_modified_indicator
+   sets this property and re-polishes the widget so Qt re-evaluates it --
+   a dynamic property change alone doesn't trigger a QSS re-match. */
+QComboBox[modified="true"] {
+    color: $ACCENT;
+    font-weight: 600;
+    font-style: italic;
+}
+
+/* Without these, the up/down buttons inherit QSpinBox's own field
+   background with no border between them and the text, and Fusion's
+   default arrow glyph color (from the palette, never set to a theme-aware
    variant since this app has no QPalette of its own, only this stylesheet)
-   is a dark near-black that all but disappears on that background --
-   confirmed by screenshot: the buttons were there and clickable, just
-   effectively invisible. */
+   can end up all but invisible against that background -- confirmed by
+   screenshot in the dark theme originally: the buttons were there and
+   clickable, just effectively invisible. */
 QSpinBox::up-button, QSpinBox::down-button {
-    background-color: #2a2f38;
+    background-color: $BG_CONTROL;
     width: 18px;
-    border-left: 1px solid #333944;
+    border-left: 1px solid $BORDER;
 }
 
 QSpinBox::up-button {
@@ -181,128 +273,237 @@ QSpinBox::down-button {
 }
 
 QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-    background-color: #333a45;
+    background-color: $BG_CONTROL_HOVER;
 }
 
 QSpinBox::up-button:pressed, QSpinBox::down-button:pressed {
-    background-color: #23272e;
+    background-color: $BG_CONTROL_PRESSED;
 }
 
 QSpinBox::up-arrow {
-    image: url($ASSETS/arrow_up.svg);
+    image: url($ARROW_UP_ICON);
     width: 10px;
     height: 6px;
 }
 
 QSpinBox::down-arrow {
-    image: url($ASSETS/arrow_down.svg);
+    image: url($ARROW_DOWN_ICON);
     width: 10px;
     height: 6px;
 }
 
-/* No custom ::drop-down/::down-arrow rule here on purpose: styling the
-   drop-down subcontrol at all suppresses Fusion's built-in arrow glyph
-   unless a replacement image is supplied, which would leave combo boxes
-   looking like plain read-only text fields with no affordance that
-   they're clickable. Fusion's default arrow button already matches this
-   theme closely enough once the field body itself is styled below. */
+/* Styling ::drop-down at all suppresses Fusion's own native button paint
+   underneath -- previously left alone deliberately for that reason, but
+   Fusion's native button (a raised/bordered grey box) doesn't match this
+   theme's flat language at all once everything around it is themed --
+   confirmed by screenshot, it stood out as generic/un-themed next to every
+   other flat control. A themed flat button + $ARROW_DOWN_ICON (the same
+   glyph QSpinBox already uses) replaces it instead of just disabling it,
+   so the "this is a dropdown" affordance doesn't disappear either. */
+QComboBox::drop-down {
+    background-color: $BG_CONTROL;
+    border-left: 1px solid $BORDER;
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
+    width: 22px;
+}
+
+QComboBox::drop-down:hover {
+    background-color: $BG_CONTROL_HOVER;
+}
+
+QComboBox::down-arrow {
+    image: url($ARROW_DOWN_ICON);
+    width: 10px;
+    height: 6px;
+}
 
 QComboBox QAbstractItemView {
-    background-color: #21252c;
-    border: 1px solid #333944;
+    background-color: $BG_PANEL;
+    border: 1px solid $BORDER;
     outline: none;
-    selection-background-color: #4fa8e0;
-    selection-color: #0d1117;
+    selection-background-color: $ACCENT;
+    selection-color: $TEXT_ON_ACCENT;
+}
+
+/* A combobox's popup list isn't just the QAbstractItemView styled above --
+   Qt wraps it in its own QFrame, and that QFrame *is* the popup's actual
+   top-level window (confirmed directly: view.window() is the same QFrame
+   instance as view.parentWidget()), not a nested child the way every
+   other plain QWidget in this app is. The transparent-by-default QWidget
+   rule near the top of this file is exactly right for a nested child
+   (show whatever's already opaquely painted behind it) but wrong for a
+   genuinely top-level popup window, which has nothing behind it to show
+   through to -- confirmed by screenshot as a solid black bar top and
+   bottom of every dropdown, everywhere the QFrame's own area peeked out
+   past the item view's rows. Giving the frame the same $BG_PANEL and no
+   border of its own (the item view above already draws the one visible
+   border) fixes it without touching the general default. */
+QFrame {
+    background-color: $BG_PANEL;
+    border: none;
+}
+
+/* Same root cause, same fix, a third widget type this time: QMessageBox
+   (Clear Queue's confirmation, Delete Preset's, Overwrite?'s) is a
+   genuinely top-level window too (QMessageBox -> QDialog -> QWidget,
+   confirmed via issubclass() -- QDialog is never a nested child the way
+   the rest of this app's plain QWidgets are), so it fell through to the
+   same transparent default and rendered with a solid black body --
+   reported directly, this one isn't reproducible under the offscreen
+   platform's fake compositing any more than the combobox popup was.
+   QInputDialog (Save Preset) and QFileDialog (Add Files/Change output
+   folder, though the latter may use the native OS picker instead of
+   Qt's own) are QDialog subclasses too, confirmed the same way, so this
+   targets QDialog itself rather than QMessageBox alone -- confirmed
+   first that nothing already styled elsewhere in this file is secretly
+   a QDialog too, so this can't clobber an existing rule the way the
+   QFrame/QLabel overlap could have. */
+QDialog {
+    background-color: $BG_PANEL;
+}
+
+/* QLabel is, perhaps surprisingly, a QFrame subclass too (confirmed via
+   issubclass(), not assumed) -- without this override, every label in the
+   app would just have picked up the rule above's $BG_PANEL fill instead
+   of the transparent background it actually needs (see the QWidget
+   default's own comment for why: showing whatever's really behind it,
+   $BG_WINDOW or $BG_PANEL depending where it's nested, rather than
+   opaquely painting one fixed color regardless). More specific than
+   QFrame for an actual QLabel instance, so this wins regardless of which
+   rule appears first in the file. */
+QLabel {
+    background-color: transparent;
 }
 
 QLineEdit:read-only {
-    color: #9aa1ac;
+    color: $TEXT_READONLY;
+}
+
+QSlider {
+    min-height: 26px;
+}
+
+/* Groups a slider row with its fuzzy tier caption directly underneath --
+   Quality+its caption, Speed+its caption (main.py: #fuzzyGroup on the
+   QWidget wrapping each pair). Without this they were just two
+   consecutive, visually independent form rows with nothing showing the
+   caption actually describes the specific slider above it rather than
+   being some unrelated adjacent line. */
+QWidget#fuzzyGroup {
+    border: 1px solid $BORDER;
+    border-radius: 6px;
 }
 
 QSlider::groove:horizontal {
     height: 4px;
-    background: #333944;
+    background: $BORDER;
     border-radius: 2px;
 }
 
 QSlider::sub-page:horizontal {
-    background: #4fa8e0;
+    background: $ACCENT;
     border-radius: 2px;
 }
 
+/* Handle fill is $ACCENT, not $TEXT_PRIMARY -- TEXT_PRIMARY is near-white
+   in Dark (reads fine there) but near-black in Light, which rendered as a
+   heavy black dot the accent-blue groove/sub-page gave no visual reason to
+   expect -- confirmed by screenshot in Light specifically, not assumed
+   from the token values alone. */
 QSlider::handle:horizontal {
-    width: 15px;
-    height: 15px;
+    width: 16px;
+    height: 16px;
     margin: -6px 0;
-    background: #e6e8eb;
-    border-radius: 7px;
+    background: $ACCENT;
+    border: 2px solid $BG_PANEL;
+    border-radius: 8px;
 }
 
 QSlider::handle:horizontal:hover {
-    background: #6bb8e8;
+    background: $ACCENT_HOVER;
 }
 
 QProgressBar {
-    background: #171a1f;
-    border: 1px solid #333944;
+    background: $BG_FIELD;
+    border: 1px solid $BORDER;
     border-radius: 6px;
     min-height: 18px;
     text-align: center;
-    color: #e6e8eb;
+    color: $TEXT_PRIMARY;
 }
 
 QProgressBar::chunk {
-    background-color: #4fa8e0;
+    background-color: $ACCENT;
     border-radius: 5px;
 }
 
-QListWidget {
-    background-color: #171a1f;
-    border: 1px solid #333944;
+QTreeWidget {
+    background-color: $BG_FIELD;
+    border: 1px solid $BORDER;
     border-radius: 8px;
     padding: 4px;
+    alternate-background-color: $BG_PANEL;
 }
 
-QListWidget::item {
-    padding: 6px 8px;
-    border-radius: 4px;
+QTreeWidget::item {
+    padding: 5px 6px;
+    border-bottom: 1px solid $BORDER;
 }
 
-QListWidget::item:selected {
-    background-color: #2a3f52;
-    color: #e6e8eb;
+QTreeWidget::item:selected {
+    background-color: $SELECTION_BG;
+    color: $TEXT_PRIMARY;
 }
 
-QListWidget::item:hover:!selected {
-    background-color: #262b33;
+QTreeWidget::item:hover:!selected {
+    background-color: $HOVER_BG;
+}
+
+QTreeWidget::branch {
+    border: none;
+}
+
+QHeaderView::section {
+    background-color: $BG_PANEL;
+    color: $TEXT_SECONDARY;
+    padding: 5px 6px;
+    border: none;
+    border-right: 1px solid $BORDER;
+    border-bottom: 1px solid $BORDER_STRONG;
+    font-weight: 600;
+}
+
+QHeaderView::section:last {
+    border-right: none;
 }
 
 QCheckBox::indicator {
     width: 15px;
     height: 15px;
-    border: 1px solid #454c59;
+    border: 1px solid $BORDER_HOVER;
     border-radius: 4px;
-    background: #171a1f;
+    background: $BG_FIELD;
 }
 
 QCheckBox::indicator:checked {
-    background: #4fa8e0;
-    border-color: #4fa8e0;
+    background: $ACCENT;
+    border-color: $ACCENT;
     /* Touching ::indicator at all (even just for the unchecked base look)
        stops Fusion drawing its own native checkmark glyph on top -- same
        reason ::drop-down is left alone for QComboBox above. Verified by
        screenshot: without this image, :checked and :unchecked render as
        two identically-shaped boxes that differ only by fill color, with
        nothing to instantly read as "checked" at a glance. */
-    image: url($ASSETS/check.svg);
+    image: url($CHECK_ICON);
 }
 
 QCheckBox::indicator:hover {
-    border-color: #4fa8e0;
+    border-color: $ACCENT;
 }
 
 QSplitter::handle {
-    background: #14161a;
+    background: $SPLITTER;
 }
 
 QSplitter::handle:horizontal {
@@ -316,13 +517,13 @@ QScrollBar:vertical {
 }
 
 QScrollBar::handle:vertical {
-    background: #3a4049;
+    background: $BORDER_STRONG;
     border-radius: 5px;
     min-height: 24px;
 }
 
 QScrollBar::handle:vertical:hover {
-    background: #4a5159;
+    background: $BORDER_HOVER;
 }
 
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
@@ -336,7 +537,7 @@ QScrollBar:horizontal {
 }
 
 QScrollBar::handle:horizontal {
-    background: #3a4049;
+    background: $BORDER_STRONG;
     border-radius: 5px;
     min-width: 24px;
 }
@@ -346,8 +547,9 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
 }
 
 QToolTip {
-    background-color: #2a2f38;
-    color: #e6e8eb;
-    border: 1px solid #454c59;
+    background-color: $BG_CONTROL;
+    color: $TEXT_PRIMARY;
+    border: 1px solid $BORDER_HOVER;
     padding: 4px 6px;
 }
+

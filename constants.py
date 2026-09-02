@@ -6,7 +6,7 @@ presets live separately, in presets.py / user_presets.json.
 VIDEO_FILTER = "Video files (*.mkv *.mp4 *.avi *.mov *.m4v *.ts *.wmv);;All files (*)"
 AUDIO_TRACK_LABELS = ["Track 1", "Track 2", "Track 3", "Track 4"]
 
-ENCODERS = [("hevc_vaapi", "VAAPI HEVC (Hardware)"), ("libx265", "x265 (CPU)")]
+ENCODERS = [("hevc_vaapi", "Hardware (iGPU)"), ("libx265", "CPU")]
 
 RC_MODES = {
     "hevc_vaapi": [
@@ -18,6 +18,15 @@ RC_MODES = {
         ("CRF", "CRF (quality)"),
         ("bitrate", "Target bitrate"),
     ],
+}
+
+# The GUI's Rate Control control is two plain-English buttons -- Quality /
+# File Size -- that mean the same thing regardless of which encoder is
+# selected, mapped here to the real per-encoder rc_mode underneath. CQP has
+# no libx265 equivalent (advanced=None), so its button is encoder-specific.
+RC_MODE_FRIENDLY = {
+    "hevc_vaapi": {"quality": "ICQ", "file_size": "VBR", "advanced": "CQP"},
+    "libx265": {"quality": "CRF", "file_size": "bitrate", "advanced": None},
 }
 
 # rc_mode -> (min, max, default) for the quality control (ignored for bitrate modes)

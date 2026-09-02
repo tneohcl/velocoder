@@ -120,9 +120,18 @@ class TestBuildArgsVaapi(ClipTestCase):
         self.assertNotIn("-global_quality", args)
 
     def test_vbr_uses_bitrate(self):
-        args = worker.build_args(vaapi_settings(rc_mode="VBR", quality_value=3000), self.clip, self.out_path)
+        # quality_value is a target output size in MB for a bitrate-family
+        # rc_mode, converted to kbps using this file's duration -- pinned
+        # explicitly here rather than relying on the real probed clip
+        # length, so the expected number is exact: 100MB over 80s is
+        # 8192*100/80 = 10240 kbps total, minus the 160k reserved for the
+        # (real, aac) audio track it's copying = 10080.
+        args = worker.build_args(
+            vaapi_settings(rc_mode="VBR", quality_value=100),
+            self.clip, self.out_path, duration_seconds=80,
+        )
         self.assertIn("-b:v", args)
-        self.assertEqual(args[args.index("-b:v") + 1], "3000k")
+        self.assertEqual(args[args.index("-b:v") + 1], "10080k")
 
     def test_10bit_uses_p010le_and_main10_profile(self):
         args = worker.build_args(vaapi_settings(bit_depth=10), self.clip, self.out_path)
@@ -157,9 +166,14 @@ class TestBuildArgsX265(ClipTestCase):
         self.assertNotIn("-b:v", args)
 
     def test_bitrate_mode_uses_bv_not_crf(self):
-        args = worker.build_args(x265_settings(rc_mode="bitrate", quality_value=2500), self.clip, self.out_path)
+        # Same size->kbps conversion as VBR above (see its comment): 100MB
+        # over 80s minus 160k reserved audio = 10080k.
+        args = worker.build_args(
+            x265_settings(rc_mode="bitrate", quality_value=100),
+            self.clip, self.out_path, duration_seconds=80,
+        )
         self.assertIn("-b:v", args)
-        self.assertEqual(args[args.index("-b:v") + 1], "2500k")
+        self.assertEqual(args[args.index("-b:v") + 1], "10080k")
         self.assertNotIn("-crf", args)
 
     def test_10bit_uses_yuv420p10le(self):
@@ -177,6 +191,38 @@ class TestBuildArgsX265(ClipTestCase):
     def test_no_vaapi_device_for_cpu_encoder(self):
         args = worker.build_args(x265_settings(), self.clip, self.out_path)
         self.assertNotIn("-vaapi_device", args)
+
+
+class TestSizeToBitrate(unittest.TestCase):
+    """Pure-function coverage for the size-target math build_args uses for
+    VBR/bitrate rc_modes -- see TestBuildArgsVaapi.test_vbr_uses_bitrate and
+    TestBuildArgsX265.test_bitrate_mode_uses_bv_not_crf for the same
+    arithmetic exercised through the real build_args/ffmpeg path."""
+
+    def test_basic_conversion(self):
+        # 100MB over 80s = 8192*100/80 = 10240 total kbps, minus 160
+        # reserved for audio = 10080.
+        self.assertEqual(worker.target_size_to_bitrate_kbps(100, 80, 160), 10080)
+
+    def test_zero_duration_returns_zero_not_a_crash(self):
+        self.assertEqual(worker.target_size_to_bitrate_kbps(100, 0, 160), 0)
+
+    def test_negative_duration_returns_zero(self):
+        self.assertEqual(worker.target_size_to_bitrate_kbps(100, -5, 160), 0)
+
+    def test_audio_alone_exceeding_target_clamps_to_zero_not_negative(self):
+        # 1MB over 60s is only ~136 kbps total -- less than the 160
+        # reserved for audio alone. A negative video bitrate would be
+        # nonsensical (and likely reject at the ffmpeg level); 0 is at
+        # least a legible "this target is too small" signal.
+        self.assertEqual(worker.target_size_to_bitrate_kbps(1, 60, 160), 0)
+
+    def test_no_audio_reserves_nothing(self):
+        self.assertEqual(worker.target_size_to_bitrate_kbps(100, 80, 0), 10240)
+
+    def test_audio_bitrate_kbps_parses_k_suffix(self):
+        self.assertEqual(worker.audio_bitrate_kbps("160k"), 160)
+        self.assertEqual(worker.audio_bitrate_kbps("96k"), 96)
 
 
 class TestBuildArgsCommon(ClipTestCase):

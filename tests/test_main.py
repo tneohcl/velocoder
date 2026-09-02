@@ -131,6 +131,148 @@ class TestStartupOrdering(unittest.TestCase):
         self.assertNotIn("None", window.quality_label.text())
 
 
+class TestRateControlButtons(unittest.TestCase):
+    """The Quality / File Size / Advanced buttons are a friendlier view over
+    rc_mode_combo (still the actual source of truth) -- see _set_rc_mode /
+    _sync_rc_buttons_to_combo in main.py."""
+
+    def test_quality_button_selects_icq_for_vaapi(self):
+        window = main.MainWindow()
+        window.rc_filesize_btn.click()  # move off the default first
+        window.rc_quality_btn.click()
+        self.assertEqual(window.rc_mode_combo.currentData(), "ICQ")
+        self.assertTrue(window.rc_quality_btn.isChecked())
+
+    def test_file_size_button_selects_vbr_for_vaapi(self):
+        window = main.MainWindow()
+        window.rc_filesize_btn.click()
+        self.assertEqual(window.rc_mode_combo.currentData(), "VBR")
+        self.assertTrue(window.rc_filesize_btn.isChecked())
+
+    def test_advanced_button_selects_cqp_for_vaapi(self):
+        window = main.MainWindow()
+        window.rc_advanced_btn.click()
+        self.assertEqual(window.rc_mode_combo.currentData(), "CQP")
+        self.assertTrue(window.rc_advanced_btn.isChecked())
+
+    def test_file_size_button_selects_bitrate_for_x265(self):
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("CPU")
+        window.rc_filesize_btn.click()
+        self.assertEqual(window.rc_mode_combo.currentData(), "bitrate")
+
+    def test_advanced_button_hidden_for_x265_no_cqp_equivalent(self):
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("CPU")
+        self.assertFalse(window.rc_advanced_btn.isVisible())
+
+    def test_advanced_button_visible_again_switching_back_to_vaapi(self):
+        # isVisible() reflects the whole ancestor chain, not just this
+        # widget's own flag -- False for everything until the window itself
+        # is shown, regardless of what setVisible() was called with.
+        window = main.MainWindow()
+        window.show()
+        window.encoder_combo.setCurrentText("CPU")
+        window.encoder_combo.setCurrentText("Hardware (iGPU)")
+        self.assertTrue(window.rc_advanced_btn.isVisible())
+
+    def test_buttons_resync_to_combo_across_an_encoder_switch(self):
+        # Quality on VAAPI (ICQ) should still read as the Quality button
+        # after switching to x265 (CRF) -- the *concept* carries over even
+        # though the underlying rc_mode value is different per encoder.
+        window = main.MainWindow()
+        window.rc_quality_btn.click()
+        window.encoder_combo.setCurrentText("CPU")
+        self.assertEqual(window.rc_mode_combo.currentData(), "CRF")
+        self.assertTrue(window.rc_quality_btn.isChecked())
+
+    def test_switching_off_cqp_to_x265_falls_back_to_a_button_that_exists(self):
+        # CQP has no x265 equivalent -- RC_MODES["libx265"] simply doesn't
+        # contain it, so switching encoders away from it lands on whatever
+        # index 0 becomes (CRF), which the Quality button should reflect.
+        window = main.MainWindow()
+        window.rc_advanced_btn.click()
+        window.encoder_combo.setCurrentText("CPU")
+        self.assertEqual(window.rc_mode_combo.currentData(), "CRF")
+        self.assertTrue(window.rc_quality_btn.isChecked())
+
+
+class TestTargetSizeSettings(unittest.TestCase):
+    """quality_value means a target output size in MB, not literal kbps,
+    when rc_mode is a bitrate-family mode -- see worker.build_args's
+    docstring and TestSizeToBitrate in test_worker.py for the conversion
+    itself. This covers the GUI's side of storing/round-tripping it."""
+
+    def test_size_spin_value_flows_into_current_settings(self):
+        window = main.MainWindow()
+        window.rc_filesize_btn.click()
+        window.size_spin.setValue(750)
+        self.assertEqual(window._current_settings()["quality_value"], 750)
+
+    def test_apply_settings_to_controls_round_trips_size(self):
+        window = main.MainWindow()
+        window.show()  # isVisible() is always False pre-show(), see other tests' comments
+        settings = window._current_settings()
+        settings["rc_mode"] = "VBR"
+        settings["quality_value"] = 2500
+        window._apply_settings_to_controls(settings)
+        self.assertEqual(window.size_spin.value(), 2500)
+        self.assertTrue(window.size_spin.isVisible())
+        self.assertFalse(window.quality_slider.isVisible())
+
+    def test_format_item_text_shows_mb_not_kbps_for_size_mode(self):
+        window = main.MainWindow()
+        window.rc_filesize_btn.click()
+        window.size_spin.setValue(500)
+        job = {"path": Path("clip.mkv"), **window._current_settings()}
+        text = window._format_item_text(job)
+        self.assertIn("500MB", text)
+        self.assertNotIn("kbps", text)
+
+
+class TestSizeEstimateLabel(unittest.TestCase):
+    def test_hidden_in_quality_mode(self):
+        window = main.MainWindow()
+        self.assertFalse(window.size_estimate_label.isVisible())
+
+    def test_prompts_for_a_file_when_queue_is_empty(self):
+        window = main.MainWindow()
+        window.rc_filesize_btn.click()
+        self.assertIn("Add a file", window.size_estimate_label.text())
+
+    def test_shows_a_real_computed_estimate_for_a_queued_file(self):
+        window = main.MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            _make_clip(clip, "aac")
+            window.add_files([clip])
+            _wait_for_detection(window)
+            window.rc_filesize_btn.click()
+            window.size_spin.setValue(1000)
+            text = window.size_estimate_label.text()
+        self.assertIn("kbps", text)
+        self.assertNotIn("Add a file", text)
+        self.assertNotIn("Couldn't read", text)
+
+
+class TestCollapsibleSections(unittest.TestCase):
+    def test_effective_command_collapsed_by_default(self):
+        window = main.MainWindow()
+        self.assertFalse(window._command_group.isChecked())
+        self.assertFalse(window.command_preview.isVisible())
+
+    def test_log_collapsed_by_default(self):
+        window = main.MainWindow()
+        self.assertFalse(window._log_group.isChecked())
+        self.assertFalse(window.log_view.isVisible())
+
+    def test_checking_the_group_reveals_its_content(self):
+        window = main.MainWindow()
+        window.show()  # isVisible() is always False pre-show(), see other tests' comments
+        window._command_group.setChecked(True)
+        self.assertTrue(window.command_preview.isVisible())
+
+
 class TestCommandPreviewErrorHandling(unittest.TestCase):
     def test_no_vaapi_device_shows_message_not_crash(self):
         window = main.MainWindow()

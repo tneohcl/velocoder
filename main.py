@@ -10,14 +10,14 @@ from PySide6.QtWidgets import (
     QTabWidget, QSplitter, QGroupBox, QListWidget, QListWidgetItem,
     QPushButton, QComboBox, QLabel, QProgressBar, QPlainTextEdit, QFileDialog,
     QLineEdit, QSlider, QSpinBox, QCheckBox, QInputDialog, QMessageBox,
-    QSizePolicy, QStyle, QAbstractItemView,
+    QSizePolicy, QStyle, QAbstractItemView, QButtonGroup,
 )
 
 import worker
 from constants import (
-    VIDEO_FILTER, AUDIO_TRACK_LABELS, ENCODERS, RC_MODES, QUALITY_RANGES,
-    X265_PRESETS, RESOLUTIONS, AUDIO_BITRATES, CONTAINERS, X265_TUNES,
-    BUILTIN_PRESETS, BUILTIN_PRESET_NAMES,
+    VIDEO_FILTER, AUDIO_TRACK_LABELS, ENCODERS, RC_MODES, RC_MODE_FRIENDLY,
+    QUALITY_RANGES, X265_PRESETS, RESOLUTIONS, AUDIO_BITRATES, CONTAINERS,
+    X265_TUNES, BUILTIN_PRESETS, BUILTIN_PRESET_NAMES,
 )
 from presets import load_user_presets, save_user_presets
 from worker import TranscodeQueue, BITRATE_RC_MODES
@@ -76,6 +76,7 @@ class MainWindow(QMainWindow):
         self.user_presets: list[dict] = load_user_presets()
         self._res_label = {(r["width"], r["height"]): r["label"] for r in RESOLUTIONS}
         self._preview_audio_cache: dict[tuple, str | None] = {}
+        self._preview_duration_cache: dict[Path, float] = {}
         self._loaded_preset_settings: dict | None = None
         self._running_items: list[QListWidgetItem] = []
         self._current_running_item: QListWidgetItem | None = None
@@ -105,12 +106,23 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self._qsettings.setValue("window_geometry", self.saveGeometry())
         self._qsettings.setValue("splitter_state", self._splitter.saveState())
+        self._qsettings.setValue("command_expanded", self._command_group.isChecked())
+        self._qsettings.setValue("log_expanded", self._log_group.isChecked())
         super().closeEvent(event)
 
     def _restore_window_state(self):
         geometry = self._qsettings.value("window_geometry")
         if geometry is not None:
             self.restoreGeometry(geometry)
+        # QSettings round-trips bool through its backing store as the string
+        # "true"/"false" on some platforms -- str(...) != "false" rather than
+        # a bare truthiness check, so a stored False doesn't come back truthy.
+        command_expanded = self._qsettings.value("command_expanded")
+        if command_expanded is not None:
+            self._command_group.setChecked(str(command_expanded) != "false")
+        log_expanded = self._qsettings.value("log_expanded")
+        if log_expanded is not None:
+            self._log_group.setChecked(str(log_expanded) != "false")
         splitter_state = self._qsettings.value("splitter_state")
         if splitter_state is not None:
             self._splitter.restoreState(splitter_state)
@@ -123,6 +135,17 @@ class MainWindow(QMainWindow):
         self._splitter.addWidget(self._build_right_panel())
         self._splitter.setStretchFactor(0, 0)
         self._splitter.setStretchFactor(1, 1)
+        self._build_status_bar()
+
+    def _build_status_bar(self):
+        # A qBittorrent-style footer strip: ambient, persistent, out of the
+        # way of the actual controls. addPermanentWidget (not showMessage)
+        # so nothing that later calls the status bar's temporary-message API
+        # can silently clobber this -- there's no such call today, but this
+        # is the only status-bar API that's actually immune to one.
+        self.hw_status_label = QLabel(self._hardware_status_text())
+        self.hw_status_label.setStyleSheet("font-size: 9pt;")
+        self.statusBar().addPermanentWidget(self.hw_status_label)
 
     def _build_preset_row(self) -> QHBoxLayout:
         # Preset is the main lever -- it sets every other control at once --
@@ -181,16 +204,8 @@ class MainWindow(QMainWindow):
         tabs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         layout.addWidget(tabs)
 
-        layout.addWidget(self._build_command_preview())
-
-        self.hw_status_label = QLabel(self._hardware_status_text())
-        # palette(mid) is meant for borders/shadows, not body text -- against
-        # a dark theme it's nearly unreadable. Rely on the default (theme-
-        # correct in both light and dark) text color; a smaller size is
-        # enough to read as "secondary detail" without losing contrast.
-        self.hw_status_label.setStyleSheet("font-size: 10pt;")
-        self.hw_status_label.setWordWrap(True)
-        layout.addWidget(self.hw_status_label)
+        self._command_group = self._build_command_preview()
+        layout.addWidget(self._command_group)
 
         layout.addStretch(1)
         return left
@@ -203,9 +218,53 @@ class MainWindow(QMainWindow):
         except RuntimeError:
             return "No Intel VAAPI render node detected — hardware encoding unavailable"
 
-    def _build_command_preview(self) -> QGroupBox:
-        group = QGroupBox("Effective Command")
+    @staticmethod
+    def _make_collapsible_group(title: str, content: QWidget, *, expanded: bool) -> QGroupBox:
+        # A checkable QGroupBox's title-bar checkbox is normally an
+        # enable/disable toggle for its children (Fusion just grays them
+        # out) -- repurposed here as a show/hide disclosure instead, so
+        # collapsing a section actually reclaims its space rather than just
+        # dimming content that's still sitting there taking up room.
+        group = QGroupBox(title)
+        group.setCheckable(True)
+        group.setChecked(expanded)
         layout = QVBoxLayout(group)
+        layout.addWidget(content)
+
+        # setVisible(False) on the content alone isn't enough when this
+        # group has a stretch factor in its parent layout (the Log group
+        # does, to share space with the queue list): a stretch factor still
+        # applies to the *group*, not its content, so a collapsed group with
+        # a hidden child kept claiming its full stretch share of the panel
+        # instead of shrinking away -- confirmed by screenshot, a large
+        # empty box where the log used to be. Fixed vertical policy while
+        # collapsed makes the group take exactly its own size hint (just
+        # the title bar) instead of whatever stretch would otherwise hand it.
+        expanded_policy = group.sizePolicy()
+        collapsed_policy = QSizePolicy(expanded_policy.horizontalPolicy(), QSizePolicy.Fixed)
+
+        def _toggle(checked):
+            content.setVisible(checked)
+            group.setSizePolicy(expanded_policy if checked else collapsed_policy)
+            group.updateGeometry()
+
+        _toggle(expanded)
+        group.toggled.connect(_toggle)
+        return group
+
+    def _build_command_preview(self) -> QGroupBox:
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        copy_row = QHBoxLayout()
+        copy_row.addStretch()
+        copy_btn = QPushButton("Copy")
+        copy_btn.setToolTip("Copy the full command to the clipboard")
+        copy_btn.clicked.connect(self._copy_command_to_clipboard)
+        copy_row.addWidget(copy_btn)
+        layout.addLayout(copy_row)
+
         self.command_preview = QPlainTextEdit()
         self.command_preview.setReadOnly(True)
         self.command_preview.setMaximumHeight(110)
@@ -219,7 +278,14 @@ class MainWindow(QMainWindow):
         # only that one line scroll horizontally instead.
         self.command_preview.setLineWrapMode(QPlainTextEdit.NoWrap)
         layout.addWidget(self.command_preview)
-        return group
+
+        # Collapsed by default: this is the one control in the whole left
+        # panel aimed at a technical reader double-checking the exact ffmpeg
+        # invocation, not something the simplified default view needs open.
+        return self._make_collapsible_group("Effective Command", content, expanded=False)
+
+    def _copy_command_to_clipboard(self):
+        QApplication.clipboard().setText(self.command_preview.toPlainText())
 
     def _build_video_tab(self) -> QWidget:
         tab = QWidget()
@@ -235,35 +301,83 @@ class MainWindow(QMainWindow):
         self.encoder_combo.currentIndexChanged.connect(self._on_encoder_changed)
         form.addRow("Encoder:", self.encoder_combo)
 
-        self.rc_mode_combo = QComboBox()
+        # rc_mode_combo stays the source of truth (everything downstream --
+        # _on_rc_mode_changed, _current_settings, presets -- reads it) but
+        # is never shown: the visible control is the two/three buttons
+        # below, which just drive this combo's index. Two ways to reach the
+        # same state would risk them drifting apart; one hidden model plus
+        # a friendlier view over it can't.
+        self.rc_mode_combo = QComboBox(encoding_group)
+        self.rc_mode_combo.hide()
         self.rc_mode_combo.currentIndexChanged.connect(self._on_rc_mode_changed)
-        form.addRow("Rate control:", self.rc_mode_combo)
+        self.rc_mode_combo.currentIndexChanged.connect(self._sync_rc_buttons_to_combo)
+
+        rc_row = QHBoxLayout()
+        rc_row.setSpacing(0)
+        self.rc_button_group = QButtonGroup(self)
+        self.rc_quality_btn = QPushButton("Quality")
+        self.rc_quality_btn.setObjectName("segLeft")
+        self.rc_quality_btn.setToolTip("Aim for a consistent perceptual quality; file size follows.")
+        self.rc_filesize_btn = QPushButton("File Size")
+        self.rc_filesize_btn.setObjectName("segMid")
+        self.rc_filesize_btn.setToolTip("Aim for a target output size; quality follows.")
+        self.rc_advanced_btn = QPushButton("Advanced")
+        self.rc_advanced_btn.setObjectName("segRight")
+        self.rc_advanced_btn.setToolTip(
+            "Fixed quantizer (CQP): the same compression level on every\n"
+            "frame, regardless of content complexity. Rarely needed --\n"
+            "Quality (ICQ) adapts per-frame and usually looks better for\n"
+            "the same average bitrate."
+        )
+        for btn in (self.rc_quality_btn, self.rc_filesize_btn, self.rc_advanced_btn):
+            btn.setCheckable(True)
+            self.rc_button_group.addButton(btn)
+            rc_row.addWidget(btn, 1)
+        self.rc_quality_btn.clicked.connect(
+            lambda: self._set_rc_mode(RC_MODE_FRIENDLY[self._current_encoder_id()]["quality"])
+        )
+        self.rc_filesize_btn.clicked.connect(
+            lambda: self._set_rc_mode(RC_MODE_FRIENDLY[self._current_encoder_id()]["file_size"])
+        )
+        self.rc_advanced_btn.clicked.connect(
+            lambda: self._set_rc_mode(RC_MODE_FRIENDLY[self._current_encoder_id()]["advanced"])
+        )
+        form.addRow("Rate control:", rc_row)
 
         quality_row = QHBoxLayout()
         self.quality_slider = QSlider(Qt.Horizontal)
         self.quality_slider.valueChanged.connect(self._on_quality_changed)
         self.quality_label = QLabel()
-        self.bitrate_spin = QSpinBox()
-        self.bitrate_spin.setRange(200, 50000)
-        self.bitrate_spin.setSingleStep(100)
-        self.bitrate_spin.setSuffix(" kbps")
-        self.bitrate_spin.valueChanged.connect(self._on_control_changed)
+        self.quality_label.setStyleSheet("font-size: 9pt;")
+        self.size_spin = QSpinBox()
+        self.size_spin.setRange(10, 20000)
+        self.size_spin.setSingleStep(50)
+        self.size_spin.setSuffix(" MB")
+        self.size_spin.setValue(1000)
+        self.size_spin.setToolTip("Target output size -- the actual bitrate is computed from this file's length.")
+        self.size_spin.valueChanged.connect(self._on_control_changed)
         quality_row.addWidget(self.quality_slider, 1)
         quality_row.addWidget(self.quality_label)
-        quality_row.addWidget(self.bitrate_spin, 1)
-        form.addRow("Quality / Bitrate:", quality_row)
+        quality_row.addWidget(self.size_spin, 1)
+        form.addRow("Quality:", quality_row)
+
+        self.size_estimate_label = QLabel()
+        self.size_estimate_label.setStyleSheet("font-size: 9pt;")
+        form.addRow("", self.size_estimate_label)
 
         speed_row = QHBoxLayout()
+        self.speed_faster_label = QLabel("Faster")
+        speed_row.addWidget(self.speed_faster_label)
         self.speed_slider = QSlider(Qt.Horizontal)
         self.speed_slider.setRange(1, 7)
         self.speed_slider.valueChanged.connect(self._on_speed_slider_changed)
-        self.speed_label = QLabel()
+        speed_row.addWidget(self.speed_slider, 1)
+        self.speed_thorough_label = QLabel("More Thorough")
+        speed_row.addWidget(self.speed_thorough_label)
         self.speed_combo = QComboBox()
         self.speed_combo.addItems(X265_PRESETS)
         self.speed_combo.setCurrentText("medium")
         self.speed_combo.currentIndexChanged.connect(self._on_control_changed)
-        speed_row.addWidget(self.speed_slider, 1)
-        speed_row.addWidget(self.speed_label)
         speed_row.addWidget(self.speed_combo, 1)
         form.addRow("Speed:", speed_row)
 
@@ -272,6 +386,10 @@ class MainWindow(QMainWindow):
         self.bitdepth_combo.setCurrentText("10-bit")
         self.bitdepth_combo.currentIndexChanged.connect(self._on_control_changed)
         form.addRow("Bit depth:", self.bitdepth_combo)
+
+        bitdepth_hint = QLabel("10-bit: smoother gradients, larger file  ·  8-bit: smaller, maximum compatibility")
+        bitdepth_hint.setStyleSheet("font-size: 9pt;")
+        form.addRow("", bitdepth_hint)
 
         self.tune_combo = QComboBox()
         self.tune_combo.addItems(X265_TUNES)
@@ -291,7 +409,7 @@ class MainWindow(QMainWindow):
 
         outer.addWidget(encoding_group)
 
-        output_group = QGroupBox("Output Shape")
+        output_group = QGroupBox("Format")
         out_form = QFormLayout(output_group)
 
         self.res_combo = QComboBox()
@@ -404,12 +522,17 @@ class MainWindow(QMainWindow):
         self.stats_label.setStyleSheet("font-size: 10pt;")
         layout.addWidget(self.stats_label)
 
-        layout.addWidget(QLabel("Log:"))
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(5000)
         self.log_view.setPlaceholderText("ffmpeg output will appear here once a job starts…")
-        layout.addWidget(self.log_view, 2)
+        # Collapsed by default, same reasoning and the same disclosure
+        # pattern as Effective Command on the left: raw ffmpeg stderr is a
+        # debugging aid, not something the simplified default view needs
+        # open, and the queue list above happily reclaims the freed space
+        # (already the only other stretch=1 widget in this layout).
+        self._log_group = self._make_collapsible_group("Log", self.log_view, expanded=False)
+        layout.addWidget(self._log_group, 2)
         return right
 
     # --- cascading settings behavior ---
@@ -426,13 +549,23 @@ class MainWindow(QMainWindow):
             self.rc_mode_combo.addItem(label, userData=value)
         self.rc_mode_combo.blockSignals(False)
 
+        # CQP (the Advanced button) has no libx265 equivalent in RC_MODES.
+        self.rc_advanced_btn.setVisible(RC_MODE_FRIENDLY[encoder]["advanced"] is not None)
+
         self.speed_slider.setVisible(is_vaapi)
-        self.speed_label.setVisible(is_vaapi)
+        self.speed_faster_label.setVisible(is_vaapi)
+        self.speed_thorough_label.setVisible(is_vaapi)
         self.speed_combo.setVisible(not is_vaapi)
         self._on_speed_slider_changed()
         self.video_form.setRowVisible(self.tune_combo, not is_vaapi)
 
+        # Repopulating above ran with signals blocked (clearing/adding items
+        # one at a time would otherwise fire currentIndexChanged repeatedly
+        # on a half-built list), so neither of its normal listeners ran --
+        # both are called explicitly here instead. Order matters: the
+        # buttons read rc_mode_combo's now-settled state, they don't drive it.
         self._on_rc_mode_changed()
+        self._sync_rc_buttons_to_combo()
 
     def _on_rc_mode_changed(self):
         # rc_mode_combo is always populated by this point -- __init__ calls
@@ -442,7 +575,8 @@ class MainWindow(QMainWindow):
         is_bitrate = rc_mode in BITRATE_RC_MODES
         self.quality_slider.setVisible(not is_bitrate)
         self.quality_label.setVisible(not is_bitrate)
-        self.bitrate_spin.setVisible(is_bitrate)
+        self.size_spin.setVisible(is_bitrate)
+        self.size_estimate_label.setVisible(is_bitrate)
         if not is_bitrate:
             lo, hi, default = QUALITY_RANGES[rc_mode]
             self.quality_slider.blockSignals(True)
@@ -458,8 +592,29 @@ class MainWindow(QMainWindow):
         self.quality_label.setText(f"{self.quality_slider.value()} ({rc_mode})")
         self._on_control_changed()
 
+    def _set_rc_mode(self, value: str):
+        index = next(
+            (i for i in range(self.rc_mode_combo.count()) if self.rc_mode_combo.itemData(i) == value), None
+        )
+        if index is not None:
+            self.rc_mode_combo.setCurrentIndex(index)
+
+    def _sync_rc_buttons_to_combo(self):
+        # Keeps the visible buttons correct no matter what actually changed
+        # rc_mode_combo underneath -- a button click, an encoder switch
+        # repopulating it, or a preset/queue-selection load -- rather than
+        # scattering a sync call across every one of those call sites.
+        value = self.rc_mode_combo.currentData()
+        friendly = RC_MODE_FRIENDLY[self._current_encoder_id()]
+        if value == friendly["quality"]:
+            self.rc_quality_btn.setChecked(True)
+        elif value == friendly["file_size"]:
+            self.rc_filesize_btn.setChecked(True)
+        elif value == friendly["advanced"]:
+            self.rc_advanced_btn.setChecked(True)
+
     def _on_speed_slider_changed(self):
-        self.speed_label.setText(f"{self.speed_slider.value()} / {self.speed_slider.maximum()}")
+        self.speed_slider.setToolTip(f"{self.speed_slider.value()} / {self.speed_slider.maximum()}")
         self._on_control_changed()
 
     def _on_control_changed(self):
@@ -506,19 +661,25 @@ class MainWindow(QMainWindow):
         output_path = Path(f"output.{settings['container']}")
         try:
             if self.queue_list.count() > 0:
-                # A real file is queued -- probe its actual audio track (cached,
-                # so dragging a slider doesn't shell out to ffprobe repeatedly)
-                # instead of guessing, so the preview matches what will really run.
+                # A real file is queued -- probe its actual audio track and
+                # duration (both cached, so dragging a slider doesn't shell
+                # out to ffprobe repeatedly) instead of guessing, so the
+                # preview matches what will really run.
                 first_path = self.queue_list.item(0).data(Qt.UserRole)["path"]
                 audio_codec = self._preview_audio_codec(first_path, settings["audio_track"])
                 args = worker.build_args(
                     settings, first_path, output_path,
                     probe_audio=False, audio_codec=audio_codec,
+                    duration_seconds=self._preview_duration(first_path),
                 )
             else:
-                # No file queued yet -- there's no real audio track to reflect,
-                # so omit the audio codec decision entirely rather than assert
-                # a codec that would misrepresent what actually happens.
+                # No file queued yet -- there's no real audio track or
+                # duration to reflect, so omit the audio codec decision
+                # entirely (duration_seconds is left unset -- build_args
+                # only probes it, against a placeholder path that can't
+                # resolve to anything, if a bitrate-family mode needs it)
+                # rather than assert values that would misrepresent what
+                # actually happens.
                 args = worker.build_args(
                     settings, Path("input.ext"), output_path,
                     probe_audio=False, audio_codec=None,
@@ -529,6 +690,7 @@ class MainWindow(QMainWindow):
             # VAAPI path -- on a machine with no Intel node this must degrade
             # to a message, not crash the control that triggered it.
             self.command_preview.setPlainText(f"(preview unavailable: {exc})")
+        self._update_size_estimate_label(settings)
         self._update_preset_modified_indicator()
 
     # Args starting a new logical group: input, video encode, stream
@@ -553,6 +715,27 @@ class MainWindow(QMainWindow):
             self._preview_audio_cache[key] = worker.probe_audio_codec(path, track_index)
         return self._preview_audio_cache[key]
 
+    def _preview_duration(self, path: Path) -> float:
+        if path not in self._preview_duration_cache:
+            self._preview_duration_cache[path] = worker.probe_duration(path)
+        return self._preview_duration_cache[path]
+
+    def _update_size_estimate_label(self, settings: dict):
+        if not hasattr(self, "size_estimate_label") or settings["rc_mode"] not in BITRATE_RC_MODES:
+            return
+        if self.queue_list.count() == 0:
+            self.size_estimate_label.setText("Add a file to estimate the resulting bitrate")
+            return
+        first_path = self.queue_list.item(0).data(Qt.UserRole)["path"]
+        duration = self._preview_duration(first_path)
+        if duration <= 0:
+            self.size_estimate_label.setText("Couldn't read this file's duration to estimate bitrate")
+            return
+        audio_codec = self._preview_audio_codec(first_path, settings["audio_track"])
+        reserved_audio_kbps = worker.audio_bitrate_kbps(settings["audio_bitrate"]) if audio_codec is not None else 0
+        video_kbps = worker.target_size_to_bitrate_kbps(settings["quality_value"], duration, reserved_audio_kbps)
+        self.size_estimate_label.setText(f"≈ {video_kbps:,} kbps video for this file's length (estimate)")
+
     def _update_preset_modified_indicator(self):
         if not hasattr(self, "preset_modified_label"):
             return
@@ -570,7 +753,7 @@ class MainWindow(QMainWindow):
         return {
             "encoder": encoder,
             "rc_mode": rc_mode,
-            "quality_value": self.bitrate_spin.value() if is_bitrate else self.quality_slider.value(),
+            "quality_value": self.size_spin.value() if is_bitrate else self.quality_slider.value(),
             "speed": self.speed_combo.currentText() if encoder == "libx265" else str(self.speed_slider.value()),
             "bit_depth": 10 if self.bitdepth_combo.currentText() == "10-bit" else 8,
             "width": res["width"],
@@ -594,7 +777,7 @@ class MainWindow(QMainWindow):
         self.rc_mode_combo.setCurrentIndex(rc_index)  # cascades quality/bitrate widget swap
 
         if settings["rc_mode"] in BITRATE_RC_MODES:
-            self.bitrate_spin.setValue(settings["quality_value"])
+            self.size_spin.setValue(settings["quality_value"])
         else:
             self.quality_slider.setValue(settings["quality_value"])
 
@@ -622,7 +805,7 @@ class MainWindow(QMainWindow):
         enc_tag = "VAAPI" if job["encoder"] == "hevc_vaapi" else "x265"
         rc = job["rc_mode"]
         qv = job["quality_value"]
-        q_str = f"{qv}kbps" if rc in BITRATE_RC_MODES else f"{rc}{qv}"
+        q_str = f"{qv}MB" if rc in BITRATE_RC_MODES else f"{rc}{qv}"
         res_label = self._res_label.get((job["width"], job["height"]), f"{job['width']}x{job['height']}")
         deinterlace_tag = " · Deinterlace" if job.get("deinterlace") else ""
         return (

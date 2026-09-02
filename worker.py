@@ -72,6 +72,28 @@ def probe_audio_codec(path: Path, track_index: int = 0) -> str | None:
     return codec or None
 
 
+def audio_bitrate_kbps(audio_bitrate: str) -> int:
+    """"160k" -> 160. AUDIO_BITRATES is always this exact "<int>k" shape."""
+    return int(audio_bitrate.rstrip("k"))
+
+
+def target_size_to_bitrate_kbps(size_mb: float, duration_seconds: float, audio_kbps: float) -> int:
+    """Convert a target output size to a video bitrate for a file of the
+    given duration, after reserving audio_kbps for the audio track.
+
+    This is necessarily an estimate, not an exact target: audio_kbps is
+    whatever the caller already knows to assume (the configured transcode
+    bitrate, or the same figure used as a stand-in when copying, since the
+    exact copied-track bitrate isn't known without an extra probe) rather
+    than the copied track's real bitrate. Returns 0 (not negative) if
+    duration is unknown or audio alone would already exceed the target.
+    """
+    if duration_seconds <= 0:
+        return 0
+    total_kbps = (size_mb * 8192) / duration_seconds  # 1 MB = 1024*8 kbit
+    return max(int(total_kbps - audio_kbps), 0)
+
+
 def build_idet_args(input_path: Path, sample_seconds: float = INTERLACE_DETECT_SAMPLE_SECONDS) -> list[str]:
     """ffmpeg argv for a decode-only interlace-detection sample. Container
     progressive/interlaced flags are frequently wrong (see README's
@@ -109,23 +131,33 @@ def build_args(
     *,
     probe_audio: bool = True,
     audio_codec: str | None = None,
+    duration_seconds: float | None = None,
 ) -> list[str]:
     """Build the full ffmpeg argv for one job from a resolved settings dict.
 
     settings keys: encoder ("hevc_vaapi"|"libx265"), rc_mode, quality_value
-    (quality units, or kbps when rc_mode is a bitrate mode), speed
-    (compression_level 1-7 as str, or an x265 preset name), bit_depth (8|10),
-    width, height, container ("mp4"|"mkv", default mp4), tune (an x265 tune
-    name or "None", ignored for hevc_vaapi), deinterlace (bool, default
-    False -- container-level progressive/interlaced flags are frequently
-    wrong, especially on camcorder-sourced footage; this is a manual
-    override, not auto-detected), audio_track, audio_copy_if_compatible,
-    audio_bitrate.
+    (quality units for a quality-family rc_mode; target output size in MB
+    for a bitrate-family one -- VBR/bitrate mean "hit roughly this file
+    size", not "encode at exactly this bitrate", so the number the user
+    sets is size, and the bitrate ffmpeg actually gets is derived from it
+    plus this specific file's duration, below), speed (compression_level
+    1-7 as str, or an x265 preset name), bit_depth (8|10), width, height,
+    container ("mp4"|"mkv", default mp4), tune (an x265 tune name or
+    "None", ignored for hevc_vaapi), deinterlace (bool, default False --
+    container-level progressive/interlaced flags are frequently wrong,
+    especially on camcorder-sourced footage; this is a manual override, not
+    auto-detected), audio_track, audio_copy_if_compatible, audio_bitrate.
 
     probe_audio=False skips the real ffprobe call and uses audio_codec as
     given instead -- for building a representative command line to *show*
     the user (e.g. a live preview) against a file that may not exist yet,
     without shelling out on every keystroke. Real jobs always probe.
+
+    duration_seconds, likewise, lets a caller that already has it (real
+    jobs always probe duration anyway, for progress tracking) skip a
+    redundant ffprobe call. Only used for a bitrate-family rc_mode -- a
+    quality-family one never touches it, so it's never probed for the
+    common case. None means "probe it if a bitrate-family mode needs it".
     """
     encoder = settings["encoder"]
     is_vaapi = encoder == "hevc_vaapi"
@@ -135,6 +167,16 @@ def build_args(
     bit_depth = settings["bit_depth"]
     container = settings.get("container", "mp4")
     deinterlace = settings.get("deinterlace", False)
+    audio_track = settings["audio_track"]
+    if probe_audio:
+        audio_codec = probe_audio_codec(input_path, audio_track)
+
+    video_kbps = None
+    if rc_mode in BITRATE_RC_MODES:
+        if duration_seconds is None:
+            duration_seconds = probe_duration(input_path)
+        reserved_audio_kbps = audio_bitrate_kbps(settings["audio_bitrate"]) if audio_codec is not None else 0
+        video_kbps = target_size_to_bitrate_kbps(quality_value, duration_seconds, reserved_audio_kbps)
 
     args = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "info"]
 
@@ -164,7 +206,7 @@ def build_args(
         elif rc_mode == "CQP":
             args += ["-rc_mode", "CQP", "-qp", str(quality_value)]
         elif rc_mode == "VBR":
-            args += ["-rc_mode", "VBR", "-b:v", f"{quality_value}k"]
+            args += ["-rc_mode", "VBR", "-b:v", f"{video_kbps}k"]
         args += ["-compression_level", str(settings["speed"])]
     else:
         # bwdif's own default (mode=send_field) doubles the frame rate -- one
@@ -181,15 +223,12 @@ def build_args(
         if rc_mode == "CRF":
             args += ["-crf", str(quality_value)]
         elif rc_mode == "bitrate":
-            args += ["-b:v", f"{quality_value}k"]
+            args += ["-b:v", f"{video_kbps}k"]
         tune = settings.get("tune", "None")
         if tune and tune != "None":
             args += ["-tune", tune]
         args += ["-x265-params", "strong-intra-smoothing=0:aq-mode=3:psy-rdoq=1.0"]
 
-    audio_track = settings["audio_track"]
-    if probe_audio:
-        audio_codec = probe_audio_codec(input_path, audio_track)
     # Capital V excludes attached-pic/cover-art streams from the video map,
     # matching ffmpeg's own default auto-selection more closely than 'v'.
     args += ["-map", "0:V:0"]
@@ -275,7 +314,7 @@ class TranscodeQueue(QObject):
         self._stats_buffer = {}
         try:
             self._duration = probe_duration(input_path)
-            args = build_args(job, input_path, output_path)
+            args = build_args(job, input_path, output_path, duration_seconds=self._duration)
         except Exception as exc:
             self.job_failed.emit(str(input_path), str(exc))
             self._run_next()

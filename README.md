@@ -81,7 +81,7 @@ saved preset *is*, plus a `name` key):
 {
     "encoder": "hevc_vaapi" | "libx265",
     "rc_mode": "ICQ" | "CQP" | "VBR" | "CRF" | "bitrate",
-    "quality_value": int,   # quality units for ICQ/CQP/CRF, kbps for VBR/bitrate
+    "quality_value": int,   # quality units for ICQ/CQP/CRF, target size in MB for VBR/bitrate
     "speed": str,            # "1".."7" (vaapi compression_level) or an x265 preset name
     "bit_depth": 8 | 10,
     "width": int, "height": int,
@@ -138,18 +138,63 @@ isn't reliably playable.
 
 The rest is grouped into two tabs, by what kind of setting they are.
 
-**Video tab** (grouped into "Encoding" and "Output Shape")
-- **Encoder** — VAAPI HEVC (hardware) or x265 (CPU).
-- **Rate control** — options depend on encoder: VAAPI gets ICQ/CQP/VBR,
-  x265 gets CRF/target-bitrate. Picking a bitrate-based mode swaps the
-  Quality slider for a kbps spinbox.
-- **Quality / Bitrate** — meaning and range follow the rate-control mode
-  (e.g. ICQ 1–51 vs CRF 0–51 aren't the same scale, so this re-ranges
-  itself on every encoder/rc_mode change).
-- **Speed** — VAAPI's `-compression_level` (1–7, lower = slower/better) or
-  x265's preset ladder (ultrafast…placebo), whichever applies.
+**Video tab** (grouped into "Encoding" and "Format")
+
+The controls here deliberately lead with plain English, not ffmpeg's own
+names for things — a "Apple-style" simplification pass over what used to be
+five separate rate-control modes and a raw `-compression_level` readout. The
+underlying settings dict and `worker.build_args` are completely unaffected;
+this is presentation only. See `constants.RC_MODE_FRIENDLY` for the mapping.
+
+- **Encoder** — "Hardware (iGPU)" (`hevc_vaapi`, this machine's only real GPU)
+  or "CPU" (`libx265`). No AMD/NVIDIA option — this workstation doesn't have
+  that hardware, and there's no NVENC/AMF code in `worker.py` to back one.
+- **Rate control** — a three-button row, not a dropdown: **Quality** / **File
+  Size** / **Advanced**. Quality and File Size mean the same thing regardless
+  of encoder (mapped to ICQ/VBR for VAAPI, CRF/bitrate for x265); Advanced is
+  CQP (fixed quantizer), VAAPI-only since x265 has no equivalent here, so its
+  button hides entirely rather than doing nothing when picked. The three are
+  really just three positions of `rc_mode_combo`, still the actual source of
+  truth for everything downstream — the combo itself stays alive but hidden
+  (`main.py`'s `_set_rc_mode` / `_sync_rc_buttons_to_combo`) rather than
+  being replaced, so there's exactly one place rc_mode can drift out of sync
+  with what the UI shows.
+- **Quality** (the slider, when Rate control is Quality or Advanced) — range
+  follows the specific mode (e.g. ICQ 1–51 vs CRF 0–51 aren't the same
+  scale, so this re-ranges itself on every encoder/rc_mode change). The raw
+  number and mode name (e.g. "26 (ICQ)") show as small secondary text next
+  to the slider, not the primary label.
+- **Quality** (the size field, when Rate control is File Size) — a target
+  **output size in MB**, not a literal bitrate. `quality_value` in the
+  settings dict carries this same meaning for VBR/bitrate rc_modes now
+  (previously literal kbps) — the actual `-b:v` value ffmpeg gets is
+  computed from this number and the specific file's real duration inside
+  `build_args` itself (`worker.target_size_to_bitrate_kbps`), using whatever
+  audio bitrate is configured as an estimate of the audio track's share.
+  That's necessarily an estimate: a copied (not transcoded) audio track's
+  real bitrate isn't known without an extra probe this doesn't do, so the
+  output lands close to the target size, not exactly on it. A small caption
+  under the field shows the resulting kbps for whatever file is first in
+  the queue, so the number being computed is never a total black box — "Add
+  a file to estimate the resulting bitrate" if the queue's empty.
+  Setting the *same* target size across a multi-selected batch of
+  differently-long files (see "Selecting a row edits it live" below) is a
+  feature, not a bug: each file independently aims for that size using its
+  own duration, which is what you'd actually want encoding a season of
+  episodes with mixed runtimes to a consistent output size.
+- **Speed** — a slider from "Faster" to "More Thorough" for VAAPI
+  (`-compression_level` 1–7 underneath, exact value on the slider's
+  tooltip), or x265's own preset ladder (ultrafast…placebo) in a dropdown,
+  whichever encoder applies. Deliberately kept as its own control rather
+  than fused with Quality into a single dial — they're different axes (what
+  quality/size to target, vs. how much effort to spend getting there), and
+  fusing them would mean two controls fighting over the same stored value
+  the moment both were shown at once. If you want one-click "good bundle
+  for this scenario" behavior, that's what Presets are for.
 - **Bit depth** — 8-bit or 10-bit (`main`/`nv12` vs `main10`/`p010le` for
-  VAAPI; `yuv420p` vs `yuv420p10le` for x265).
+  VAAPI; `yuv420p` vs `yuv420p10le` for x265), with a one-line caption under
+  it on the actual tradeoff (smoother gradients/larger vs. smaller/most
+  compatible) rather than expecting that to be obvious from the label alone.
 - **Resolution** — `Source (no scale)` / `1080p` / `720p` / `480p`, fit
   within the box keeping aspect, never upscales. Both scale filters carry
   `force_divisible_by=2` — without it, a source whose aspect ratio doesn't
@@ -202,18 +247,28 @@ The rest is grouped into two tabs, by what kind of setting they are.
   probe_audio=False, ...)` — same function real jobs use, so the video-side
   flags can never drift from what actually runs). When a file is already
   queued, the audio side is genuinely accurate too — it probes that file's
-  real audio track (cached per file+track, so dragging a slider doesn't
-  shell out to ffprobe repeatedly) instead of guessing. With an empty
-  queue there's no real track to reflect, so the audio codec decision is
-  omitted rather than asserting a codec that might be wrong. If building
-  the preview fails (e.g. VAAPI selected on a machine with no Intel render
+  real audio track and duration (both cached per file, so dragging a
+  slider doesn't shell out to ffprobe repeatedly) instead of guessing. With
+  an empty queue there's no real track/duration to reflect, so those are
+  omitted rather than asserting values that might be wrong. If building the
+  preview fails (e.g. VAAPI selected on a machine with no Intel render
   node), it shows an inline message instead of taking the app down. Broken
   into a handful of lines (input / video encode / stream mapping /
   container flags, `_format_preview_text`) purely for readability — it's
   still the exact same argv underneath, just joined with newlines instead
-  of spaces at the display step.
-- **Hardware status caption** — confirms at a glance whether a VAAPI render
-  node was found (`worker.find_render_node`), and which one.
+  of spaces at the display step. **Collapsed by default** (a checkable
+  `QGroupBox`, repurposed as a disclosure toggle rather than its usual
+  enable/disable meaning — see `_make_collapsible_group`) since this is a
+  technical double-check, not something the default view needs open; state
+  persists across launches the same way window geometry does. A **Copy**
+  button next to it puts the exact text on the clipboard.
+
+The old hardware-status caption ("Hardware encode available via
+/dev/dri/renderD129 (Intel iGPU)") now lives in the window's status bar —
+a permanent widget in the bottom-right corner (`QMainWindow.statusBar()`,
+`addPermanentWidget` specifically so nothing that later shows a temporary
+status message can clobber it), qBittorrent-style, rather than competing
+with the actual settings for space in the left column.
 
 **Queue pane (right side)**
 - **The queue itself** — drag files in from a file manager to add them, or
@@ -253,7 +308,11 @@ The rest is grouped into two tabs, by what kind of setting they are.
 - **Live stats line** (under the progress bar) — fps / bitrate / speed /
   ETA for the job currently running, parsed from ffmpeg's `-progress`
   stream (`TranscodeQueue._emit_stats`). Separate from the full scrolling
-  log further down, which stays raw ffmpeg stderr.
+  **Log** further down, which stays raw ffmpeg stderr — also collapsed by
+  default now, same disclosure pattern and same reasoning as Effective
+  Command above (a debugging aid, not default-view material). The queue
+  list happily reclaims the freed space when it's collapsed, since it was
+  already the only other stretch-factor widget sharing this column.
 
 ## Testing
 
@@ -283,6 +342,36 @@ offscreen platform.
 
 ## Known gaps
 
+- The File Size rate-control mode's kbps estimate (both the caption under
+  the size field and the real `-b:v` value `build_args` computes) reserves
+  whatever the Audio bitrate setting says for the audio track's share, even
+  when that track is actually being *copied*, not transcoded -- the real
+  copied bitrate isn't known without an extra ffprobe this doesn't do. Close
+  enough for "land near this file size," not exact.
+- A checkable `QGroupBox` used as a collapse toggle (`_make_collapsible_group`
+  -- both Effective Command and Log use it) needs its size *policy*, not just
+  its content's visibility, toggled on collapse: a hidden child alone still
+  left the group claiming its full stretch-factor share of the layout,
+  which looked like a large empty box where the Log used to be -- confirmed
+  by screenshot before the size-policy fix went in. If a third collapsible
+  section gets added later and looks like it's not actually shrinking, this
+  is almost certainly why.
+- `QWidget.isVisible()` is always `False` until the top-level window has had
+  `.show()` called on it, regardless of the widget's own `setVisible()`
+  state -- it reflects the whole ancestor chain, not just one widget. Tests
+  that assert a control *is* visible need `window.show()` first (tests
+  asserting it's hidden don't strictly need it, but the whole suite's
+  existing convention is to call it anyway rather than have some tests rely
+  on the distinction). Already flagged once in `test_main.py` itself
+  (`TestPresetModifiedIndicator`); recorded here too since it bit three new
+  tests in the same sitting that added the Rate Control buttons.
+- `QSettings` round-trips a Python `bool` through its on-disk store as the
+  literal string `"true"`/`"false"` (confirmed on this Linux/INI backend) --
+  a plain `if value:` truthiness check on a restored value is a bug, since
+  the *string* `"false"` is itself truthy. `_restore_window_state` compares
+  `str(value) != "false"` for exactly this reason (window_geometry/
+  splitter_state predate this and get away with it because `restoreGeometry`/
+  `restoreState` take the raw QByteArray directly, never a bool).
 - `style.qss` references its checkmark/arrow SVGs as `url($ASSETS/...)` —
   `$ASSETS` is a literal token, not real QSS syntax; `_load_stylesheet()` in
   main.py substitutes it for `assets/`'s absolute path before the text ever

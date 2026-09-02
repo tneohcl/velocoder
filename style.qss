@@ -100,6 +100,44 @@ QPushButton#stopButton:enabled:hover {
     background-color: #3a2a28;
 }
 
+/* Rate Control's Quality / File Size / Advanced row -- three adjacent
+   checkable QPushButtons standing in for a segmented control (Qt has no
+   native one). Corners only round on the two outer edges, and the shared
+   inner edges drop their own border so two adjacent 1px borders don't
+   double up into a visibly thicker seam between buttons. */
+QPushButton#segLeft, QPushButton#segMid, QPushButton#segRight {
+    border-radius: 0;
+}
+
+QPushButton#segLeft {
+    border-top-left-radius: 6px;
+    border-bottom-left-radius: 6px;
+}
+
+QPushButton#segMid, QPushButton#segRight {
+    border-left: none;
+}
+
+QPushButton#segRight {
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
+}
+
+/* Without this, a checked segmented button and its unchecked neighbors
+   were pixel-for-pixel identical -- confirmed by screenshot, no way to
+   tell which of the three was actually selected. font-weight is a second,
+   non-color cue riding along with the fill/text-color change. */
+QPushButton#segLeft:checked, QPushButton#segMid:checked, QPushButton#segRight:checked {
+    background-color: #4fa8e0;
+    border-color: #4fa8e0;
+    color: #0d1117;
+    font-weight: 600;
+}
+
+QPushButton#segLeft:checked:hover, QPushButton#segMid:checked:hover, QPushButton#segRight:checked:hover {
+    background-color: #6bb8e8;
+}
+
 QComboBox, QLineEdit, QSpinBox, QPlainTextEdit {
     background-color: #171a1f;
     border: 1px solid #333944;

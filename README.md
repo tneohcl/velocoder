@@ -139,6 +139,7 @@ saved preset *is*, plus a `name` key):
     "audio_track": int,      # 0-based
     "audio_copy_if_compatible": bool,
     "audio_bitrate": str,    # e.g. "160k", used only when transcoding audio
+    "audio_downmix_stereo": bool,  # forces a stereo mixdown, only when the source has >2 channels
 }
 ```
 
@@ -346,31 +347,40 @@ this is presentation only. See `constants.RC_MODE_FRIENDLY` for the mapping.
   feature, not a bug: each file independently aims for that size using its
   own duration, which is what you'd actually want encoding a season of
   episodes with mixed runtimes to a consistent output size.
-- **Speed** — a slider from "Faster" to "More Thorough" for VAAPI
-  (`-compression_level` 1–7 underneath, exact value on the tooltip), or
-  x265's own preset ladder (ultrafast…placebo) in a dropdown, whichever
-  encoder applies. Deliberately kept as its own control rather than fused
-  with Quality into a single dial — they're different axes (what
-  quality/size to target, vs. how much effort to spend getting there), and
-  fusing them would mean two controls fighting over the same stored value
-  the moment both were shown at once. If you want one-click "good bundle
-  for this scenario" behavior, that's what Presets are for. Same
-  inverted-appearance treatment as Quality above (**Faster** left, **More
-  Thorough** right) — not just a guess at which end feels right: timed real
-  encodes at compression_level 1/4/7 confirmed lower values are genuinely
-  both slower *and* more size-efficient at a fixed quality target, so a
-  lower number belongs on the "more effort" side, not the "faster" side a
-  raw ffmpeg option list would suggest. A fuzzy tier label under the slider
-  ("Thorough — best efficiency, worth it for archival masters", etc.),
-  sharing Quality's `#fuzzyGroup` outlined box (see above), and a tooltip
-  explain the tradeoff the same way Quality's do. Hiding that caption for
-  x265's dropdown is plain `setVisible` now, not `setRowVisible` — the
-  latter was needed back when it was the sole widget on its own dedicated
-  `QFormLayout` row (`setVisible` alone left that row's own spacing
-  reserved, a residual gap under Speed specifically that Intel/AMD didn't
-  have); now that it's nested inside `#fuzzyGroup`'s plain `QVBoxLayout`
-  instead, that layout already collapses a hidden child's space correctly
-  on its own, without `QFormLayout`'s row-specific quirk to work around.
+- **Speed** — a slider from "Faster" to "More Thorough" for *either* engine
+  now (`-compression_level` 1–7 for VAAPI, x265's own preset ladder
+  ultrafast…placebo for CPU), whichever encoder applies — two separate
+  sliders (`speed_slider`/`speed_x265_slider`) sharing one row and one set
+  of "Faster"/"More Thorough"/fuzzy-tier-caption labels, only one of each
+  slider pair actually visible at a time. Originally a dropdown for x265
+  specifically (ten named presets is a lot of menu to scan), converted to
+  match VAAPI's slider once VAAPI already had one and the inconsistency
+  became obvious sitting right next to it. Deliberately kept as its own
+  control rather than fused with Quality into a single dial — they're
+  different axes (what quality/size to target, vs. how much effort to
+  spend getting there), and fusing them would mean two controls fighting
+  over the same stored value the moment both were shown at once. If you
+  want one-click "good bundle for this scenario" behavior, that's what
+  Presets are for.
+
+  VAAPI's slider uses the same inverted-appearance treatment as Quality
+  above (**Faster** left, **More Thorough** right) — not just a guess at
+  which end feels right: timed real encodes at compression_level 1/4/7
+  confirmed lower values are genuinely both slower *and* more
+  size-efficient at a fixed quality target, so a lower number belongs on
+  the "more effort" side, not the "faster" side a raw ffmpeg option list
+  would suggest. x265's slider needs no inversion at all: `X265_PRESETS`
+  is already ordered fastest-to-slowest (`ultrafast`…`placebo`), so index 0
+  landing on the visual left is already correct without flipping anything
+  — an index into that list, not a value with arithmetic meaning of its
+  own, same reasoning as Audio Bitrate's slider below. A shared fuzzy tier
+  label under whichever slider is showing ("Thorough — best efficiency,
+  worth it for archival masters", etc., same 3 captions either way, just
+  opposite fraction direction since the two underlying scales run opposite
+  ways) sits in the same `#fuzzyGroup` outlined box as Quality above, and
+  is unconditionally visible now — there's always a real slider to caption
+  regardless of which encoder is selected, so it no longer needs to hide
+  for one of them the way it did back when x265 only had a plain dropdown.
 - **Bit depth** — 8-bit or 10-bit (`main`/`nv12` vs `main10`/`p010le` for
   VAAPI; `yuv420p` vs `yuv420p10le` for x265). The tradeoff is folded
   straight into each dropdown item's own text ("10-bit — smoother
@@ -430,6 +440,20 @@ this is presentation only. See `constants.RC_MODE_FRIENDLY` for the mapping.
   aren't evenly spaced (96→128→160→192 are +32 each, 192→256 is +64), which
   a linear slider can't represent as uniform tick spacing without either
   lying about the middle stops or leaving the last one oddly cramped.
+- **Downmix to stereo** — mixes 5.1/7.1/etc. sources down to plain stereo,
+  for playback on a phone/laptop/anything without a surround setup. Only
+  actually does anything when the source genuinely has more than 2
+  channels (`worker.probe_audio_channels`, only ever probed when this is
+  checked at all -- most jobs never touch it) — checking it on a source
+  that's already stereo or mono has no effect, matching the control's own
+  label. A stream copy can't remix channels, so on a source that does need
+  it, checking this forces a transcode even when "Copy audio if
+  compatible" would otherwise have applied — the box always means what it
+  says, not "usually, unless copy already claimed the track first." `-ac 2`
+  (libswresample's own remix), not a hand-written `pan` filter with fixed
+  5.1-shaped coefficients — that would mis-handle anything that isn't
+  exactly that layout (7.1, quad, ...), where `-ac 2` remixes correctly
+  from whatever the source's real layout turns out to be.
 
 **Below the tabs, left side**
 - **Effective Command** — a live, read-only preview of the actual ffmpeg
@@ -792,6 +816,95 @@ widget's own `setVisible()` calls — it's always `False` until the
 top-level window has been `.show()`n at least once, even under the
 offscreen platform.
 
+## Reliability fixes
+
+A round of external review (two independent passes against this codebase)
+turned up several real, confirmed bugs in the batch-transcoding path itself
+— not just UI polish. Each was verified directly (a real repro against
+real ffmpeg, or a real `QProcess`) before being fixed, not just patched on
+the strength of the report alone:
+
+- **A missing/broken ffmpeg install left the whole queue stuck forever,
+  silently.** `TranscodeQueue` only connected `QProcess.finished` --
+  confirmed directly against a real nonexistent binary that `finished`
+  genuinely never fires when a process fails to even start, only
+  `errorOccurred` does (a crash still reaches `finished` too, a crash is a
+  way of finishing; only `FailedToStart` skips it entirely). No job_failed,
+  no all_finished, nothing in the log, nothing to click -- just permanently
+  "running." Now connects `errorOccurred` too, filtered to `FailedToStart`
+  specifically so every other error kind still goes through the existing
+  `finished`-based path unchanged.
+- **Two source files with the same stem (different folders) silently
+  overwrote each other's output**, and **a failed or stopped job could
+  destroy a pre-existing file at its output path.** `-y` used to write
+  straight to the final name -- confirmed directly with the exact reported
+  scenario (`folderA/shot01.mov` + `folderB/shot01.mkv`, both wanting
+  `shot01.mp4`) that the second job's completed output silently replaced
+  the first's. Fixed two ways together: output paths are now disambiguated
+  within a run (and against whatever's already on disk) as `name.ext`,
+  `name (2).ext`, ... before a job starts, matching how most file managers
+  already resolve the same kind of collision; and ffmpeg now writes to a
+  hidden temp name during the encode, renamed onto the real name only after
+  a confirmed successful exit -- so a failed/stopped job's cleanup only
+  ever deletes its own temp file, never anything that was already there.
+  (The refuse-if-output-equals-input guard from before is unchanged and
+  still checked first, against the un-disambiguated name specifically --
+  otherwise the disambiguation logic would have "solved" that case by
+  quietly picking a different name instead of refusing outright, which is
+  the wrong fix for a source-file-safety guard.)
+- **A File Size target too small for the file's length silently produced
+  an arbitrary-quality encode instead of erroring.** `target_size_to_
+  bitrate_kbps` returning 0 flowed straight into `-b:v 0k` -- confirmed
+  directly against real ffmpeg/libx265 that this doesn't error, it makes
+  x265 silently fall back to its own default CRF (28.0), with no actual
+  relationship to the size that was requested. `build_args` now raises
+  instead, which the two real callers (the queue, the live command
+  preview) already had exception handling for; the size-estimate label
+  shows the same message before the user ever gets that far.
+- **The "modified" preset indicator misfired on all three CPU presets.**
+  `_current_settings()` always includes `gpu_vendor` (`None` for a
+  non-VAAPI encoder), but the CPU presets in `constants.py` never define
+  that key at all -- confirmed directly that a plain `!=` comparison
+  treats a dict missing a key as different from one where it's explicitly
+  `None`, so selecting any CPU preset showed "modified" immediately with
+  nothing actually changed. Fixed with a key-by-key comparison that treats
+  "absent" and "explicitly `None`" as equivalent, robust against any future
+  settings key with the same shape, not just this one field.
+- **An auto-detected deinterlace race, in both directions.** Adding a file
+  and clicking Start immediately could begin encoding before the ~20s
+  interlace sample landed, using whichever deinterlace value the file
+  started with -- Start now refuses (with a status message) while any
+  sample is still in flight. Separately, manually toggling Deinterlace for
+  an already-queued, selected file could get silently reverted when that
+  file's detection result landed moments later -- a new per-job
+  `deinterlace_user_set` flag, stamped only by a genuine user edit to an
+  already-queued item (not by selecting a different item, and not by the
+  detector's own result), makes a manual override stick.
+- **Downmix to stereo didn't check the source's actual channel count.**
+  Documented under Controls above -- forced an unnecessary transcode on an
+  already-stereo source, and would have upmixed a mono one, the opposite of
+  what "downmix" means.
+- **Dragging to reorder the queue wasn't actually blocked during a run**,
+  despite Remove/Clear already being locked for exactly the same reason
+  (none of the three can affect a job already running or finished without
+  the visible list lying about what's actually executing). `DropTreeWidget`
+  now refuses an internal-move drop while a run is in progress, while still
+  accepting external file drops the same as before.
+- **The Copy button under Effective Command wasn't reliably paste-safe.**
+  It copied the *display* text -- grouped onto several lines, plain-space-
+  joined with no shell quoting -- so a path containing a space
+  (`/media/My Video.mov`) pasted as two separate shell arguments instead of
+  one. It now copies `shlex.join()` over the real argv this preview was
+  actually built from instead, confirmed to round-trip exactly through
+  `shlex.split()`.
+- **Selecting an audio track that doesn't exist on the source silently
+  produced video-only output.** `build_args` already handled this
+  correctly (skips mapping a stream that isn't there rather than failing
+  the whole job) -- the gap was that nothing told the user their output
+  would have no audio until they noticed on playback. The real queue now
+  logs a note when this happens; the command-building logic itself is
+  unchanged.
+
 ## Known gaps
 
 - The File Size rate-control mode's kbps estimate (both the caption under
@@ -1002,7 +1115,23 @@ offscreen platform.
   freeze the UI, but it's not free). Every added file now also kicks off a
   second, separate `ffprobe` process for the queue table's source-property
   columns (see Queue pane above) — header-only and fast, but it's still a
-  second subprocess per file, on top of the interlace sample.
+  second subprocess per file, on top of the interlace sample. Neither has a
+  concurrency cap — dropping a large batch (a season of episodes) launches
+  that many of each at once. Fine for a handful of files; a small queue/
+  semaphore would be worth adding before this gets used on 30+ files at a
+  time.
+- `_preview_duration`/`_preview_audio_codec`/`_preview_audio_channels`
+  (the live command-preview and size-estimate probes, `_update_command_
+  preview`/`_update_size_estimate_label`) run real, synchronous `ffprobe`
+  calls directly on the GUI thread — cached per file so it only actually
+  shells out once, but that first call still blocks the whole window
+  (Qt's own 30s subprocess timeout is the upper bound) if it lands on a
+  slow network mount or a file ffprobe struggles with. A probe failure no
+  longer crashes the app (see Reliability fixes above), but a *slow* one
+  still freezes it for however long it takes. Making these genuinely async
+  (QProcess-based, matching the interlace/source-property probes above)
+  would fix this properly; not done here since it's a larger structural
+  change than the correctness fixes in this pass.
 
   Testing note if you touch this: `ffmpeg -vf idet` itself false-positives
   on bare `testsrc2` test patterns (confirmed: 100% TFF on a genuinely
@@ -1034,10 +1163,11 @@ offscreen platform.
   cell-based model, see Queue pane above), and reordering worked the same
   way before this became a table — but it's the one piece of this feature
   that's only had a real interactive check, not an automated one.
-- Error recovery is per-job, not per-failure-class: a bad job (missing
-  audio track that doesn't exist, output path colliding with the input,
-  `probe_duration`/`ffprobe` failing) is caught and reported via
-  `job_failed`, and the queue moves on to the next file — but there's no
-  retry, and a systemic problem (e.g. ffmpeg itself missing) will just fail
-  every remaining job in the queue one at a time rather than aborting the
-  batch early.
+- Error recovery is per-job, not per-failure-class: a bad job (an
+  already-existing output name, `probe_duration`/`ffprobe` failing, ffmpeg
+  itself missing -- see Reliability fixes above, this specific case used
+  to hang the queue rather than fail cleanly, fixed now) is caught and
+  reported via `job_failed`, and the queue moves on to the next file — but
+  there's no retry, and a systemic problem (ffmpeg missing, a full disk)
+  will still fail every remaining job in the queue one at a time rather
+  than detecting the pattern and aborting the batch early.

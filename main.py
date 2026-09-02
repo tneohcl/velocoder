@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """TITAN-i Transcoder: minimal ffmpeg front-end replacing HandBrake QSV."""
+import shlex
 import sys
 from pathlib import Path
 
@@ -82,6 +83,19 @@ class DropTreeWidget(QTreeWidget):
         self.setUniformRowHeights(True)
         self.setAlternatingRowColors(True)
         self._on_files_dropped = on_files_dropped
+        # Dropping a file in mid-run is fine (add_files pushes it straight
+        # into the run in progress) and was never gated by this -- but
+        # reordering *existing* rows mid-run is different: the running
+        # queue captured its own execution-order snapshot at Start
+        # (MainWindow._running_items / TranscodeQueue._jobs), which a
+        # drag here doesn't touch. Confirmed this was a real gap: nothing
+        # stopped a mid-run drag before, so the visible order could show
+        # something other than what was actually executing, and status
+        # icons (looked up by position) could land on the wrong row.
+        # Blocking only the internal-move branch of dropEvent, not
+        # dropEvent entirely, keeps external file drops working during a
+        # run exactly as before.
+        self.reorder_locked = False
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -99,8 +113,10 @@ class DropTreeWidget(QTreeWidget):
         if event.mimeData().hasUrls():
             paths = [Path(u.toLocalFile()) for u in event.mimeData().urls() if u.isLocalFile()]
             self._on_files_dropped(paths)
-        else:
+        elif not self.reorder_locked:
             super().dropEvent(event)  # internal row-reorder drop
+        else:
+            event.ignore()
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -120,7 +136,9 @@ class MainWindow(QMainWindow):
         self.user_presets: list[dict] = load_user_presets()
         self._res_label = {(r["width"], r["height"]): r["label"] for r in RESOLUTIONS}
         self._preview_audio_cache: dict[tuple, str | None] = {}
+        self._preview_audio_channels_cache: dict[tuple, int | None] = {}
         self._preview_duration_cache: dict[Path, float] = {}
+        self._last_preview_args: list[str] = []
         self._loaded_preset_settings: dict | None = None
         self._running_items: list[QTreeWidgetItem] = []
         self._current_running_item: QTreeWidgetItem | None = None
@@ -155,8 +173,13 @@ class MainWindow(QMainWindow):
         # which reaches self.queue_list -- built later in _build_ui() by
         # _build_right_panel(), after _build_audio_tab() has already run.
         # Confirmed directly: setting it inline crashed with exactly that
-        # AttributeError the first time this ran.
+        # AttributeError the first time this ran. speed_x265_slider is the
+        # same story -- its own valueChanged handler ends in the same
+        # _on_control_changed() call, so its default ("medium", matching
+        # x265's own default and what the old speed_combo used to start on)
+        # is set here too, not inline in _build_video_tab().
         self.audio_bitrate_slider.setValue(AUDIO_BITRATES.index("160k"))
+        self.speed_x265_slider.setValue(X265_PRESETS.index("medium"))
         # Must run before _refresh_preset_combo(): it's the only thing that
         # populates rc_mode_combo, and applying a preset while that combo is
         # still empty leaves rc_mode reading back as None.
@@ -433,7 +456,17 @@ class MainWindow(QMainWindow):
         return self._make_collapsible_group("Effective Command", content, expanded=False)
 
     def _copy_command_to_clipboard(self):
-        QApplication.clipboard().setText(self.command_preview.toPlainText())
+        # Not self.command_preview.toPlainText() -- that's _format_preview_
+        # text's grouped-onto-several-lines *display* form, plain-space-
+        # joined with no quoting at all, which reads fine on screen but
+        # isn't actually valid shell input: a path containing a space
+        # (e.g. "/media/My Video.mov") would paste as two separate
+        # arguments, not one. shlex.join over the real args list this
+        # preview was actually built from quotes whatever needs it and
+        # leaves everything else alone, and flattens to one line -- multi-
+        # line would need trailing "\" continuations to paste correctly,
+        # which the display form was never written to include.
+        QApplication.clipboard().setText(shlex.join(self._last_preview_args))
 
     def _build_video_tab(self) -> QWidget:
         tab = QWidget()
@@ -573,13 +606,29 @@ class MainWindow(QMainWindow):
         self.speed_slider.setInvertedControls(True)
         self.speed_slider.valueChanged.connect(self._on_speed_slider_changed)
         speed_row.addWidget(self.speed_slider, 1)
+
+        self.speed_x265_slider = QSlider(Qt.Horizontal)
+        # Index into X265_PRESETS, not a value with real arithmetic meaning
+        # of its own -- same reasoning as Audio Bitrate's slider. No
+        # invertedAppearance/-Controls needed here unlike the VAAPI slider
+        # above: X265_PRESETS is already ordered fastest-to-slowest
+        # (ultrafast..placebo), so index 0 landing on the visual left and
+        # the last index on the right is already the correct "Faster ...
+        # More Thorough" direction without flipping anything.
+        self.speed_x265_slider.setRange(0, len(X265_PRESETS) - 1)
+        self.speed_x265_slider.setToolTip(
+            "Left: faster encode.\n"
+            "Right: slower, more size-efficient at the same quality.\n"
+            "(x265 preset)"
+        )
+        self.speed_x265_slider.valueChanged.connect(self._on_speed_x265_slider_changed)
+        speed_row.addWidget(self.speed_x265_slider, 1)
+
         self.speed_thorough_label = QLabel("More Thorough")
         speed_row.addWidget(self.speed_thorough_label)
-        self.speed_combo = QComboBox()
-        self.speed_combo.addItems(X265_PRESETS)
-        self.speed_combo.setCurrentText("medium")
-        self.speed_combo.currentIndexChanged.connect(self._on_control_changed)
-        speed_row.addWidget(self.speed_combo, 1)
+        self.speed_x265_label = QLabel()
+        self.speed_x265_label.setStyleSheet("font-size: 9pt;")
+        speed_row.addWidget(self.speed_x265_label)
 
         self.speed_tier_label = QLabel()
         self.speed_tier_label.setAlignment(Qt.AlignCenter)
@@ -618,7 +667,7 @@ class MainWindow(QMainWindow):
             "first ~20s -- override it here if the output still shows\n"
             "combing/interlacing artifacts."
         )
-        self.deinterlace_check.stateChanged.connect(self._on_control_changed)
+        self.deinterlace_check.stateChanged.connect(self._on_deinterlace_checkbox_changed)
         form.addRow("", self.deinterlace_check)
 
         outer.addWidget(encoding_group)
@@ -699,9 +748,11 @@ class MainWindow(QMainWindow):
         self.audio_downmix_check.setToolTip(
             "Mixes 5.1/7.1/etc. sources down to plain stereo -- for\n"
             "playback on a phone, laptop, or anything without a surround\n"
-            "setup. A stream copy can't remix channels, so checking this\n"
-            "always transcodes the audio track, even if it would\n"
-            "otherwise have been copied through untouched."
+            "setup. Has no effect on a source that's already stereo or\n"
+            "mono. A stream copy can't remix channels, so on a source\n"
+            "that does have more channels, checking this transcodes the\n"
+            "audio track even if it would otherwise have been copied\n"
+            "through untouched."
         )
         self.audio_downmix_check.stateChanged.connect(self._on_control_changed)
         form.addRow("", self.audio_downmix_check)
@@ -844,21 +895,17 @@ class MainWindow(QMainWindow):
         # driver has no ICQ to demote it in favor of in the first place.
         self.rc_advanced_btn.setVisible(RC_MODE_FRIENDLY[encoder_key]["advanced"] is not None)
 
+        # speed_faster_label/speed_thorough_label/speed_tier_label are
+        # shared by both sliders below (same "Faster .. More Thorough" axis,
+        # same 3-tier fuzzy caption vocabulary either way) -- always visible
+        # now that x265 has its own real slider too, not just VAAPI.
         self.speed_slider.setVisible(is_vaapi)
-        self.speed_faster_label.setVisible(is_vaapi)
-        self.speed_thorough_label.setVisible(is_vaapi)
-        self.speed_combo.setVisible(not is_vaapi)
-        self._on_speed_slider_changed()
-        # Plain setVisible here, not setRowVisible -- speed_tier_label
-        # used to be the sole widget on its own dedicated form row, where
-        # setVisible(False) alone left that row's spacing/margin reserved
-        # (confirmed by screenshot, a slight extra gap under Speed
-        # specifically when x265 was selected that Intel/AMD didn't have).
-        # Now that it's nested in speed_group's QVBoxLayout instead (see
-        # #fuzzyGroup above), a plain QVBoxLayout already collapses a
-        # hidden child's space correctly on its own -- that gap was
-        # QFormLayout-row-specific behavior, not a general Qt quirk.
-        self.speed_tier_label.setVisible(is_vaapi)
+        self.speed_x265_slider.setVisible(not is_vaapi)
+        self.speed_x265_label.setVisible(not is_vaapi)
+        if is_vaapi:
+            self._on_speed_slider_changed()
+        else:
+            self._on_speed_x265_slider_changed()
         self.video_form.setRowVisible(self.tune_combo, not is_vaapi)
 
         # Repopulating above ran with signals blocked (clearing/adding items
@@ -966,6 +1013,22 @@ class MainWindow(QMainWindow):
         ))
         self._on_control_changed()
 
+    def _on_speed_x265_slider_changed(self):
+        preset = X265_PRESETS[self.speed_x265_slider.value()]
+        self.speed_x265_label.setText(preset)
+        # Same 3 captions as the VAAPI slider above (same axis, same
+        # meaning, just a different underlying scale) -- but in the
+        # opposite fraction order: X265_PRESETS is already sorted fastest
+        # to slowest (ultrafast..placebo), so index 0 is the *fast* end
+        # here, where compression_level 1 was the *slow* end there.
+        self.speed_tier_label.setText(self._tier_label(
+            self._fraction_of(self.speed_x265_slider),
+            "Fast -- good for quick previews or large batches",
+            "Balanced -- a solid default for most encodes",
+            "Thorough -- best efficiency, worth it for archival masters",
+        ))
+        self._on_control_changed()
+
     # One caption per real AUDIO_BITRATES entry, not the 3-bucket
     # _tier_label helper Quality/Speed use above -- those two are smooth,
     # continuous ranges where fuzzy thirds make sense, but this is 5 fixed,
@@ -1042,9 +1105,19 @@ class MainWindow(QMainWindow):
                 # preview matches what will really run.
                 first_path = self.queue_list.topLevelItem(0).data(STATUS_COL, Qt.UserRole)["path"]
                 audio_codec = self._preview_audio_codec(first_path, settings["audio_track"])
+                # Only probed when downmix is actually checked -- same
+                # "don't pay for it unless it matters" reasoning as
+                # build_args' own internal probe_audio_channels call, and
+                # needed here so the preview correctly shows no -ac 2 for a
+                # source that doesn't actually have more than 2 channels,
+                # not just always assume it does.
+                audio_channels = (
+                    self._preview_audio_channels(first_path, settings["audio_track"])
+                    if settings.get("audio_downmix_stereo") else None
+                )
                 args = worker.build_args(
                     settings, first_path, output_path,
-                    probe_audio=False, audio_codec=audio_codec,
+                    probe_audio=False, audio_codec=audio_codec, audio_channels=audio_channels,
                     duration_seconds=self._preview_duration(first_path),
                 )
             else:
@@ -1059,11 +1132,13 @@ class MainWindow(QMainWindow):
                     settings, Path("input.ext"), output_path,
                     probe_audio=False, audio_codec=None,
                 )
+            self._last_preview_args = args
             self.command_preview.setPlainText(self._format_preview_text(args))
         except Exception as exc:
             # build_args can hit real hardware (find_render_node) for the
             # VAAPI path -- on a machine with no Intel node this must degrade
             # to a message, not crash the control that triggered it.
+            self._last_preview_args = []
             self.command_preview.setPlainText(f"(preview unavailable: {exc})")
         self._update_size_estimate_label(settings)
         self._update_preset_modified_indicator()
@@ -1090,6 +1165,12 @@ class MainWindow(QMainWindow):
             self._preview_audio_cache[key] = worker.probe_audio_codec(path, track_index)
         return self._preview_audio_cache[key]
 
+    def _preview_audio_channels(self, path: Path, track_index: int) -> int | None:
+        key = (path, track_index)
+        if key not in self._preview_audio_channels_cache:
+            self._preview_audio_channels_cache[key] = worker.probe_audio_channels(path, track_index)
+        return self._preview_audio_channels_cache[key]
+
     def _preview_duration(self, path: Path) -> float:
         if path not in self._preview_duration_cache:
             self._preview_duration_cache[path] = worker.probe_duration(path)
@@ -1102,13 +1183,35 @@ class MainWindow(QMainWindow):
             self.size_estimate_label.setText("Add a file to estimate the resulting bitrate")
             return
         first_path = self.queue_list.topLevelItem(0).data(STATUS_COL, Qt.UserRole)["path"]
-        duration = self._preview_duration(first_path)
+        try:
+            # Unguarded before -- confirmed a probe failure here (a stalled
+            # network mount, ffprobe genuinely missing) would raise straight
+            # out of _update_command_preview uncaught, unlike the sibling
+            # build_args() call just above it in that method, which already
+            # degrades to a message instead of propagating. Every keystroke
+            # while a bitrate-family rc_mode is active with this file queued
+            # would then hit the same uncaught exception again.
+            duration = self._preview_duration(first_path)
+            audio_codec = self._preview_audio_codec(first_path, settings["audio_track"])
+        except Exception as exc:
+            self.size_estimate_label.setText(f"(estimate unavailable: {exc})")
+            return
         if duration <= 0:
             self.size_estimate_label.setText("Couldn't read this file's duration to estimate bitrate")
             return
-        audio_codec = self._preview_audio_codec(first_path, settings["audio_track"])
         reserved_audio_kbps = worker.audio_bitrate_kbps(settings["audio_bitrate"]) if audio_codec is not None else 0
         video_kbps = worker.target_size_to_bitrate_kbps(settings["quality_value"], duration, reserved_audio_kbps)
+        if video_kbps <= 0:
+            # Same threshold build_args() itself now refuses to encode
+            # against (raises rather than silently emitting "-b:v 0k",
+            # which confirmed directly just makes libx265 fall back to its
+            # own default CRF instead of erroring) -- this label should
+            # say so before the user ever gets that far, not just describe
+            # a number that Start would then refuse to act on anyway.
+            self.size_estimate_label.setText(
+                "Target size is too small for this file's length and audio settings"
+            )
+            return
         self.size_estimate_label.setText(f"≈ {video_kbps:,} kbps video for this file's length (estimate)")
 
     def _update_preset_modified_indicator(self):
@@ -1121,11 +1224,29 @@ class MainWindow(QMainWindow):
             return
         modified = (
             self._loaded_preset_settings is not None
-            and self._current_settings() != self._loaded_preset_settings
+            and self._settings_differ(self._current_settings(), self._loaded_preset_settings)
         )
         self.preset_combo.setProperty("modified", modified)
         self.preset_combo.style().unpolish(self.preset_combo)
         self.preset_combo.style().polish(self.preset_combo)
+
+    @staticmethod
+    def _settings_differ(a: dict, b: dict) -> bool:
+        # Plain != would treat a dict missing "gpu_vendor" entirely (every
+        # built-in CPU preset, which never had a reason to define it) as
+        # different from one where it's explicitly None (_current_settings()
+        # always includes it, via _current_gpu_vendor() returning None for a
+        # non-VAAPI encoder) -- confirmed directly: selecting any of the
+        # three CPU presets showed "modified" immediately, nothing actually
+        # changed. Comparing key-by-key with .get() on both sides treats
+        # "key absent" and "key explicitly None" as equivalent, which is
+        # what they're actually meant to mean here -- and stays correct for
+        # any future settings key with the same absent-in-older-dicts shape
+        # (tune/deinterlace/container already have it, handled the same
+        # .get()-with-a-default way elsewhere in this file), not just this
+        # one field.
+        keys = a.keys() | b.keys()
+        return any(a.get(k) != b.get(k) for k in keys)
 
     # --- settings <-> controls ---
     def _current_settings(self) -> dict:
@@ -1138,7 +1259,7 @@ class MainWindow(QMainWindow):
             "gpu_vendor": self._current_gpu_vendor(),
             "rc_mode": rc_mode,
             "quality_value": self.size_spin.value() if is_bitrate else self.quality_slider.value(),
-            "speed": self.speed_combo.currentText() if encoder == "libx265" else str(self.speed_slider.value()),
+            "speed": X265_PRESETS[self.speed_x265_slider.value()] if encoder == "libx265" else str(self.speed_slider.value()),
             "bit_depth": self.bitdepth_combo.currentData(),
             "width": res["width"],
             "height": res["height"],
@@ -1174,7 +1295,11 @@ class MainWindow(QMainWindow):
             self.quality_slider.setValue(settings["quality_value"])
 
         if settings["encoder"] == "libx265":
-            self.speed_combo.setCurrentText(settings["speed"])
+            # Defensive fallback, same reasoning as audio_bitrate above --
+            # X265_PRESETS is a fixed list in this app, but a hand-edited
+            # presets.json could still carry a value that's not in it.
+            speed = settings["speed"] if settings["speed"] in X265_PRESETS else "medium"
+            self.speed_x265_slider.setValue(X265_PRESETS.index(speed))
         else:
             self.speed_slider.setValue(int(settings["speed"]))
 
@@ -1357,6 +1482,27 @@ class MainWindow(QMainWindow):
         self._detection_processes.append(proc)
         proc.start()
 
+    def _on_deinterlace_checkbox_changed(self):
+        # A dedicated handler, not just the generic _on_control_changed
+        # every other control uses -- needed to record which items the
+        # user has actually, manually decided this for, so a same-file
+        # auto-detect result landing later (_on_interlace_detected) can
+        # respect that instead of silently overwriting it. Confirmed this
+        # was a real race before: toggling this checkbox for a file right
+        # after adding it could get quietly reverted a few seconds later
+        # when the ~20s detector finished, with nothing to indicate it had
+        # happened. _syncing_controls_from_selection guards against this
+        # firing from a *programmatic* setChecked() (selecting a different
+        # queue item, or the detector's own UI sync below) -- only a
+        # genuine user click should count as an override.
+        if not self._syncing_controls_from_selection:
+            for item in self.queue_list.selectedItems():
+                job = item.data(STATUS_COL, Qt.UserRole)
+                if job is not None:
+                    job["deinterlace_user_set"] = True
+                    item.setData(STATUS_COL, Qt.UserRole, job)
+        self._on_control_changed()
+
     def _on_interlace_detected(self, item: QTreeWidgetItem, stderr_text: str):
         self._detection_processes = [p for p in self._detection_processes if p.state() != QProcess.NotRunning]
         try:
@@ -1364,6 +1510,12 @@ class MainWindow(QMainWindow):
         except RuntimeError:
             return  # item's C++ object was deleted (e.g. Clear Queue) before detection finished
         if job is None:
+            return
+        if job.get("deinterlace_user_set"):
+            # The user already explicitly set this file's deinterlace value
+            # (see _on_deinterlace_checkbox_changed) -- their choice wins,
+            # a same-file detection result landing after that shouldn't
+            # silently replace it.
             return
         fraction = worker.parse_idet_output(stderr_text)
         job["deinterlace"] = fraction > worker.INTERLACE_DETECT_THRESHOLD
@@ -1470,6 +1622,21 @@ class MainWindow(QMainWindow):
         if not jobs:
             self.status_label.setText("Queue is empty")
             return
+        if self._detection_processes:
+            # jobs above is a snapshot of each row's *current* job dict --
+            # a file added moments ago whose ~20s interlace sample hasn't
+            # landed yet still has whatever deinterlace value it started
+            # with (see add_files/_current_settings), not what detection
+            # would actually find. Confirmed this was a real race: adding
+            # an interlaced file and clicking Start immediately could
+            # start that job with deinterlace off. Refusing to start while
+            # any sample is still running closes it outright rather than
+            # letting it happen silently.
+            self.status_label.setText(
+                f"Still analyzing {len(self._detection_processes)} file(s) for "
+                f"interlacing -- try Start again in a few seconds"
+            )
+            return
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -1492,17 +1659,20 @@ class MainWindow(QMainWindow):
     def _set_queue_editable(self, editable: bool):
         # Add Files is deliberately NOT gated by this -- add_files() pushes
         # a file dropped in mid-run straight into the run in progress
-        # (queue.add_job/update_pending_job), matching drag-and-drop, which
-        # was never blocked by this flag either. Remove/Clear stay locked
-        # during a run, though: removing or reordering can't affect a job
-        # already running or already finished, so it'd just make the list
-        # lie about what's actually executing. This also gates live
-        # selection-editing (_sync_settings_to_selected_queue_items), so
-        # selecting an already-finished row to check its tooltip during a
-        # run can't accidentally overwrite its (now purely historical) settings.
+        # (queue.add_job/update_pending_job). Remove/Clear/reordering stay
+        # locked during a run, though: none of them can affect a job
+        # already running or already finished, so any of them would just
+        # make the list lie about what's actually executing -- confirmed
+        # dragging to reorder specifically wasn't actually blocked before
+        # this, despite that same reasoning already applying to it just as
+        # much as Remove/Clear. This also gates live selection-editing
+        # (_sync_settings_to_selected_queue_items), so selecting an
+        # already-finished row to check its tooltip during a run can't
+        # accidentally overwrite its (now purely historical) settings.
         self._queue_editable = editable
         self.remove_btn.setEnabled(editable)
         self.clear_btn.setEnabled(editable)
+        self.queue_list.reorder_locked = not editable
 
     # --- queue signal handlers ---
     def _on_job_started(self, path: str, index: int, total: int):
@@ -1714,7 +1884,7 @@ class _ComboPopupBackgroundFilter(QObject):
         if obj.metaObject().className() != "QComboBoxPrivateContainer":
             return False
         if event.type() == QEvent.Type.Show:
-            bg = _current_theme_palette.get("BG_PANEL", "#2b2f36")
+            bg = _current_theme_palette.get("BG_PANEL", "#21252c")
             obj.setStyleSheet(f"background-color: {bg};")
             for child in obj.children():
                 if isinstance(child, QWidget):

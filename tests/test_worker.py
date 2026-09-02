@@ -10,6 +10,7 @@ flags this app relies on (e.g. -rc_mode CQP needing -qp, not
 -global_quality) are actually valid, not just plausible-looking.
 """
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -267,6 +268,36 @@ class TestSizeToBitrate(unittest.TestCase):
         self.assertEqual(worker.audio_bitrate_kbps("96k"), 96)
 
 
+class TestTargetSizeTooSmallRejected(unittest.TestCase):
+    """target_size_to_bitrate_kbps returning 0 (see TestSizeToBitrate above)
+    used to flow straight through into "-b:v 0k" -- confirmed directly
+    against real ffmpeg/libx265 that this doesn't error, it makes x265
+    silently fall back to its own default CRF (28.0), producing an
+    arbitrary-quality encode with no actual relationship to the size the
+    user asked for. build_args now raises instead of letting that happen;
+    both real callers (TranscodeQueue._run_next, MainWindow's live preview)
+    already catch exceptions from build_args and surface them as a
+    message, so raising here reuses that rather than needing its own
+    reporting path."""
+
+    def test_raises_when_target_too_small_for_duration_and_audio(self):
+        with self.assertRaises(ValueError):
+            worker.build_args(
+                x265_settings(rc_mode="bitrate", quality_value=0.001),
+                Path("in.mkv"), Path("out.mp4"), duration_seconds=7200, probe_audio=False, audio_codec="aac",
+            )
+
+    def test_does_not_raise_for_a_reasonable_target(self):
+        # Same shape as the too-small case above, just a target that's
+        # actually big enough -- confirms this isn't rejecting every
+        # bitrate-family request, only the ones that would derive to 0.
+        args = worker.build_args(
+            x265_settings(rc_mode="bitrate", quality_value=100),
+            Path("in.mkv"), Path("out.mp4"), duration_seconds=80, probe_audio=False, audio_codec="aac",
+        )
+        self.assertIn("-b:v", args)
+
+
 class TestBuildArgsCommon(ClipTestCase):
     def test_resolution_clamps_to_source_no_upscale(self):
         args = worker.build_args(vaapi_settings(width=99999, height=99999), self.clip, self.out_path)
@@ -363,31 +394,39 @@ class TestAudioDownmix(unittest.TestCase):
     the ClipTestCase-based classes above: these don't need a real file to
     confirm which flags build_args emits, only to confirm ffmpeg actually
     accepts -ac 2 and the resulting file really is 2-channel.
+
+    audio_channels=6 throughout the "downmix should actually happen" cases
+    below -- confirmed directly this control used to force -ac 2 (and an
+    unnecessary transcode) regardless of the source's real channel count,
+    so a plain "downmix requested" is deliberately not enough on its own
+    here any more; the test_no_effect_on_* cases below cover the
+    channels<=2 (and unknown) case these used to get wrong.
     """
 
     def test_adds_ac_2_when_transcoding(self):
         args = worker.build_args(
             vaapi_settings(audio_downmix_stereo=True, audio_copy_if_compatible=False),
-            Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="mp3",
+            Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="mp3", audio_channels=6,
         )
         self.assertEqual(args[args.index("-ac") + 1], "2")
 
     def test_omits_ac_flag_when_downmix_is_off(self):
         args = worker.build_args(
             vaapi_settings(audio_downmix_stereo=False, audio_copy_if_compatible=False),
-            Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="mp3",
+            Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="mp3", audio_channels=6,
         )
         self.assertNotIn("-ac", args)
 
     def test_forces_transcode_even_when_copy_would_otherwise_apply(self):
         # aac is normally copy-compatible with audio_copy_if_compatible=True
-        # -- a stream copy can't remix channels, so requesting downmix must
-        # override that, the same way audio_copy_if_compatible=False does
-        # in TestAudioSelection above. Silently keeping -c:a copy here would
+        # -- a stream copy can't remix channels, so requesting downmix on a
+        # source that genuinely has more than 2 channels must override
+        # that, the same way audio_copy_if_compatible=False does in
+        # TestAudioSelection above. Silently keeping -c:a copy here would
         # mean checking "downmix to stereo" just quietly does nothing.
         args = worker.build_args(
             vaapi_settings(audio_downmix_stereo=True, audio_copy_if_compatible=True),
-            Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="aac",
+            Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="aac", audio_channels=6,
         )
         self.assertEqual(args[args.index("-c:a") + 1], "aac")
         self.assertEqual(args[args.index("-ac") + 1], "2")
@@ -395,7 +434,39 @@ class TestAudioDownmix(unittest.TestCase):
     def test_default_is_off_and_does_not_affect_a_normal_copy(self):
         args = worker.build_args(
             vaapi_settings(audio_copy_if_compatible=True), Path("in.mkv"), Path("out.mp4"),
-            probe_audio=False, audio_codec="aac",
+            probe_audio=False, audio_codec="aac", audio_channels=6,
+        )
+        self.assertEqual(args[args.index("-c:a") + 1], "copy")
+        self.assertNotIn("-ac", args)
+
+    def test_no_effect_on_a_source_that_is_already_stereo(self):
+        # The label says "if source has more channels" -- confirmed
+        # directly this wasn't actually checked before: a stereo (or mono)
+        # source with the box checked still forced an unnecessary
+        # transcode, and a mono source would have been *upmixed* to two
+        # channels, the opposite of what "downmix" means.
+        args = worker.build_args(
+            vaapi_settings(audio_downmix_stereo=True, audio_copy_if_compatible=True),
+            Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="aac", audio_channels=2,
+        )
+        self.assertEqual(args[args.index("-c:a") + 1], "copy")
+        self.assertNotIn("-ac", args)
+
+    def test_no_effect_on_a_mono_source(self):
+        args = worker.build_args(
+            vaapi_settings(audio_downmix_stereo=True, audio_copy_if_compatible=True),
+            Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="aac", audio_channels=1,
+        )
+        self.assertEqual(args[args.index("-c:a") + 1], "copy")
+        self.assertNotIn("-ac", args)
+
+    def test_unknown_channel_count_is_treated_as_no_effect_not_assumed_needed(self):
+        # audio_channels=None (never probed, or genuinely unreported) must
+        # not be read as "assume it needs downmixing" -- the safe default
+        # is "don't force it" when it isn't actually known to be warranted.
+        args = worker.build_args(
+            vaapi_settings(audio_downmix_stereo=True, audio_copy_if_compatible=True),
+            Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="aac", audio_channels=None,
         )
         self.assertEqual(args[args.index("-c:a") + 1], "copy")
         self.assertNotIn("-ac", args)
@@ -752,17 +823,234 @@ class TestOutputPathCollisionGuard(unittest.TestCase):
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
+    def test_disambiguates_two_jobs_with_the_same_stem(self):
+        # The actual reported scenario: folderA/shot01.mov and
+        # folderB/shot01.mkv both want to become shot01.mp4 -- confirmed
+        # directly this used to mean the second job's -y silently
+        # overwrote the first job's completed output, with nothing to
+        # indicate it had happened.
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            folder_a, folder_b = tmpdir / "folderA", tmpdir / "folderB"
+            folder_a.mkdir()
+            folder_b.mkdir()
+            clip_a, clip_b = folder_a / "shot01.mov", folder_b / "shot01.mkv"
+            for clip in (clip_a, clip_b):
+                subprocess.run(
+                    ["ffmpeg", "-y", "-loglevel", "error",
+                     "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=1",
+                     "-c:v", "libx264", str(clip)],
+                    check=True, timeout=30,
+                )
+            out_dir = tmpdir / "out"
+            out_dir.mkdir()
+            jobs = [{"path": clip_a, **x265_settings(container="mp4")},
+                    {"path": clip_b, **x265_settings(container="mp4")}]
+            queue = worker.TranscodeQueue()
+            events = _run_queue_and_collect(queue, jobs, out_dir)
+
+            finished = sorted(e[1][1] for e in events if e[0] == "job_finished")
+            self.assertEqual(len(finished), 2, events)
+            self.assertNotEqual(finished[0], finished[1])
+            self.assertTrue(all(Path(p).exists() for p in finished))
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+class TestAtomicOutputRename(unittest.TestCase):
+    """ffmpeg now writes to a hidden temp name during the encode and this
+    only ever gets renamed onto the real output name after a confirmed
+    success -- confirmed directly (see TestOutputPathCollisionGuard's
+    sibling class above and the class docstring reasoning) this used to
+    mean an existing file at the final path (a previous run's completed
+    output, or another job's -- see the disambiguation test above) was
+    truncated by -y the instant a colliding job started, and destroyed
+    outright if that job then failed or got stopped."""
+
+    def test_no_temp_file_left_behind_on_success(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            clip = tmpdir / "clip.mp4"
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error",
+                 "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=1",
+                 "-c:v", "libx264", str(clip)],
+                check=True, timeout=30,
+            )
+            out_dir = tmpdir / "out"
+            out_dir.mkdir()
+            queue = worker.TranscodeQueue()
+            _run_queue_and_collect(queue, [{"path": clip, **x265_settings(container="mp4")}], out_dir)
+
+            names = [p.name for p in out_dir.iterdir()]
+            self.assertEqual(names, ["clip.mp4"], "only the final name should remain, no .*.transcoding.* left over")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_a_failed_job_does_not_touch_a_pre_existing_file_at_the_final_path(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            # A source ffmpeg can't actually decode -- the job will fail,
+            # but only after build_args/probe_duration succeed against it
+            # (a real, if broken, file) and a real ffmpeg process starts
+            # and then exits non-zero, exercising the same failure path
+            # _on_finished's "else" branch takes for a genuine encode error.
+            clip = tmpdir / "broken.mp4"
+            clip.write_bytes(b"not actually a video file")
+            out_dir = tmpdir / "out"
+            out_dir.mkdir()
+            preexisting = out_dir / "broken.mp4"
+            preexisting.write_bytes(b"a completed output from a previous, unrelated run")
+
+            queue = worker.TranscodeQueue()
+            events = _run_queue_and_collect(queue, [{"path": clip, **x265_settings(container="mp4")}], out_dir)
+
+            self.assertTrue(any(e[0] == "job_failed" for e in events), events)
+            self.assertEqual(
+                preexisting.read_bytes(), b"a completed output from a previous, unrelated run",
+                "a failed job must never touch a file that was already at its output path",
+            )
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+class TestProcessFailedToStart(unittest.TestCase):
+    """QProcess.finished never fires when the process fails to even start
+    -- confirmed directly against a real nonexistent binary that only
+    errorOccurred does. Before this was connected, a missing/broken ffmpeg
+    install left the queue stuck on that job forever: no job_failed, no
+    all_finished, nothing to click, nothing in the log."""
+
+    def test_missing_ffmpeg_fails_the_job_and_continues_the_queue(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        fakebin = Path(tempfile.mkdtemp(prefix="transcoder_test_fakebin_"))
+        try:
+            # A real ffprobe (via a symlink), but no ffmpeg anywhere on
+            # PATH -- isolates the QProcess-level failure specifically,
+            # rather than an earlier probe_duration/probe_audio_codec
+            # FileNotFoundError, which is a different, already-handled path.
+            real_ffprobe = shutil.which("ffprobe")
+            (fakebin / "ffprobe").symlink_to(real_ffprobe)
+
+            clip = tmpdir / "clip.mp4"
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error",
+                 "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=1",
+                 "-c:v", "libx264", str(clip)],
+                check=True, timeout=30,
+            )
+            jobs = [{"path": clip, **x265_settings(container="mp4")},
+                    {"path": clip, **x265_settings(container="mkv")}]
+            out_dir = tmpdir / "out"
+            out_dir.mkdir()
+
+            # Not the shared _run_queue_and_collect helper -- it wires
+            # all_finished straight to loop.quit() without also recording
+            # it into events, which is exactly the one signal this test
+            # actually needs to see fire (a stuck queue and a correctly-
+            # finished one both look identical in that helper's own events
+            # list; only the *timing* would differ, which this makes an
+            # explicit, direct assertion on instead of an inferred one).
+            old_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = str(fakebin)
+            try:
+                queue = worker.TranscodeQueue()
+                events = []
+                loop = QEventLoop()
+                queue.job_failed.connect(lambda *a: events.append(("job_failed", a)))
+                queue.all_finished.connect(lambda: events.append(("all_finished",)))
+                queue.all_finished.connect(loop.quit)
+                timer = QTimer()
+                timer.setSingleShot(True)
+                timer.timeout.connect(loop.quit)
+                timer.start(10000)
+                queue.start(jobs, out_dir)
+                loop.exec()
+            finally:
+                os.environ["PATH"] = old_path
+
+            failed = [e for e in events if e[0] == "job_failed"]
+            self.assertEqual(len(failed), 2, events)
+            self.assertTrue(all("failed to start" in e[1][1] for e in failed))
+            self.assertTrue(
+                any(e[0] == "all_finished" for e in events),
+                "queue never reached all_finished -- it got stuck instead of "
+                "progressing past the FailedToStart job(s)",
+            )
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            shutil.rmtree(fakebin, ignore_errors=True)
+
+
+class TestMissingAudioTrackWarning(unittest.TestCase):
+    """Requesting an audio track that doesn't exist on the source (e.g.
+    Track 4 on a file with only one) used to just silently produce
+    video-only output -- build_args itself already handled this correctly
+    (skips mapping a stream that isn't there rather than failing the whole
+    job), but nothing told the user their output would have no audio at
+    all until they noticed on playback."""
+
+    def test_logs_a_note_when_the_requested_track_does_not_exist(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            clip = tmpdir / "clip.mp4"
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error",
+                 "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=1",
+                 "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                 "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-c:a", "aac",
+                 "-shortest", str(clip)],
+                check=True, timeout=30,
+            )
+            out_dir = tmpdir / "out"
+            out_dir.mkdir()
+            job = {"path": clip, **x265_settings(audio_track=3, container="mp4")}
+
+            # Not the shared _run_queue_and_collect helper -- it doesn't
+            # connect job_log at all (most callers never need per-line
+            # ffmpeg output), and this test specifically needs to see it.
+            queue = worker.TranscodeQueue()
+            log_lines = []
+            finished = []
+            loop = QEventLoop()
+            queue.job_log.connect(log_lines.append)
+            queue.job_finished.connect(lambda *a: finished.append(a))
+            queue.all_finished.connect(loop.quit)
+            timer = QTimer()
+            timer.setSingleShot(True)
+            timer.timeout.connect(loop.quit)
+            timer.start(15000)
+            queue.start([job], out_dir)
+            loop.exec()
+
+            self.assertTrue(
+                any("audio track 3" in line and "not found" in line for line in log_lines),
+                log_lines,
+            )
+            self.assertTrue(finished, "job should still succeed, just without audio")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
 
 class TestStopRaceFix(unittest.TestCase):
     """_on_finished must not delete a job that actually completed
     successfully, even if stop() was also called (finished-signal delivery
-    races the user's click)."""
+    races the user's click).
+
+    _on_finished's own signature changed shape (temp_output_path,
+    final_output_path, not a single output_path) when the atomic-rename
+    fix landed -- see TestAtomicOutputRename -- these two now exercise
+    that same real temp-file/rename mechanics directly instead of a
+    single pre-existing output file, matching what _run_next actually
+    hands it.
+    """
 
     def test_successful_exit_wins_over_stopped_flag(self):
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
         try:
-            output = tmpdir / "done.mp4"
-            output.write_bytes(b"pretend this is a completed encode")
+            temp_output = tmpdir / ".done.transcoding.mp4"
+            final_output = tmpdir / "done.mp4"
+            temp_output.write_bytes(b"pretend this is a completed encode")
             queue = worker.TranscodeQueue()
             queue._jobs = []  # nothing queued after this one
             queue._stopped = True  # simulate: Stop was clicked
@@ -770,9 +1058,11 @@ class TestStopRaceFix(unittest.TestCase):
             queue.job_finished.connect(lambda *a: events.append(("finished", a)))
             queue.job_failed.connect(lambda *a: events.append(("failed", a)))
 
-            queue._on_finished(Path("in.mkv"), output, 0, None)  # exit_code=0: genuinely succeeded
+            # exit_code=0: genuinely succeeded
+            queue._on_finished(Path("in.mkv"), temp_output, final_output, 0, None)
 
-            self.assertTrue(output.exists(), "a successfully completed file must not be deleted")
+            self.assertTrue(final_output.exists(), "a successfully completed file must not be deleted")
+            self.assertFalse(temp_output.exists(), "must be renamed onto the final name, not left behind")
             self.assertEqual([e[0] for e in events], ["finished"])
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -780,17 +1070,20 @@ class TestStopRaceFix(unittest.TestCase):
     def test_genuine_stop_of_an_incomplete_job_still_cleans_up(self):
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
         try:
-            output = tmpdir / "partial.mp4"
-            output.write_bytes(b"partial data from a killed ffmpeg")
+            temp_output = tmpdir / ".partial.transcoding.mp4"
+            final_output = tmpdir / "partial.mp4"
+            temp_output.write_bytes(b"partial data from a killed ffmpeg")
             queue = worker.TranscodeQueue()
             queue._jobs = []
             queue._stopped = True
             events = []
             queue.job_failed.connect(lambda *a: events.append(("failed", a)))
 
-            queue._on_finished(Path("in.mkv"), output, 1, None)  # nonzero: actually interrupted
+            # nonzero: actually interrupted
+            queue._on_finished(Path("in.mkv"), temp_output, final_output, 1, None)
 
-            self.assertFalse(output.exists(), "a genuinely-stopped job's partial output must be removed")
+            self.assertFalse(temp_output.exists(), "a genuinely-stopped job's partial temp file must be removed")
+            self.assertFalse(final_output.exists(), "must never have been created at all")
             self.assertEqual([e[0] for e in events], ["failed"])
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)

@@ -75,6 +75,24 @@ def probe_audio_codec(path: Path, track_index: int = 0) -> str | None:
     return codec or None
 
 
+def probe_audio_channels(path: Path, track_index: int = 0) -> int | None:
+    """Channel count of the given audio track index, or None if it doesn't
+    exist / isn't reported. A separate probe from probe_audio_codec (not a
+    combined query) and only called where actually needed (build_args, only
+    when a downmix is actually being considered) -- most jobs never need
+    channel count at all, so there's no reason to pay for it by default."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", f"a:{track_index}",
+         "-show_entries", "stream=channels",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, text=True, timeout=30,
+    )
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
 def build_probe_args(input_path: Path) -> list[str]:
     """ffprobe argv for a single-shot source-metadata query: container
     duration plus every stream's key fields. Header-only (no decoding, unlike
@@ -192,6 +210,7 @@ def build_args(
     *,
     probe_audio: bool = True,
     audio_codec: str | None = None,
+    audio_channels: int | None = None,
     duration_seconds: float | None = None,
 ) -> list[str]:
     """Build the full ffmpeg argv for one job from a resolved settings dict.
@@ -213,21 +232,37 @@ def build_args(
     are frequently wrong, especially on camcorder-sourced footage; this is
     a manual override, not auto-detected), audio_track,
     audio_copy_if_compatible, audio_bitrate, audio_downmix_stereo (bool,
-    default False -- forces a stereo mixdown of the audio track; only
-    meaningful while transcoding audio, so requesting it also forces a
-    transcode even when audio_copy_if_compatible would otherwise apply,
-    the same way audio_copy_if_compatible=False does).
+    default False -- forces a stereo mixdown of the audio track, but only
+    when the source genuinely has more than 2 channels; a stereo or mono
+    source is left alone regardless of this flag, matching the control's
+    own label ("if source has more channels"). Requesting it on a source
+    that does have more channels also forces a transcode even when
+    audio_copy_if_compatible would otherwise apply, the same way
+    audio_copy_if_compatible=False does -- a stream copy can't remix.
 
-    probe_audio=False skips the real ffprobe call and uses audio_codec as
-    given instead -- for building a representative command line to *show*
-    the user (e.g. a live preview) against a file that may not exist yet,
-    without shelling out on every keystroke. Real jobs always probe.
+    probe_audio=False skips the real ffprobe calls and uses audio_codec/
+    audio_channels as given instead -- for building a representative
+    command line to *show* the user (e.g. a live preview) against a file
+    that may not exist yet, without shelling out on every keystroke. Real
+    jobs always probe. audio_channels is only ever probed (or needed) when
+    audio_downmix_stereo is actually set -- most jobs never touch it.
 
     duration_seconds, likewise, lets a caller that already has it (real
     jobs always probe duration anyway, for progress tracking) skip a
     redundant ffprobe call. Only used for a bitrate-family rc_mode -- a
     quality-family one never touches it, so it's never probed for the
     common case. None means "probe it if a bitrate-family mode needs it".
+
+    Raises ValueError if a bitrate-family rc_mode's derived video bitrate
+    would be zero or negative (the requested target size can't fit this
+    file's length plus its reserved audio allocation) -- confirmed
+    directly that silently passing that through as "-b:v 0k" doesn't
+    error, it makes libx265 silently fall back to its own default CRF
+    (28.0), producing an arbitrary-quality encode with no size relationship
+    to what was actually requested at all. Callers (the real queue, the
+    GUI preview) already catch exceptions from this function and surface
+    them as a message -- raising here reuses that instead of needing a
+    second reporting path.
     """
     encoder = settings["encoder"]
     is_vaapi = encoder == "hevc_vaapi"
@@ -241,6 +276,8 @@ def build_args(
     audio_track = settings["audio_track"]
     if probe_audio:
         audio_codec = probe_audio_codec(input_path, audio_track)
+        if audio_codec is not None and audio_downmix_stereo:
+            audio_channels = probe_audio_channels(input_path, audio_track)
 
     video_kbps = None
     if rc_mode in BITRATE_RC_MODES:
@@ -248,6 +285,13 @@ def build_args(
             duration_seconds = probe_duration(input_path)
         reserved_audio_kbps = audio_bitrate_kbps(settings["audio_bitrate"]) if audio_codec is not None else 0
         video_kbps = target_size_to_bitrate_kbps(quality_value, duration_seconds, reserved_audio_kbps)
+        if video_kbps <= 0:
+            raise ValueError(
+                f"Target size ({quality_value} MB) is too small for this file's length "
+                f"and audio settings -- the derived video bitrate would be zero or "
+                f"negative. Increase the target size, lower the audio bitrate, or "
+                f"switch to a Quality-based rate control mode instead."
+            )
 
     args = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "info"]
 
@@ -310,16 +354,26 @@ def build_args(
         # exist on this file, and mapping it anyway would fail the whole job on
         # a stream ffmpeg can't find, instead of just proceeding without audio.
         args += ["-map", f"0:a:{audio_track}"]
-        # A stream copy can't remix channels -- requesting downmix forces a
+        # Downmix only actually means something when the source has more
+        # channels than the stereo it's being asked to become -- confirmed
+        # this wasn't checked before: a stereo/mono source with the box
+        # checked forced an unnecessary transcode (mono even got upmixed to
+        # two channels, the opposite of what "downmix" means). audio_channels
+        # is None whenever it was never probed (downmix not requested, so
+        # never needed) or genuinely unknown -- either way, "unknown" must
+        # not be treated as "assume it needs downmixing".
+        force_downmix = audio_downmix_stereo and audio_channels is not None and audio_channels > 2
+        # A stream copy can't remix channels -- an actual downmix forces a
         # transcode here too, the same way audio_copy_if_compatible=False
-        # does just below, so checking "downmix to stereo" always actually
-        # produces stereo output instead of silently no-op'ing whenever the
-        # source happens to already be a copy-compatible codec.
-        if settings["audio_copy_if_compatible"] and not audio_downmix_stereo and audio_codec in ("aac", "ac3", "eac3"):
+        # does just below, so checking "downmix to stereo" on a source that
+        # genuinely needs it always actually produces stereo output instead
+        # of silently no-op'ing whenever the source happens to already be a
+        # copy-compatible codec.
+        if settings["audio_copy_if_compatible"] and not force_downmix and audio_codec in ("aac", "ac3", "eac3"):
             args += ["-c:a", "copy"]
         else:
             args += ["-c:a", "aac", "-b:a", settings["audio_bitrate"]]
-            if audio_downmix_stereo:
+            if force_downmix:
                 # Plain -ac 2 (libswresample's own remix), not an explicit
                 # pan filter with hand-picked ITU-R BS.775 coefficients --
                 # a fixed 5.1-shaped pan formula would mis-handle anything
@@ -387,6 +441,14 @@ class TranscodeQueue(QObject):
         self._duration = 0.0
         self._stopped = False
         self._stats_buffer: dict = {}
+        # Every final output path handed out this run, so two jobs that
+        # would otherwise both want e.g. shot01.mp4 (different source
+        # folders, same stem) get disambiguated instead of the second one
+        # silently overwriting the first -- confirmed this was possible
+        # before, not just theoretical. Reset per start(), grows as add_job
+        # appends mid-run jobs too, since _resolve_output_path is what
+        # populates it, not start() itself.
+        self._used_output_paths: set[Path] = set()
 
     def start(self, jobs: list[dict], output_dir: Path):
         """jobs: list of settings dicts (see build_args) plus a "path" key."""
@@ -394,7 +456,27 @@ class TranscodeQueue(QObject):
         self._output_dir = output_dir
         self._index = 0
         self._stopped = False
+        self._used_output_paths = set()
         self._run_next()
+
+    def _resolve_output_path(self, input_path: Path, container: str) -> Path:
+        """One final output path per input file, disambiguated against
+        every other path already handed out this run *and* against
+        whatever's already sitting on disk (a previous run's completed
+        output, or unrelated content that happens to share the name) --
+        confirmed both were real ways for one job to silently clobber
+        another's finished file before this existed. "name (2).ext",
+        "name (3).ext", ... matching how most file managers already
+        resolve the same kind of collision."""
+        stem = input_path.stem
+        n = 1
+        while True:
+            name = f"{stem}.{container}" if n == 1 else f"{stem} ({n}).{container}"
+            candidate = self._output_dir / name
+            if candidate not in self._used_output_paths and not candidate.exists():
+                self._used_output_paths.add(candidate)
+                return candidate
+            n += 1
 
     def add_job(self, job: dict):
         """Append a job to the run already in progress -- _run_next picks it
@@ -435,21 +517,57 @@ class TranscodeQueue(QObject):
         self._index += 1
         input_path: Path = job["path"]
         container = job.get("container", "mp4")
-        output_path = self._output_dir / (input_path.stem + f".{container}")
 
-        if output_path.resolve() == input_path.resolve():
-            # ffmpeg's -y would truncate this file for writing while still
-            # reading from it as input -- refuse rather than destroy the source.
+        # Checked against the *un*-disambiguated name specifically, before
+        # _resolve_output_path ever runs -- confirmed directly that doing
+        # this check after resolving would let this exact case slip
+        # through silently: since the input file itself already exists at
+        # that path, _resolve_output_path's own disambiguation loop would
+        # just treat it as "taken" and move on to " (2)" instead of the
+        # explicit refusal this is actually supposed to be. This is a
+        # correctness guard (don't let ffmpeg -y truncate the file it's
+        # also reading from), not a naming-collision one -- the two need
+        # to stay separate, not merge into the same "just pick another
+        # name" logic.
+        natural_output_path = self._output_dir / f"{input_path.stem}.{container}"
+        if natural_output_path.resolve() == input_path.resolve():
             self.job_failed.emit(
                 str(input_path), "output path is the same as the input file — skipped"
             )
             self._run_next()
             return
 
+        final_output_path = self._resolve_output_path(input_path, container)
+
+        # Written here during the encode, renamed to final_output_path only
+        # on confirmed success (_on_finished) -- ffmpeg's -y used to write
+        # straight to the final name, so an existing file there (a previous
+        # run's completed output, another job's -- see _resolve_output_path)
+        # was truncated the instant this job started, and a failed/stopped
+        # job's cleanup then deleted whatever was left, destroying it either
+        # way. The real extension stays at the very end (ffmpeg has no -f
+        # here -- it infers the muxer from this filename), so the temp
+        # marker goes in the middle, not appended after it.
+        temp_output_path = final_output_path.with_name(
+            f".{final_output_path.stem}.transcoding{final_output_path.suffix}"
+        )
+
         self._stats_buffer = {}
         try:
             self._duration = probe_duration(input_path)
-            args = build_args(job, input_path, output_path, duration_seconds=self._duration)
+            audio_codec = probe_audio_codec(input_path, job["audio_track"])
+            audio_channels = None
+            if audio_codec is not None and job.get("audio_downmix_stereo"):
+                audio_channels = probe_audio_channels(input_path, job["audio_track"])
+            if audio_codec is None:
+                self.job_log.emit(
+                    f"Note: audio track {job['audio_track']} not found on this "
+                    f"file -- output will have no audio"
+                )
+            args = build_args(
+                job, input_path, temp_output_path, duration_seconds=self._duration,
+                probe_audio=False, audio_codec=audio_codec, audio_channels=audio_channels,
+            )
         except Exception as exc:
             self.job_failed.emit(str(input_path), str(exc))
             self._run_next()
@@ -463,8 +581,19 @@ class TranscodeQueue(QObject):
         proc.setArguments(args[1:])
         proc.readyReadStandardOutput.connect(lambda: self._read_progress(proc))
         proc.readyReadStandardError.connect(lambda: self._read_log(proc))
+        # QProcess.finished never fires when the process fails to even start
+        # (confirmed directly against a nonexistent binary: only errorOccurred
+        # does) -- without this, a missing/broken ffmpeg install left this
+        # job, and the whole queue behind it, stuck forever: no failure ever
+        # reported, nothing to click, nothing in the log. Every *other* error
+        # kind (Crashed, Timedout, ...) still reaches finished too (a crash is
+        # a way of finishing), so only FailedToStart is handled here -- the
+        # rest stay on the existing finished-based path.
+        proc.errorOccurred.connect(
+            lambda error: self._on_process_error(input_path, temp_output_path, error)
+        )
         proc.finished.connect(
-            lambda code, status: self._on_finished(input_path, output_path, code, status)
+            lambda code, status: self._on_finished(input_path, temp_output_path, final_output_path, code, status)
         )
         self._process = proc
         proc.start()
@@ -509,27 +638,40 @@ class TranscodeQueue(QObject):
             if line.strip():
                 self.job_log.emit(line)
 
-    def _on_finished(self, input_path: Path, output_path: Path, exit_code: int, exit_status):
+    def _on_finished(self, input_path: Path, temp_output_path: Path, final_output_path: Path, exit_code: int, exit_status):
         self._process = None
         # A successful exit always wins, even if stop() was also called --
         # QProcess.finished delivery is async, so a job can genuinely finish
         # (exit 0, file written) in the same window the user clicks Stop.
         # Checking _stopped first would then delete a completed output and
         # report it as cancelled instead of keeping it.
-        if exit_code == 0 and output_path.exists():
+        if exit_code == 0 and temp_output_path.exists():
+            # Atomic rename onto the real name only now that success is
+            # confirmed -- ffmpeg itself never touches final_output_path,
+            # so a failed/stopped job (below) can never take an existing
+            # file there down with it the way it used to.
+            temp_output_path.rename(final_output_path)
             self.job_progress.emit(1.0)
-            self.job_finished.emit(str(input_path), str(output_path))
+            self.job_finished.emit(str(input_path), str(final_output_path))
         elif self._stopped:
-            self._cleanup_partial(output_path)
+            self._cleanup_partial(temp_output_path)
             self.job_failed.emit(str(input_path), "stopped by user")
         else:
-            self._cleanup_partial(output_path)
+            self._cleanup_partial(temp_output_path)
             self.job_failed.emit(str(input_path), f"ffmpeg exited {exit_code}")
         self._run_next()
 
+    def _on_process_error(self, input_path: Path, temp_output_path: Path, error):
+        if error != QProcess.ProcessError.FailedToStart:
+            return  # every other error kind still reaches _on_finished via `finished`
+        self._process = None
+        self._cleanup_partial(temp_output_path)
+        self.job_failed.emit(str(input_path), "ffmpeg failed to start -- is it installed and on PATH?")
+        self._run_next()
+
     @staticmethod
-    def _cleanup_partial(output_path: Path):
+    def _cleanup_partial(temp_output_path: Path):
         try:
-            output_path.unlink()
+            temp_output_path.unlink()
         except OSError:
             pass

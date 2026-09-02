@@ -8,6 +8,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import shlex
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 _app = QApplication.instance() or QApplication([])
 
 import main  # noqa: E402
+import worker  # noqa: E402
 
 
 @contextmanager
@@ -423,26 +425,39 @@ class TestRateControlButtons(unittest.TestCase):
         self.assertTrue(window.rc_quality_btn.isChecked())
 
 
-class TestSpeedTierLabelVisibility(unittest.TestCase):
-    """speed_tier_label lives inside speed_group's QVBoxLayout (see
-    #fuzzyGroup in style.qss, grouping the Speed slider with its fuzzy
-    caption in one outlined box) -- switching it from setRowVisible to
-    plain setVisible when that box was introduced relies on QVBoxLayout
-    itself collapsing a hidden child's space, unlike the QFormLayout-row
-    case setRowVisible was originally written to work around."""
+class TestSpeedSliderVisibility(unittest.TestCase):
+    """x265 got its own real Speed slider (speed_x265_slider), not just a
+    QComboBox, matching VAAPI's speed_slider -- so speed_faster_label/
+    speed_thorough_label/speed_tier_label are shared by both and stay
+    visible regardless of encoder now; only which *slider* (and its own
+    value label) is showing actually changes. Was previously the reverse
+    for speed_tier_label specifically (hidden for x265, visible only for
+    VAAPI, since x265 had no slider of its own to caption yet)."""
 
-    def test_hidden_for_x265(self):
+    def test_x265_slider_shown_and_vaapi_slider_hidden_for_cpu(self):
         window = main.MainWindow()
         window.show()
         window.encoder_combo.setCurrentText("CPU")
-        self.assertFalse(window.speed_tier_label.isVisible())
+        self.assertTrue(window.speed_x265_slider.isVisible())
+        self.assertTrue(window.speed_x265_label.isVisible())
+        self.assertFalse(window.speed_slider.isVisible())
 
-    def test_visible_for_vaapi(self):
+    def test_vaapi_slider_shown_and_x265_slider_hidden_for_vaapi(self):
         window = main.MainWindow()
         window.show()
-        window.encoder_combo.setCurrentText("CPU")
         window.encoder_combo.setCurrentText("Intel (iGPU)")
-        self.assertTrue(window.speed_tier_label.isVisible())
+        self.assertTrue(window.speed_slider.isVisible())
+        self.assertFalse(window.speed_x265_slider.isVisible())
+        self.assertFalse(window.speed_x265_label.isVisible())
+
+    def test_shared_labels_stay_visible_regardless_of_encoder(self):
+        window = main.MainWindow()
+        window.show()
+        for encoder in ("CPU", "Intel (iGPU)", "AMD (GPU)"):
+            window.encoder_combo.setCurrentText(encoder)
+            self.assertTrue(window.speed_faster_label.isVisible(), encoder)
+            self.assertTrue(window.speed_thorough_label.isVisible(), encoder)
+            self.assertTrue(window.speed_tier_label.isVisible(), encoder)
 
 
 class TestTargetSizeSettings(unittest.TestCase):
@@ -492,6 +507,56 @@ class TestSizeEstimateLabel(unittest.TestCase):
         self.assertIn("kbps", text)
         self.assertNotIn("Add a file", text)
         self.assertNotIn("Couldn't read", text)
+
+    def test_a_probe_failure_degrades_to_a_message_instead_of_raising(self):
+        # Real, confirmed bug: this call was unguarded, unlike the sibling
+        # build_args() call in _update_command_preview just above it in
+        # that method, which already degrades to a message. A probe
+        # failure here (a stalled network mount, ffprobe genuinely
+        # missing) used to propagate straight out of
+        # _update_command_preview uncaught -- and since that method runs
+        # on every settings change while File Size mode is active with a
+        # file queued, it would raise again on every subsequent keystroke.
+        # Patched around add_files() itself, not just the later
+        # rc_filesize_btn.click() -- _update_command_preview eagerly
+        # probes duration for *any* queued file regardless of rc_mode (it
+        # feeds build_args' duration_seconds unconditionally), so
+        # add_files() alone already populates _preview_duration_cache;
+        # patching any later than this would just hit that cache and never
+        # call the (patched) function at all.
+        window = main.MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            _make_clip(clip, "aac")
+            with patch.object(worker, "probe_duration", side_effect=RuntimeError("boom")):
+                window.add_files([clip])
+                _wait_for_detection(window)
+                window.rc_filesize_btn.click()  # must not raise
+            self.assertIn("estimate unavailable", window.size_estimate_label.text())
+
+    def test_target_too_small_shows_a_clear_message_not_a_bogus_number(self):
+        # target_size_to_bitrate_kbps returning 0 used to just get printed
+        # as "≈ 0 kbps video..." -- confirmed directly (see
+        # test_worker.TestTargetSizeTooSmallRejected) that build_args()
+        # itself now refuses to encode against that derived value at all,
+        # so this label should say why before the user gets that far, not
+        # describe a number Start would then reject anyway. The real test
+        # clip is only ~1s, so even size_spin's own minimum (10MB) is
+        # still plenty of bitrate for it -- the duration cache is set
+        # directly to simulate a long file instead, the actual condition
+        # ("target too small for this length") this is testing.
+        window = main.MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            _make_clip(clip, "aac")
+            window.add_files([clip])
+            _wait_for_detection(window)
+            window.rc_filesize_btn.click()
+            window._preview_duration_cache[clip] = 7200.0  # simulate a 2-hour file
+            window.size_spin.setValue(window.size_spin.minimum())
+            text = window.size_estimate_label.text()
+        self.assertIn("too small", text)
+        self.assertNotIn("kbps", text)
 
 
 class TestCollapsibleSections(unittest.TestCase):
@@ -662,6 +727,28 @@ class TestPresetModifiedIndicator(unittest.TestCase):
         window.quality_slider.setValue(original)
         self.assertFalse(window.preset_combo.property("modified"))
 
+    def test_false_immediately_after_loading_a_cpu_preset(self):
+        # Real, confirmed bug: _current_settings() always includes
+        # "gpu_vendor" (None for a non-VAAPI encoder, via
+        # _current_gpu_vendor()), but the three built-in CPU presets never
+        # define that key at all -- only the six VAAPI presets do. Plain
+        # != treated a dict missing a key as different from one where it's
+        # explicitly None, so selecting any CPU preset showed "modified"
+        # immediately with nothing actually changed. The startup default
+        # (see test_false_immediately_after_loading_a_preset above) is a
+        # VAAPI preset and never exercised this -- this test selects a CPU
+        # one specifically, the case that was actually broken.
+        window = main.MainWindow()
+        idx = window.preset_combo.findText("720p CPU Balanced (Software / x265)")
+        window.preset_combo.setCurrentIndex(idx)
+        self.assertFalse(window.preset_combo.property("modified"))
+
+    def test_settings_differ_treats_missing_key_and_explicit_none_the_same(self):
+        self.assertFalse(main.MainWindow._settings_differ({"a": None}, {}))
+        self.assertFalse(main.MainWindow._settings_differ({}, {"a": None}))
+        self.assertTrue(main.MainWindow._settings_differ({"a": 1}, {"a": 2}))
+        self.assertTrue(main.MainWindow._settings_differ({"a": 1}, {}))
+
 
 class TestAudioBitrateSlider(unittest.TestCase):
     """Converted from a QComboBox to a slider (matching Quality/Speed on
@@ -700,6 +787,64 @@ class TestAudioBitrateSlider(unittest.TestCase):
         for i in range(len(main.AUDIO_BITRATES)):
             window.audio_bitrate_slider.setValue(i)
             self.assertTrue(window.audio_bitrate_tier_label.text())
+
+
+class TestX265SpeedSlider(unittest.TestCase):
+    """Converted from a QComboBox (speed_combo) to a slider
+    (speed_x265_slider), matching VAAPI's own Speed slider and Audio
+    Bitrate's conversion earlier -- same shape of interesting behavior:
+    the slider's value is an index into X265_PRESETS, not a value with
+    arithmetic meaning of its own, so the round-trip through that index is
+    what actually needs locking in."""
+
+    def test_default_is_medium(self):
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("CPU")
+        self.assertEqual(window._current_settings()["speed"], "medium")
+
+    def test_slider_value_round_trips_through_current_settings(self):
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("CPU")
+        window.speed_x265_slider.setValue(main.X265_PRESETS.index("veryslow"))
+        self.assertEqual(window._current_settings()["speed"], "veryslow")
+        self.assertEqual(window.speed_x265_label.text(), "veryslow")
+
+    def test_apply_settings_sets_the_slider_to_the_matching_index(self):
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("CPU")
+        settings = window._current_settings()
+        window._apply_settings_to_controls({**settings, "speed": "superfast"})
+        self.assertEqual(window.speed_x265_slider.value(), main.X265_PRESETS.index("superfast"))
+
+    def test_apply_settings_falls_back_to_medium_for_an_unknown_value(self):
+        # Same defensive-fallback reasoning as Audio Bitrate -- a hand-
+        # edited presets.json could carry a preset name that isn't one of
+        # X265_PRESETS; the old combo's setCurrentText() silently ignored
+        # that, .index() would crash without this same fallback.
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("CPU")
+        settings = window._current_settings()
+        window._apply_settings_to_controls({**settings, "speed": "not-a-real-preset"})
+        self.assertEqual(window.speed_x265_slider.value(), main.X265_PRESETS.index("medium"))
+
+    def test_every_preset_has_its_own_tier_caption(self):
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("CPU")
+        for i in range(len(main.X265_PRESETS)):
+            window.speed_x265_slider.setValue(i)
+            self.assertTrue(window.speed_tier_label.text())
+
+    def test_fastest_and_slowest_ends_get_the_expected_captions(self):
+        # X265_PRESETS is ordered fastest-to-slowest already (ultrafast at
+        # index 0, placebo at the end) -- opposite fraction direction from
+        # the VAAPI slider's compression_level (1=slowest there), confirmed
+        # explicitly here rather than just trusting the caption list order.
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("CPU")
+        window.speed_x265_slider.setValue(0)
+        self.assertIn("Fast", window.speed_tier_label.text())
+        window.speed_x265_slider.setValue(len(main.X265_PRESETS) - 1)
+        self.assertIn("Thorough", window.speed_tier_label.text())
 
 
 class TestAudioDownmix(unittest.TestCase):
@@ -866,6 +1011,48 @@ class TestCommandPreviewGrouping(unittest.TestCase):
         self.assertEqual(" ".join(text.split()), " ".join(text.replace("\n", " ").split()))
 
 
+class TestCopyCommandToClipboard(unittest.TestCase):
+    """Real, confirmed bug: the Copy button copied command_preview's own
+    *display* text -- _format_preview_text's grouped-onto-several-lines
+    form, plain-space-joined with no shell quoting at all. A path
+    containing a space pastes as two separate shell arguments that way,
+    not one. The clipboard text now comes from shlex.join over the real
+    args list this preview was actually built from instead."""
+
+    def test_copied_text_quotes_a_path_with_a_space(self):
+        window = main.MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "My Video.mkv"
+            _make_clip(clip, "aac")
+            window.add_files([clip])
+            _wait_for_detection(window)
+            window._copy_command_to_clipboard()
+            copied = QApplication.clipboard().text()
+        # shlex quotes the *whole* argument the space appears in (the full
+        # path), not just the space-containing word in isolation -- the
+        # real round-trip check just below is the precise version of this,
+        # this one just confirms the space-containing filename ends up
+        # inside a quoted argument at all, not split into two bare tokens.
+        self.assertIn("My Video.mkv'", copied)
+
+    def test_copied_text_round_trips_through_shlex_split(self):
+        window = main.MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "My Video.mkv"
+            _make_clip(clip, "aac")
+            window.add_files([clip])
+            _wait_for_detection(window)
+            window._copy_command_to_clipboard()
+            copied = QApplication.clipboard().text()
+        self.assertEqual(shlex.split(copied), window._last_preview_args)
+
+    def test_copies_nothing_useful_when_preview_is_unavailable(self):
+        window = main.MainWindow()
+        window._last_preview_args = []
+        window._copy_command_to_clipboard()
+        self.assertEqual(QApplication.clipboard().text(), "")
+
+
 class TestJobStatusIcons(unittest.TestCase):
     """Queue rows should reflect per-job outcome, not just the status label."""
 
@@ -945,6 +1132,43 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         window.add_files([self.interlaced_clip])
         window.queue_list.clear()  # deletes the C++ item object, not just detaches it
         _wait_for_detection(window)  # must not raise from the now-deleted item
+
+    def test_manually_toggling_an_already_queued_items_checkbox_survives_late_detection(self):
+        # Different scenario from test_detection_overrides_a_manually_
+        # checked_box_when_source_is_progressive above -- that one toggles
+        # the checkbox *before* any file exists (nothing selected yet, so
+        # nothing is marked as a user override; the new job's starting
+        # value is just whatever the checkbox happened to show, which
+        # detection is still free to correct). This one selects a file
+        # that's *already queued* and edits its checkbox directly -- a
+        # real, confirmed race before this fix: the ~20s detector landing
+        # after that edit would silently revert it, with nothing to
+        # indicate it had happened.
+        window = main.MainWindow()
+        window.add_files([self.interlaced_clip])
+        item = window.queue_list.topLevelItem(0)
+        item.setSelected(True)
+        window._on_queue_selection_changed()
+        window.deinterlace_check.setChecked(False)  # user overrides before detection lands
+        window._on_deinterlace_checkbox_changed()
+        _wait_for_detection(window)
+        job = item.data(main.STATUS_COL, main.Qt.UserRole)
+        self.assertFalse(job["deinterlace"], "manual override must survive the late detection result")
+
+    def test_start_refuses_while_detection_is_still_pending(self):
+        # Real race otherwise: add_files' job snapshot is taken at add
+        # time, before the ~20s sample has a result -- clicking Start
+        # immediately could begin encoding with whatever deinterlace value
+        # the file started with, not what detection would actually find.
+        window = main.MainWindow()
+        window.add_files([self.interlaced_clip])
+        self.assertTrue(window._detection_processes, "test assumes detection is still in flight")
+        window._start()
+        self.assertIn("analyzing", window.status_label.text())
+        # _start() must have returned early, before disabling this -- proof
+        # it didn't actually launch a job with stale (pre-detection) data.
+        self.assertTrue(window.start_btn.isEnabled())
+        _wait_for_detection(window)
 
 
 class TestVideoAudioLabels(unittest.TestCase):
@@ -1181,6 +1405,22 @@ class TestQueueLockingDuringRun(unittest.TestCase):
             mock_start.assert_called_once()
         self.assertFalse(window.remove_btn.isEnabled())
         self.assertFalse(window._queue_editable)
+
+    def test_set_queue_editable_also_locks_drag_reordering(self):
+        # Real, confirmed gap: reordering rows by dragging was never
+        # actually gated by this at all -- Remove/Clear were locked during
+        # a run for the same reason (can't affect a job already running or
+        # finished without the visible list lying about what's actually
+        # executing), but a drag-reorder wasn't, so the on-screen order
+        # could end up not matching TranscodeQueue's own fixed execution
+        # order, and job_started's position-based _running_items lookup
+        # could then attribute a status icon to the wrong row.
+        window = main.MainWindow()
+        self.assertFalse(window.queue_list.reorder_locked)
+        window._set_queue_editable(False)
+        self.assertTrue(window.queue_list.reorder_locked)
+        window._set_queue_editable(True)
+        self.assertFalse(window.queue_list.reorder_locked)
 
     def test_on_all_finished_unlocks_queue(self):
         window = main.MainWindow()

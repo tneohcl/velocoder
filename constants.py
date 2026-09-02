@@ -97,7 +97,7 @@ X265_TUNES = ["None", "animation", "grain", "psnr", "ssim", "fastdecode", "zerol
 # section. Protected: Save As refuses these names, Delete refuses these entries.
 BUILTIN_PRESETS = [
     {
-        "name": "720p Stuff Tuned (CPU / x265)",
+        "name": "720p CPU Balanced (Software / x265)",
         "encoder": "libx265", "rc_mode": "CRF", "quality_value": 23, "speed": "medium",
         "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
         "deinterlace": False,

@@ -20,7 +20,8 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from PySide6.QtCore import QEventLoop, QTimer  # noqa: E402
+from PySide6.QtCore import QEvent, QEventLoop, Qt, QTimer  # noqa: E402
+from PySide6.QtGui import QColor, QFocusEvent, QPalette  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
@@ -113,11 +114,16 @@ def _add_dummy_item(window, name: str, **overrides) -> "main.QTreeWidgetItem":
 
 
 class _FakeApp:
-    """Stand-in for QApplication -- just needs to accept setStyleSheet()."""
+    """Stand-in for QApplication -- needs setStyleSheet() (the whole point
+    of _load_stylesheet) and now also palette() (_system_accent_tokens
+    reads QPalette.Accent/.Highlight off whatever's passed as app)."""
     received = None
 
     def setStyleSheet(self, text):
         self.received = text
+
+    def palette(self):
+        return QPalette()
 
 
 class TestStylesheetLoading(unittest.TestCase):
@@ -142,17 +148,91 @@ class TestStylesheetLoading(unittest.TestCase):
         self.assertNotIn("$", app.received)
 
     def test_dark_and_light_produce_different_output(self):
+        # BG_WINDOW, not ACCENT -- accent is system-derived now (see
+        # TestSystemAccentTokens below), the same regardless of Dark/Light,
+        # so it's no longer a token that tells the two themes apart.
+        # BG_WINDOW still is.
         dark_app, light_app = _FakeApp(), _FakeApp()
         main._load_stylesheet(dark_app, "dark", style_path=REPO_ROOT / "style.qss")
         main._load_stylesheet(light_app, "light", style_path=REPO_ROOT / "style.qss")
         self.assertNotEqual(dark_app.received, light_app.received)
-        self.assertIn(main.themes.DARK["ACCENT"], dark_app.received)
-        self.assertIn(main.themes.LIGHT["ACCENT"], light_app.received)
+        self.assertIn(main.themes.DARK["BG_WINDOW"], dark_app.received)
+        self.assertIn(main.themes.LIGHT["BG_WINDOW"], light_app.received)
 
     def test_unknown_theme_name_falls_back_to_dark(self):
         app = _FakeApp()
         main._load_stylesheet(app, "not-a-real-theme", style_path=REPO_ROOT / "style.qss")
-        self.assertIn(main.themes.DARK["ACCENT"], app.received)
+        self.assertIn(main.themes.DARK["BG_WINDOW"], app.received)
+
+
+class _AccentFakeApp:
+    """Stand-in exposing a controllable palette() -- unlike _FakeApp above,
+    these tests care specifically about what QPalette.Accent/.Highlight
+    resolves to, not about setStyleSheet()."""
+
+    def __init__(self, accent_color: QColor):
+        self._palette = QPalette()
+        role = getattr(QPalette, "Accent", QPalette.Highlight)
+        self._palette.setColor(role, accent_color)
+
+    def palette(self):
+        return self._palette
+
+
+class TestSystemAccentTokens(unittest.TestCase):
+    """_load_stylesheet's ACCENT/etc. tokens come from the desktop's own
+    palette now, not a color this app picks on its own -- confirmed on a
+    real KDE session that QPalette.Accent already resolves to that
+    session's actual configured accent (#308cc6), not a generic Fusion
+    default. These test the derivation directly, isolated from any real
+    desktop session's actual current accent."""
+
+    def test_derives_accent_from_system_palette(self):
+        app = _AccentFakeApp(QColor("#308cc6"))
+        tokens = main._system_accent_tokens(app)
+        self.assertEqual(tokens["ACCENT"], "#308cc6")
+
+    def test_falls_back_to_a_fixed_blue_when_palette_is_black(self):
+        # A real desktop session's accent is never actually pure black --
+        # treated as "nothing resolved" rather than a legitimate choice.
+        app = _AccentFakeApp(QColor(0, 0, 0))
+        tokens = main._system_accent_tokens(app)
+        self.assertEqual(tokens["ACCENT"], "#4fa8e0")
+
+    def test_hover_and_pressed_are_distinct_from_the_base_accent(self):
+        app = _AccentFakeApp(QColor("#308cc6"))
+        tokens = main._system_accent_tokens(app)
+        self.assertNotEqual(tokens["ACCENT_HOVER"], tokens["ACCENT"])
+        self.assertNotEqual(tokens["ACCENT_PRESSED"], tokens["ACCENT"])
+
+    def test_picks_white_text_for_a_dark_accent(self):
+        app = _AccentFakeApp(QColor("#1a1a1a"))
+        tokens = main._system_accent_tokens(app)
+        self.assertEqual(tokens["TEXT_ON_ACCENT"], "#ffffff")
+
+    def test_picks_near_black_text_for_a_light_accent(self):
+        app = _AccentFakeApp(QColor("#f0f0f0"))
+        tokens = main._system_accent_tokens(app)
+        self.assertEqual(tokens["TEXT_ON_ACCENT"], "#0d1117")
+
+    def test_check_icon_matches_text_on_accent_not_theme(self):
+        # The checkmark drawn inside a checked QCheckBox sits directly on
+        # the $ACCENT fill, exactly like button text -- it needs the same
+        # contrast-partner CHECK_ICON picks as TEXT_ON_ACCENT does, not
+        # whichever of check_dark.svg/check_light.svg happened to match
+        # the *old*, theme-fixed accent. Confirmed a real bug this way:
+        # Dark theme's accent used to be light enough for a near-black
+        # checkmark to make sense; once the accent became this session's
+        # real system accent for *both* themes, TEXT_ON_ACCENT correctly
+        # switched to white regardless of theme, but CHECK_ICON was still
+        # keyed off theme name until this fix.
+        # A light accent needs dark (check_dark.svg) text/check on top of
+        # it; a dark accent needs light (check_light.svg) -- same pairing
+        # as TEXT_ON_ACCENT itself, tested above.
+        light_accent_app = _AccentFakeApp(QColor("#f0f0f0"))
+        self.assertEqual(main._system_accent_tokens(light_accent_app)["CHECK_ICON"], "check_dark.svg")
+        dark_accent_app = _AccentFakeApp(QColor("#1a1a1a"))
+        self.assertEqual(main._system_accent_tokens(dark_accent_app)["CHECK_ICON"], "check_light.svg")
 
 
 class TestResolveTheme(unittest.TestCase):
@@ -581,6 +661,170 @@ class TestPresetModifiedIndicator(unittest.TestCase):
         self.assertTrue(window.preset_combo.property("modified"))
         window.quality_slider.setValue(original)
         self.assertFalse(window.preset_combo.property("modified"))
+
+
+class TestAudioBitrateSlider(unittest.TestCase):
+    """Converted from a QComboBox to a slider (matching Quality/Speed on
+    the Video tab) -- the slider's value is an *index* into AUDIO_BITRATES,
+    not a kbps number, so the interesting behavior to lock in is the
+    round-trip through that index, not just "does a slider move"."""
+
+    def test_default_is_160k(self):
+        window = main.MainWindow()
+        self.assertEqual(window._current_settings()["audio_bitrate"], "160k")
+
+    def test_slider_value_round_trips_through_current_settings(self):
+        window = main.MainWindow()
+        window.audio_bitrate_slider.setValue(main.AUDIO_BITRATES.index("256k"))
+        self.assertEqual(window._current_settings()["audio_bitrate"], "256k")
+        self.assertEqual(window.audio_bitrate_label.text(), "256k")
+
+    def test_apply_settings_sets_the_slider_to_the_matching_index(self):
+        window = main.MainWindow()
+        settings = window._current_settings()
+        window._apply_settings_to_controls({**settings, "audio_bitrate": "96k"})
+        self.assertEqual(window.audio_bitrate_slider.value(), main.AUDIO_BITRATES.index("96k"))
+
+    def test_apply_settings_falls_back_to_160k_for_an_unknown_value(self):
+        # A hand-edited presets.json could carry a bitrate string that's
+        # no longer one of the five real stops -- the old combo's
+        # setCurrentText() silently ignored that; .index() would crash
+        # without this same defensive fallback in _apply_settings_to_controls.
+        window = main.MainWindow()
+        settings = window._current_settings()
+        window._apply_settings_to_controls({**settings, "audio_bitrate": "not-a-real-bitrate"})
+        self.assertEqual(window.audio_bitrate_slider.value(), main.AUDIO_BITRATES.index("160k"))
+
+    def test_every_bitrate_has_its_own_tier_caption(self):
+        window = main.MainWindow()
+        for i in range(len(main.AUDIO_BITRATES)):
+            window.audio_bitrate_slider.setValue(i)
+            self.assertTrue(window.audio_bitrate_tier_label.text())
+
+
+class TestComboPopupBackgroundFilter(unittest.TestCase):
+    """_ComboPopupBackgroundFilter isn't installed by MainWindow() itself --
+    only main() wires it onto the real QApplication -- so each test installs
+    its own instance on the shared module-level _app and removes it again in
+    tearDown, the same scoping discipline as if this were a fresh app each
+    time. Confirmed real popup background/text-style bugs (not reproducible
+    under offscreen rendering, only via real screen capture -- see main.py's
+    class docstring) drove this filter's existence; what's checkable here
+    without real rendering is the underlying property/stylesheet state it
+    sets, which is what actually drives that rendering.
+    """
+
+    def setUp(self):
+        self.filter = main._ComboPopupBackgroundFilter()
+        _app.installEventFilter(self.filter)
+
+    def tearDown(self):
+        _app.removeEventFilter(self.filter)
+
+    def test_popup_frame_gets_a_background_stylesheet_on_show(self):
+        window = main.MainWindow()
+        window.preset_combo.showPopup()
+        _app.processEvents()
+        popup = window.preset_combo.view().window()
+        self.assertIn(main._current_theme_palette["BG_PANEL"], popup.styleSheet())
+        window.preset_combo.hidePopup()
+        _app.processEvents()
+
+    def test_modified_indicator_is_suppressed_while_popup_is_open(self):
+        window = main.MainWindow()
+        window.preset_combo.setProperty("modified", True)
+        window.preset_combo.style().unpolish(window.preset_combo)
+        window.preset_combo.style().polish(window.preset_combo)
+        window.preset_combo.showPopup()
+        _app.processEvents()
+        self.assertFalse(window.preset_combo.property("modified"))
+        window.preset_combo.hidePopup()
+        _app.processEvents()
+
+    def test_modified_indicator_is_restored_after_popup_closes(self):
+        window = main.MainWindow()
+        window.preset_combo.setProperty("modified", True)
+        window.preset_combo.style().unpolish(window.preset_combo)
+        window.preset_combo.style().polish(window.preset_combo)
+        window.preset_combo.showPopup()
+        _app.processEvents()
+        window.preset_combo.hidePopup()
+        _app.processEvents()
+        self.assertTrue(window.preset_combo.property("modified"))
+
+    def test_unmodified_combo_is_left_alone(self):
+        window = main.MainWindow()
+        self.assertFalse(window.preset_combo.property("modified"))
+        window.preset_combo.showPopup()
+        _app.processEvents()
+        self.assertFalse(window.preset_combo.property("modified"))
+        self.assertFalse(window.preset_combo.property("_popupSuppressedModified"))
+        window.preset_combo.hidePopup()
+        _app.processEvents()
+        self.assertFalse(window.preset_combo.property("modified"))
+
+
+class TestFocusVisibleFilter(unittest.TestCase):
+    """_FocusVisibleFilter isn't installed by MainWindow() itself -- only
+    main() wires it onto the real QApplication -- so each test installs its
+    own instance and removes it in tearDown, same as TestComboPopupBackground
+    Filter above. window.show() is required here, unlike most other tests in
+    this file: a widget that's never been shown doesn't get real FocusIn/
+    FocusOut events at all (confirmed directly -- the property stayed
+    unset, not just False, without it), so this is one of the few classes
+    where skipping show() would make every test pass for the wrong reason.
+    Each focus-reason case needs its own clearFocus() first when reusing the
+    same widget across assertions in one test -- confirmed directly that
+    calling setFocus() again on a widget that already has focus is a no-op,
+    generating no new FocusIn to observe.
+    """
+
+    def setUp(self):
+        self.filter = main._FocusVisibleFilter()
+        _app.installEventFilter(self.filter)
+
+    def tearDown(self):
+        _app.removeEventFilter(self.filter)
+
+    def test_tab_focus_is_visible(self):
+        window = main.MainWindow()
+        window.show()
+        _app.processEvents()
+        window.deinterlace_check.setFocus(Qt.FocusReason.TabFocusReason)
+        _app.processEvents()
+        self.assertTrue(window.deinterlace_check.property("focusVisible"))
+
+    def test_mouse_focus_is_not_visible(self):
+        window = main.MainWindow()
+        window.show()
+        _app.processEvents()
+        window.deinterlace_check.setFocus(Qt.FocusReason.MouseFocusReason)
+        _app.processEvents()
+        self.assertFalse(window.deinterlace_check.property("focusVisible"))
+
+    def test_losing_focus_clears_the_property(self):
+        window = main.MainWindow()
+        window.show()
+        _app.processEvents()
+        window.deinterlace_check.setFocus(Qt.FocusReason.TabFocusReason)
+        _app.processEvents()
+        self.assertTrue(window.deinterlace_check.property("focusVisible"))
+        window.deinterlace_check.clearFocus()
+        _app.processEvents()
+        self.assertFalse(window.deinterlace_check.property("focusVisible"))
+
+    def test_window_activation_focus_events_do_not_crash(self):
+        # Real bug, caught by actually running this against a real X11
+        # display rather than assuming the widget-focused assumption held:
+        # FocusIn/FocusOut also reach plain QWindow objects (the top-level
+        # window itself gaining/losing OS-level focus), which have no
+        # .style() -- crashed the filter the first time this ran for real.
+        window = main.MainWindow()
+        window.show()
+        _app.processEvents()
+        qwindow = window.windowHandle()
+        self.assertIsNotNone(qwindow)
+        self.assertFalse(self.filter.eventFilter(qwindow, QFocusEvent(QEvent.Type.FocusIn, Qt.FocusReason.ActiveWindowFocusReason)))
 
 
 class TestCommandPreviewGrouping(unittest.TestCase):

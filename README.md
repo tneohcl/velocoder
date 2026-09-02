@@ -156,8 +156,12 @@ actual HandBrake custom presets
 protected — `Save As…` refuses to reuse their names, `Delete` refuses to
 remove them — so there's always a known-good starting point.
 
-1. **720p Stuff Tuned (CPU / x265)** — was already pure CPU x265, so this is
-   a clean 1:1 mapping: `-preset medium -crf 23`, plus the original's
+1. **720p CPU Balanced (Software / x265)** — named to match the other two
+   built-ins ("Balanced", `<category> / <encoder>`); its original name
+   ("Stuff Tuned") was carried over verbatim from the user's own real
+   HandBrake preset of that name during the port and never revisited. Was
+   already pure CPU x265, so this is a clean 1:1 mapping: `-preset medium
+   -crf 23`, plus the original's
    `-x265-params "strong-intra-smoothing=0:aq-mode=3:psy-rdoq=1.0"` (fixed,
    not exposed as a control — nobody asked to tune it independently).
 2. **720p QSV Balanced (Hardware / VAAPI)** — was `qsv_h265_10bit`, ICQ 26,
@@ -390,7 +394,14 @@ this is presentation only. See `constants.RC_MODE_FRIENDLY` for the mapping.
   dropdown).
 - **Copy audio if compatible** — uncheck to always transcode, even for a
   codec that would normally be copied through.
-- **Audio bitrate** — used only when a track gets transcoded.
+- **Audio bitrate** — used only when a track gets transcoded. A slider over
+  the 5 real stops (96k/128k/160k/192k/256k), same visual language as
+  Quality/Speed on the Video tab (outlined box, fuzzy caption underneath) —
+  originally a plain dropdown, converted for consistency with those two.
+  An index into the fixed list, not the kbps number itself: the real values
+  aren't evenly spaced (96→128→160→192 are +32 each, 192→256 is +64), which
+  a linear slider can't represent as uniform tick spacing without either
+  lying about the middle stops or leaving the last one oddly cramped.
 
 **Below the tabs, left side**
 - **Effective Command** — a live, read-only preview of the actual ffmpeg
@@ -502,7 +513,18 @@ with the actual settings for space in the left column.
   deliberate part of the design (confirmed by feedback, not just a
   guess). `STATUS_COL` still exists as a name in main.py — an alias for
   `FILE_COL` — purely so call sites that touch the icon/failure-tooltip
-  stay self-explanatory about *why* they're touching that column.
+  stay self-explanatory about *why* they're touching that column. The
+  ▶/✓/⚠ glyphs are custom SVGs now (`assets/status_play_*`/`status_done_*`/
+  `status_warning_*`), not `style().standardIcon(...)` — an Apple-design-
+  language pass's "one icon family, one weight, throughout" moved these
+  onto the same custom family Save/Delete already used, rather than the
+  other way around: Save/Delete switched *away* from `standardIcon()`
+  earlier specifically because `SP_TrashIcon` had a confirmed contrast bug
+  (see Known gaps), so reverting them back to get a "native" icon set
+  would have reintroduced that bug just to avoid drawing two more SVGs.
+  Done is green, Warning is red — color reinforcing the shape, not
+  carrying the meaning alone (the accessibility baseline this whole pass
+  was checked against).
 - **Selecting a row edits it live** — every control above is only the
   *default* baked into a file the moment it's added. Select one or more
   queued rows and the controls populate from the first one; change any
@@ -567,7 +589,11 @@ vertical breathing room — tried as a QSS `padding` rule on `QStatusBar`
 first, which turned out not to reach `addWidget`/`addPermanentWidget`
 content at all (confirmed by screenshot: zero visible difference); Qt's
 own contents-margins property isn't mediated by the stylesheet the same
-way and reliably does work. The choice
+way and reliably does work. `QStatusBar` also carries its own
+`background-color: $BG_CONTROL` and a `border-top` now (an Apple-design-
+language pass's "chrome should read as a distinct layer from content"
+principle — it had no background of its own before, so it just blended
+into `$BG_WINDOW` instead of reading as its own strip). The choice
 persists across launches (`QSettings` key
 `theme_choice`) and, for Match System, keeps following the OS live via
 `QApplication.instance().styleHints().colorSchemeChanged` (Qt 6.5+) — no
@@ -582,16 +608,51 @@ a crash.
 
 Colors and structure are deliberately in two separate files:
 
-- **`themes.py`** — `DARK`/`LIGHT` dicts, one color per token
-  (`BG_WINDOW`, `TEXT_PRIMARY`, `ACCENT`, …) plus three `*_ICON` tokens per
-  theme naming that theme's own checkmark/arrow SVG in `assets/`. Hand-tuned
-  per theme, not a mechanical inversion of one another — a color that reads
-  fine on a dark background often doesn't just because its lightness got
-  flipped. `ACCENT` is the clearest example: a lighter blue on Dark (reads
-  as *text*, e.g. slider values, against near-black), a deliberately deeper
-  one on Light (needs to hold its own as text against white, where the
-  Dark theme's lighter shade would wash out) — same for hover directions,
-  which flip (lighter-on-hover for Dark, darker-on-hover for Light).
+- **`themes.py`** — `DARK`/`LIGHT` dicts, one color per token (`BG_WINDOW`,
+  `TEXT_PRIMARY`, …) plus three `*_ICON` tokens per theme naming that
+  theme's own checkmark/arrow SVG in `assets/`. Hand-tuned per theme, not a
+  mechanical inversion of one another — a color that reads fine on a dark
+  background often doesn't just because its lightness got flipped; hover
+  directions flip too (lighter-on-hover for Dark, darker-on-hover for
+  Light). **`ACCENT`/`ACCENT_HOVER`/`ACCENT_PRESSED`/`TEXT_ON_ACCENT` are
+  the one exception** — `themes.py`'s own values for these four are only
+  ever a fallback now, not what actually ships. `main.py`'s
+  `_system_accent_tokens()` overrides all four at stylesheet-load time
+  from the desktop's own accent color (`QPalette.Accent`, Qt 6.6+;
+  `QPalette.Highlight` on older Qt) — an Apple-design-language pass's "one
+  accent color, used consistently" read as "the *user's* accent," not a
+  blue this app picked for them; confirmed on a real KDE session that
+  `QPalette.Accent` already resolves to that session's actual configured
+  color (`#308cc6`), not a generic Fusion default. Hover/pressed are
+  `QColor.lighter()`/`.darker()` of that same color; `TEXT_ON_ACCENT` is
+  picked from the accent's own perceived luminance (white text below a
+  0.5 threshold, near-black above) rather than assumed, since a user's
+  chosen accent could be any hue or lightness, not just the blue this app
+  shipped with before. Falls back to that previous fixed blue only if the
+  palette role comes back invalid or pure black (a real desktop session's
+  accent is never actually black, so that's a reliable "nothing resolved"
+  signal). Because the resolved accent no longer varies by theme the way
+  every other token still does, `TEXT_ON_ACCENT` doesn't either now — it's
+  a property of the *accent*, not of Dark vs. Light, which is the
+  self-consistent outcome once the accent itself stopped being
+  theme-specific. `BG_ACCENT_DISABLED`/`TEXT_ACCENT_DISABLED` (Start
+  button, disabled) are deliberately left theme-fixed, not derived the
+  same way — a muted echo of an arbitrary accent hue is a harder thing to
+  get right by formula than the four tokens above, and wasn't what
+  "follow the system accent" was actually asking for. `CHECK_ICON` rides
+  along with this derivation too, and turned out to need to: the checkmark
+  drawn inside a checked `QCheckBox` sits directly on the accent fill,
+  exactly like button text does, so it needs `TEXT_ON_ACCENT`'s own
+  contrast decision, not whichever of `check_dark.svg`/`check_light.svg`
+  happened to match the *old*, theme-fixed accent. This was a real, live
+  bug this change introduced and then caught in the same pass, not a
+  hypothetical: once the accent stopped varying by theme, `TEXT_ON_ACCENT`
+  correctly switched to the same color for both Dark and Light (it's a
+  property of the accent now, not of the theme) — but `CHECK_ICON`'s file
+  selection was still keyed off theme name specifically, so Dark's
+  checkbox ended up with a near-black check sitting on the exact same blue
+  fill Start's white text was on. Confirmed by screenshot before and
+  after, not assumed.
 - **`style.qss`** — every other rule (layout, padding, radius, borders-as-
   structure), with `$TOKEN` placeholders standing in for colors.
   `_load_stylesheet()` in main.py substitutes every `$TOKEN` against the
@@ -623,6 +684,57 @@ or which controls exist changes. Verified with real screenshots of both
 themes side by side, not just by reading the substitution logic — dark and
 light both keep the header bar / gridlines / alternating-row structure the
 queue table above relies on, just recolored.
+
+**Keyboard focus indicators.** Buttons, checkboxes, the Speed/Quality
+sliders, the queue table, and the tab bar had no focus indicator of their
+own at all — confirmed by screenshot: Tab-ing to any of them showed no
+visible change whatsoever, only the text fields (which already had a
+`:focus` border-color rule) showed anything. Not a style preference —
+someone navigating by keyboard alone needs to be able to see where focus
+actually is, on every focusable control. Fixed with `outline: 2px solid
+$ACCENT; outline-offset: 1px;` rather than reusing the fields' `border-
+color` swap — `outline` draws outside a widget's own box without changing
+its layout size, which matters here since several of these (the segmented
+Rate Control buttons, sliders) already have exact-fit borders/radii a
+border-*width* change would visibly disrupt. One real edge case this
+turned up: an `$ACCENT`-colored ring is invisible on a control that's
+already `$ACCENT`-filled — confirmed by screenshot, Tab-ing to the
+already-selected Quality button (or to Start, always accent-filled while
+enabled) showed no visible focus change even with the new rule in place,
+while the same rule worked cleanly everywhere else. Fixed with a second,
+more specific rule swapping just `outline-color` to `$TEXT_ON_ACCENT` for
+`#startButton` and the segmented buttons' `:checked:focus` state — the
+color this app already picks for exactly this contrast problem elsewhere
+(button text sitting on an accent fill), not a new one invented just for
+this.
+
+That `outline: 2px solid $ACCENT` rule above was written against plain
+`:focus`, which -- reported directly, confirmed by screenshot -- means a
+checkbox clicked with the mouse gets the exact same ring Tab-ing to it
+does. QSS has no `:focus-visible` equivalent (the CSS feature this is
+really asking for: show the ring for keyboard navigation, not a pointer
+click that already knows where it landed). `QFocusEvent.reason()` is the
+same distinction `:focus-visible`'s own heuristic is standing in for --
+`Qt.TabFocusReason`/`BacktabFocusReason` for real keyboard navigation,
+`MouseFocusReason` for a click, plus a handful of others
+(`ActiveWindowFocusReason`, `PopupFocusReason`, ...) that aren't keyboard
+navigation either. `main.py`'s `_FocusVisibleFilter` -- a second
+`QApplication`-level event filter alongside `_ComboPopupBackgroundFilter`
+above, kept separate rather than merged since the two handle unrelated
+concerns -- watches `FocusIn`/`FocusOut` app-wide and mirrors that
+distinction onto a `focusVisible` dynamic property; every `:focus`
+selector this applies to became `[focusVisible="true"]` instead
+(`QTabBar::tab:focus` stayed a real `:focus` — a subcontrol isn't its own
+`QObject`, so it can't carry a dynamic property the way a `QWidget` can).
+Applied to every focusable widget app-wide rather than a specific type
+list: a property no QSS rule references is a harmless no-op, so there's
+nothing to gain scoping it down. One real bug this turned up before it
+shipped: `FocusIn`/`FocusOut` also reach plain `QWindow` objects (a
+top-level window gaining/losing OS-level focus, not any widget inside
+it), which have no `.style()` — crashed the filter the first real run
+against the actual X11 display until guarded with an `isinstance(obj,
+QWidget)` check, a case the offscreen test suite's synthetic
+`setFocus()` calls never happened to exercise.
 
 ## Testing
 
@@ -783,7 +895,7 @@ offscreen platform.
   nested child -- show whatever's already opaquely painted behind it --
   but wrong for a genuinely top-level window, which has nothing behind it
   to show through to; Qt/the platform renders that as black rather than
-  as invisible. Fixed with an explicit `QFrame { background-color:
+  as invisible. First fixed with an explicit `QFrame { background-color:
   $BG_PANEL; border: none; }` -- except `QLabel` is *also* a `QFrame`
   subclass (confirmed via `issubclass()`, a fact easy to not know), so
   without an explicit `QLabel { background-color: transparent; }`
@@ -792,13 +904,54 @@ offscreen platform.
   would have silently reintroduced the exact grey-label bug two entries
   up. Caught before it shipped, not after, by checking the class
   hierarchy directly instead of assuming `QFrame` only meant "the
-  combobox popup thing." This one couldn't be confirmed by screenshot the
-  usual way either -- the `offscreen` QPA platform this test suite runs
-  under doesn't do real window compositing, so a popup grabbed under it
-  never reproduces the black bars regardless of whether the fix is
-  correct; the `view.window() is view.parentWidget()` structural check
-  above is the real evidence this fix targets the right widget, verified
-  a different way than usual because the usual way doesn't apply here.
+  combobox popup thing." Couldn't be confirmed by screenshot the usual
+  way either -- the `offscreen` QPA platform this test suite runs under
+  doesn't do real window compositing, so a popup grabbed under it never
+  reproduces the black bars regardless of whether the fix is correct --
+  so this shipped on the strength of the `view.window() is
+  view.parentWidget()` structural check alone, without a real render to
+  confirm it.
+
+  That structural reasoning was sound and the `QFrame` rule is still in
+  style.qss, but a later real screen capture (`QScreen.grabWindow()` /
+  `spectacle` against the actual X11 display, not `QWidget.grab()` --
+  confirmed separately that `.grab()` reads a widget's own paint buffer
+  and misses real compositor output, making it useless for verifying
+  *this specific* class of bug) proved the `QFrame` rule alone doesn't
+  actually reach this popup: the bars were still there. The real cause
+  turned up inspecting the popup frame directly -- `autoFillBackground`
+  is `False` and `frameShape` is `NoFrame`, so nothing paints its
+  background by ordinary `QWidget` means, and for reasons that didn't
+  surface from the widget's own properties, the app-wide QSS cascade
+  doesn't repaint it the way it does the `QAbstractItemView` nested
+  inside it (confirmed that one's background *does* apply correctly).
+  What does work, also confirmed via real capture: a stylesheet assigned
+  directly on the frame instance. `main.py`'s `_ComboPopupBackgroundFilter`
+  -- a `QApplication`-level event filter -- does exactly that at `Show`
+  time, matched via `metaObject().className() == "QComboBoxPrivateContainer"`
+  rather than `isinstance`/`type().__name__`: PySide6 has no Python
+  binding for this private Qt class, so its Python-visible type reports
+  as the nearest exposed base (`QFrame`) -- indistinguishable that way
+  from every other `QFrame` in the app, where `metaObject().className()`
+  still reports Qt's real C++ class name regardless of Python bindings.
+
+  The same real capture surfaced a second, separate bug riding along on
+  the same popups: `QComboBox[modified="true"]`'s italic/`$ACCENT`-colored
+  styling (the "you've changed something since loading this preset"
+  indicator, see below) was bleeding into that combo's own popup list
+  items too -- every preset name shown italic and accent-colored, not
+  just the closed combo's own text. Not a cascade problem, and not fixed
+  by anything targeting the view or the frame -- confirmed by resetting
+  font/color directly on both, immediately and deferred by an event-loop
+  tick, with zero effect. What actually stopped it: temporarily clearing
+  the `modified` property on the combo box *itself* while its popup is
+  open (restored on `Hide`, so the closed combo still shows its own
+  indicator correctly afterward). That only makes sense if the popup's
+  item delegate paints using the owning combo's own currently-matched QSS
+  state directly rather than anything inherited or copied onto the popup
+  widgets -- confirmed indirectly, by process of elimination, rather than
+  by reading Qt's own source for it. `_ComboPopupBackgroundFilter` does
+  both fixes together, keyed off the same `Show`/`Hide` pair.
   Fourth instance, same root cause again: `QMessageBox` (Clear Queue's
   confirmation, Delete Preset's, `Save As…`'s Overwrite? prompt) is
   *also* a genuinely top-level window (`QMessageBox` → `QDialog` →

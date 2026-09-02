@@ -234,6 +234,50 @@ QComboBox:focus, QLineEdit:focus, QSpinBox:focus, QPlainTextEdit:focus {
     border-color: $ACCENT;
 }
 
+/* Buttons/checkboxes/sliders/the queue table/tabs had no focus indicator
+   of their own at all before this -- confirmed by screenshot, Tab-ing to
+   any of them showed no visible change whatsoever. Not just a style
+   preference: keyboard-only navigation needs to be able to see where
+   focus actually is, on every focusable control, not just text fields.
+   outline, not border-color like the fields above -- it draws outside
+   the widget's own box without changing its layout size, which matters
+   here since several of these (the segmented Rate Control buttons,
+   sliders) already have exact-fit borders/radii a border-width change
+   would visibly disrupt.
+
+   [focusVisible="true"], not :focus -- QSS has no :focus-visible
+   equivalent, and plain :focus matches a mouse click same as Tab,
+   confirmed by screenshot: clicking a checkbox showed the exact same
+   ring Tab-ing to it does, which is wrong the same way it would be in a
+   browser without :focus-visible -- a pointer click doesn't need a
+   keyboard-navigation aid. main.py's _FocusVisibleFilter watches
+   FocusIn/FocusOut app-wide and mirrors QFocusEvent.reason() onto this
+   property (true only for Tab/Backtab), so this rule now matches
+   keyboard-acquired focus specifically. QTabBar::tab:focus is left as a
+   real :focus below, unconverted -- a subcontrol isn't its own QObject,
+   so it can't carry this dynamic property itself the way a QWidget can. */
+QPushButton[focusVisible="true"], QCheckBox[focusVisible="true"],
+QSlider[focusVisible="true"], QTreeWidget[focusVisible="true"], QTabBar::tab:focus {
+    outline: 2px solid $ACCENT;
+    outline-offset: 1px;
+}
+
+/* An $ACCENT-colored ring is invisible on a button that's already
+   $ACCENT-filled -- confirmed by screenshot: Tab-ing to the already-
+   selected Quality button showed no visible focus change at all, while
+   the same rule worked cleanly on every non-filled control. Start is
+   always accent-filled while enabled; the segmented Rate Control buttons
+   are accent-filled only while :checked. TEXT_ON_ACCENT is already the
+   color this app picks for exactly this contrast problem elsewhere
+   (button text sitting on an accent fill), so it's the right choice for
+   the ring too, not a new color invented just for this. */
+QPushButton#startButton[focusVisible="true"],
+QPushButton#segLeft:checked[focusVisible="true"],
+QPushButton#segMid:checked[focusVisible="true"],
+QPushButton#segRight:checked[focusVisible="true"] {
+    outline-color: $TEXT_ON_ACCENT;
+}
+
 /* Preset row's "you've changed something since loading this preset"
    indicator -- recolors the combo's own text rather than a separate
    "(modified)" label next to it, which took/gave back layout space every
@@ -334,11 +378,27 @@ QComboBox QAbstractItemView {
    rule near the top of this file is exactly right for a nested child
    (show whatever's already opaquely painted behind it) but wrong for a
    genuinely top-level popup window, which has nothing behind it to show
-   through to -- confirmed by screenshot as a solid black bar top and
-   bottom of every dropdown, everywhere the QFrame's own area peeked out
-   past the item view's rows. Giving the frame the same $BG_PANEL and no
-   border of its own (the item view above already draws the one visible
-   border) fixes it without touching the general default. */
+   through to.
+
+   This rule alone does NOT fix that popup, despite being exactly the fix
+   it looks like -- confirmed by a real screen capture (QWidget.grab() is
+   not trustworthy for this, see below) that the black bars survive with
+   this rule loaded and live. The popup frame is Qt's internal
+   QComboBoxPrivateContainer, and for reasons that didn't turn up
+   inspecting the widget directly (autoFillBackground is False, frameShape
+   is NoFrame -- it's meant to rely entirely on the QSS engine), it
+   doesn't repaint from this app-wide cascade the way the QListView nested
+   inside it does. The actual fix is main.py's
+   _ComboPopupBackgroundFilter, which sets a stylesheet directly on that
+   frame at Show time instead of trusting the cascade to reach it -- a
+   direct per-instance assignment was confirmed by another real capture to
+   paint correctly where this rule alone didn't.
+
+   Left in place anyway: it's the correct declared intent for any genuine
+   QFrame content, harmless alongside the Python-side fix, and QWidget.grab()
+   -based verification earlier in this app's history had wrongly suggested
+   this rule alone was sufficient -- worth being honest in-place about that
+   rather than deleting the evidence of the wrong turn. */
 QFrame {
     background-color: $BG_PANEL;
     border: none;
@@ -551,5 +611,19 @@ QToolTip {
     color: $TEXT_PRIMARY;
     border: 1px solid $BORDER_HOVER;
     padding: 4px 6px;
+}
+
+/* Chrome (this footer strip) should read as a distinct layer from
+   content, not blend into $BG_WINDOW the way it did before -- it had no
+   background rule of its own at all. $BG_CONTROL (already used for
+   buttons/toolbar-ish surfaces, not invented new just for this) plus a
+   top border marks it off from the panels above cleanly in both themes. */
+QStatusBar {
+    background-color: $BG_CONTROL;
+    border-top: 1px solid $BORDER;
+}
+
+QStatusBar::item {
+    border: none;
 }
 

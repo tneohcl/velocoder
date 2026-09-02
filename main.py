@@ -3,14 +3,14 @@
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl, QSettings, QProcess
-from PySide6.QtGui import QDesktopServices, QFont, QIcon, QPainter, QPalette
+from PySide6.QtCore import Qt, QUrl, QSettings, QProcess, QEvent, QObject
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPalette
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QTabWidget, QSplitter, QGroupBox, QTreeWidget, QTreeWidgetItem,
     QPushButton, QComboBox, QLabel, QProgressBar, QPlainTextEdit, QFileDialog,
     QLineEdit, QSlider, QSpinBox, QCheckBox, QInputDialog, QMessageBox,
-    QSizePolicy, QStyle, QAbstractItemView, QButtonGroup,
+    QSizePolicy, QAbstractItemView, QButtonGroup,
 )
 
 import worker
@@ -147,6 +147,16 @@ class MainWindow(QMainWindow):
         self.queue.all_finished.connect(self._on_all_finished)
 
         self._build_ui()
+        # Deferred to here rather than set inline at the end of
+        # _build_audio_tab(), same reason quality_slider/speed_slider's real
+        # initial values are set later too (via _on_encoder_changed below),
+        # not at construction: every slider-changed handler ends in
+        # _on_control_changed() -> _sync_settings_to_selected_queue_items(),
+        # which reaches self.queue_list -- built later in _build_ui() by
+        # _build_right_panel(), after _build_audio_tab() has already run.
+        # Confirmed directly: setting it inline crashed with exactly that
+        # AttributeError the first time this ran.
+        self.audio_bitrate_slider.setValue(AUDIO_BITRATES.index("160k"))
         # Must run before _refresh_preset_combo(): it's the only thing that
         # populates rc_mode_combo, and applying a preset while that combo is
         # still empty leaves rc_mode reading back as None.
@@ -275,9 +285,17 @@ class MainWindow(QMainWindow):
         # sets of its own (only this stylesheet), so they stayed locked to
         # whatever Fusion's default happens to be regardless of the chosen
         # theme -- confirmed by screenshot: SP_TrashIcon in particular was
-        # all but invisible against a light-theme button. _refresh_themed_icons
-        # re-applies these on every theme change, same reason the SVGs
-        # style.qss references have separate dark/light files.
+        # all but invisible against a light-theme button. The queue row's
+        # status icons (▶/✓/⚠, _on_job_started/_finished/_failed) used to
+        # be standardIcon() too, mixing two icon styles in one app -- an
+        # Apple-design-language pass's "one icon family throughout" moved
+        # those onto the same custom-SVG family this file already used for
+        # Save/Delete, not the other way around: reverting Save/Delete back
+        # to standardIcon() would have reintroduced the confirmed contrast
+        # bug above just to make the family "native" instead of consistent.
+        # _refresh_themed_icons re-applies these on every theme change,
+        # same reason the SVGs style.qss references have separate dark/
+        # light files.
         self.save_btn = QPushButton(self._themed_icon("save"), "Save As…")
         self.save_btn.clicked.connect(self._save_preset_as)
         self.delete_btn = QPushButton(self._themed_icon("delete"), "Delete")
@@ -640,11 +658,42 @@ class MainWindow(QMainWindow):
         self.audio_copy_check.stateChanged.connect(self._on_control_changed)
         form.addRow("", self.audio_copy_check)
 
-        self.audio_bitrate_combo = QComboBox()
-        self.audio_bitrate_combo.addItems(AUDIO_BITRATES)
-        self.audio_bitrate_combo.setCurrentText("160k")
-        self.audio_bitrate_combo.currentIndexChanged.connect(self._on_control_changed)
-        form.addRow("Audio bitrate (if transcoded):", self.audio_bitrate_combo)
+        audio_bitrate_row = QHBoxLayout()
+        self.audio_bitrate_slider = QSlider(Qt.Horizontal)
+        # Index into AUDIO_BITRATES, not the kbps number itself -- the real
+        # values (96/128/160/192/256) aren't evenly spaced (some steps are
+        # 32, the last is 64), which a linear QSlider can't represent
+        # directly without irregular, confusing tick spacing. An index is
+        # exact and trivial to map back to the real string everywhere this
+        # setting is read (_current_settings, _apply_settings_to_controls).
+        self.audio_bitrate_slider.setRange(0, len(AUDIO_BITRATES) - 1)
+        self.audio_bitrate_slider.setToolTip(
+            "Left: more compression, smaller file.\n"
+            "Right: higher quality, larger file.\n"
+            "Only applies when the source audio is actually being "
+            "transcoded -- see \"Copy audio if compatible\" above."
+        )
+        self.audio_bitrate_slider.valueChanged.connect(self._on_audio_bitrate_slider_changed)
+        audio_bitrate_row.addWidget(self.audio_bitrate_slider, 1)
+        self.audio_bitrate_label = QLabel()
+        self.audio_bitrate_label.setStyleSheet("font-size: 9pt;")
+        audio_bitrate_row.addWidget(self.audio_bitrate_label)
+
+        self.audio_bitrate_tier_label = QLabel()
+        self.audio_bitrate_tier_label.setAlignment(Qt.AlignCenter)
+        self.audio_bitrate_tier_label.setStyleSheet("font-size: 9pt;")
+
+        # Same slider-plus-fuzzy-caption outlined box as Quality/Speed on
+        # the Video tab (#fuzzyGroup in style.qss) -- same reasoning: the
+        # caption explains *this* slider, so it reads better grouped with
+        # it than as a separate form row underneath.
+        audio_bitrate_group = QWidget()
+        audio_bitrate_group.setObjectName("fuzzyGroup")
+        audio_bitrate_group_layout = QVBoxLayout(audio_bitrate_group)
+        audio_bitrate_group_layout.setContentsMargins(8, 6, 8, 6)
+        audio_bitrate_group_layout.addLayout(audio_bitrate_row)
+        audio_bitrate_group_layout.addWidget(self.audio_bitrate_tier_label)
+        form.addRow("Audio bitrate (if transcoded):", audio_bitrate_group)
 
         outer.addWidget(group)
         return tab
@@ -836,24 +885,35 @@ class MainWindow(QMainWindow):
         return (slider.value() - lo) / (hi - lo) if hi > lo else 0.0
 
     @staticmethod
-    def _tier_label(fraction: float, low_text: str, mid_text: str, high_text: str) -> str:
-        if fraction < 0.34:
-            return low_text
-        if fraction < 0.67:
-            return mid_text
-        return high_text
+    def _tier_label(fraction: float, *labels: str) -> str:
+        # Variadic rather than a fixed low/mid/high trio -- Quality passes
+        # 6 of these (a 3-way split felt too coarse dragging across a
+        # ~50-value ICQ/CQP/CRF range: reported directly, a wide stretch of
+        # the slider before the caption underneath ever changed), Speed
+        # still passes 3 (its own range is only 1-7, where 6 buckets would
+        # be finer than the slider itself can even land on). Same bucketing
+        # math either way, just over however many labels got passed.
+        bucket = min(int(fraction * len(labels)), len(labels) - 1)
+        return labels[bucket]
 
     def _on_quality_changed(self):
         rc_mode = self.rc_mode_combo.currentData()
         self.quality_label.setText(f"{self.quality_slider.value()} ({rc_mode})")
         # Fraction 0 = the lowest ICQ/CQP/CRF number = the *best* quality
         # end (these all share the same lower-is-better convention) -- so
-        # low_text here is what belongs at that end, not what reads first.
+        # the first label here is what belongs at that end, not what reads
+        # first. "Movies & TV" and the near-lossless/lighter-footage labels
+        # either side of it are the original 3-tier set, kept as the
+        # anchors readers may already recognize; the other 3 fill in the
+        # gaps a plain 3-way split left too wide.
         self.quality_tier_label.setText(self._tier_label(
             self._fraction_of(self.quality_slider),
             "Production / archival -- near-lossless, largest files",
+            "High quality -- crisp detail, larger files",
             "Movies & TV -- a solid general-purpose target",
+            "Streaming quality -- efficient, close to source",
             "Documentary / lighter footage -- more compression, smaller files",
+            "Heavy compression -- smallest files, visible quality loss",
         ))
         self._on_control_changed()
 
@@ -893,6 +953,33 @@ class MainWindow(QMainWindow):
             "Balanced -- a solid default for most encodes",
             "Fast -- good for quick previews or large batches",
         ))
+        self._on_control_changed()
+
+    # One caption per real AUDIO_BITRATES entry, not the 3-bucket
+    # _tier_label helper Quality/Speed use above -- those two are smooth,
+    # continuous ranges where fuzzy thirds make sense, but this is 5 fixed,
+    # named stops (96k/128k/160k/192k/256k); bucketing 5 discrete values
+    # into 3 fuzzy tiers would lump two stops together on one end and
+    # leave the other end lopsided for no real reason.
+    # Framed around video content, same as Quality's own captions above
+    # ("Movies & TV", "Documentary / lighter footage") -- this track is a
+    # movie/show's audio, not a standalone music file, so "casual
+    # listening" / "transparent stereo" (a music-encoder's own vocabulary)
+    # described the wrong thing.
+    _AUDIO_BITRATE_DESCRIPTIONS = [
+        "Dialogue / older TV -- smallest file",
+        "Standard TV & streaming",
+        "Movies & TV -- general-purpose target",
+        "Action / music-heavy soundtrack",
+        "Concert film / archival master",
+    ]
+
+    def _on_audio_bitrate_slider_changed(self):
+        bitrate = AUDIO_BITRATES[self.audio_bitrate_slider.value()]
+        self.audio_bitrate_label.setText(bitrate)
+        self.audio_bitrate_tier_label.setText(
+            self._AUDIO_BITRATE_DESCRIPTIONS[self.audio_bitrate_slider.value()]
+        )
         self._on_control_changed()
 
     def _on_control_changed(self):
@@ -1049,7 +1136,7 @@ class MainWindow(QMainWindow):
             "deinterlace": self.deinterlace_check.isChecked(),
             "audio_track": self.audio_combo.currentIndex(),
             "audio_copy_if_compatible": self.audio_copy_check.isChecked(),
-            "audio_bitrate": self.audio_bitrate_combo.currentText(),
+            "audio_bitrate": AUDIO_BITRATES[self.audio_bitrate_slider.value()],
         }
 
     def _apply_settings_to_controls(self, settings: dict):
@@ -1093,7 +1180,12 @@ class MainWindow(QMainWindow):
         self.deinterlace_check.setChecked(settings.get("deinterlace", False))
         self.audio_combo.setCurrentIndex(settings["audio_track"])
         self.audio_copy_check.setChecked(settings["audio_copy_if_compatible"])
-        self.audio_bitrate_combo.setCurrentText(settings["audio_bitrate"])
+        # Defensive fallback, same reasoning as bit_depth/resolution above --
+        # a hand-edited presets.json could carry a bitrate string that's no
+        # longer (or never was) one of the five real stops, and .index()
+        # crashes on that where the old combo's setCurrentText() wouldn't have.
+        audio_bitrate = settings["audio_bitrate"] if settings["audio_bitrate"] in AUDIO_BITRATES else "160k"
+        self.audio_bitrate_slider.setValue(AUDIO_BITRATES.index(audio_bitrate))
         self._update_command_preview()
 
     @staticmethod
@@ -1403,7 +1495,7 @@ class MainWindow(QMainWindow):
         self.stats_label.setText("—")
         self.log_view.appendPlainText(f"\n=== Starting {path} ===")
         self._current_running_item = self._running_items[index - 1]
-        self._current_running_item.setIcon(STATUS_COL, self.style().standardIcon(QStyle.SP_MediaPlay))
+        self._current_running_item.setIcon(STATUS_COL, self._themed_icon("status_play"))
 
     def _on_job_progress(self, fraction: float):
         self.progress_bar.setValue(int(fraction * 1000))
@@ -1429,13 +1521,13 @@ class MainWindow(QMainWindow):
     def _on_job_finished(self, path: str, output_path: str):
         self.log_view.appendPlainText(f"=== Done: {path} ===")
         if self._current_running_item is not None:
-            self._current_running_item.setIcon(STATUS_COL, self.style().standardIcon(QStyle.SP_DialogApplyButton))
+            self._current_running_item.setIcon(STATUS_COL, self._themed_icon("status_done"))
             self._append_result_size(self._current_running_item, Path(path), Path(output_path))
 
     def _on_job_failed(self, path: str, reason: str):
         self.log_view.appendPlainText(f"=== FAILED: {path}: {reason} ===")
         if self._current_running_item is not None:
-            self._current_running_item.setIcon(STATUS_COL, self.style().standardIcon(QStyle.SP_MessageBoxWarning))
+            self._current_running_item.setIcon(STATUS_COL, self._themed_icon("status_warning"))
             self._current_running_item.setToolTip(STATUS_COL, reason)
 
     @staticmethod
@@ -1469,6 +1561,66 @@ class MainWindow(QMainWindow):
         self.stats_label.setText("—")
 
 
+# Populated by _load_stylesheet on every load/theme switch; read back by
+# _ComboPopupBackgroundFilter so a popup styled after a theme change gets
+# the theme it was opened under, not whatever was loaded at startup.
+_current_theme_palette: dict = {}
+
+
+def _system_accent_tokens(app) -> dict:
+    """Derives ACCENT/ACCENT_HOVER/ACCENT_PRESSED/TEXT_ON_ACCENT from the
+    desktop's own accent color instead of a color this app picks on its
+    own -- QPalette.Accent (Qt 6.6+; QPalette.Highlight on older Qt, where
+    Accent doesn't exist yet) is what a properly-integrated Qt app is
+    supposed to derive its accent from, and on a real KDE session it
+    already resolves to that session's actual configured accent (confirmed
+    on this machine: #308cc6, a real chosen color, not some generic
+    Fusion-style default blue). Hover/pressed are lighter/darker variants
+    of that same color; TEXT_ON_ACCENT is picked from the accent's own
+    perceived luminance rather than assumed, since a user's chosen system
+    accent could be any hue or lightness, not just the blue this app
+    previously shipped with fixed per theme. Falls back to that previous
+    fixed blue only if the palette role comes back invalid or pure black --
+    a real desktop session's accent is never actually black, so that's a
+    reliable signal nothing resolved rather than a legitimate choice.
+    BG_ACCENT_DISABLED/TEXT_ACCENT_DISABLED (Start button, disabled) are
+    deliberately left theme-fixed, not derived here -- a muted echo of an
+    arbitrary accent hue is a harder thing to get right by formula than
+    the four tokens above, and isn't what "follow the system accent"
+    was actually asking for.
+
+    CHECK_ICON rides along too, and needs to -- the checkmark drawn inside
+    a checked QCheckBox sits directly on the $ACCENT fill, exactly like
+    button text does, so it needs the same contrast-partner color
+    TEXT_ON_ACCENT already picks, not whichever of check_dark.svg/
+    check_light.svg happened to match the *old*, theme-fixed accent.
+    Confirmed this was a real, live bug, not a hypothetical: Dark's
+    accent used to be light enough that a near-black checkmark
+    (check_dark.svg -- named for the theme it shipped with, not the
+    stroke color) made sense; once the accent became this session's
+    real KDE accent (#308cc6) instead, TEXT_ON_ACCENT correctly switched
+    to white for *both* themes (the accent doesn't vary by theme
+    anymore), but the checkmark file selection was still keyed off
+    theme name, not off that same decision -- Dark's checkbox ended up
+    with a near-black check on the same blue fill Start's white text
+    sits on. Screenshotted both themes to confirm the mismatch before
+    fixing it this way.
+    """
+    role = getattr(QPalette, "Accent", QPalette.Highlight)
+    accent = app.palette().color(role)
+    if not accent.isValid() or accent == QColor(0, 0, 0):
+        accent = QColor("#4fa8e0")
+    luminance = 0.299 * accent.redF() + 0.587 * accent.greenF() + 0.114 * accent.blueF()
+    on_accent_is_dark = luminance > 0.5
+    return {
+        "ACCENT": accent.name(),
+        "ACCENT_HOVER": accent.lighter(118).name(),
+        "ACCENT_PRESSED": accent.darker(115).name(),
+        "TEXT_ON_ACCENT": "#0d1117" if on_accent_is_dark else "#ffffff",
+        "CHECK_ICON": "check_dark.svg" if on_accent_is_dark else "check_light.svg",
+    }
+
+
 def _load_stylesheet(app, theme_name: str = "dark", style_path: Path = Path(__file__).parent / "style.qss"):
     try:
         text = style_path.read_text()
@@ -1478,7 +1630,10 @@ def _load_stylesheet(app, theme_name: str = "dark", style_path: Path = Path(__fi
         # Substituting an absolute path in for each *_ICON token below (e.g.
         # $CHECK_ICON) keeps style.qss itself portable.
         assets_dir = style_path.parent / "assets"
-        palette = themes.THEMES.get(theme_name, themes.THEMES["dark"])
+        # A copy, not the THEMES dict itself -- mutating that shared dict
+        # in place would leak this call's system-accent override into every
+        # later read of themes.DARK/LIGHT, theme switches included.
+        palette = {**themes.THEMES.get(theme_name, themes.THEMES["dark"]), **_system_accent_tokens(app)}
         # Longest token first: "$BG_CONTROL" is a literal prefix of
         # "$BG_CONTROL_HOVER" and "$BG_CONTROL_PRESSED" (same for
         # $ACCENT/$ACCENT_HOVER/$ACCENT_PRESSED, $BORDER/$BORDER_STRONG/
@@ -1492,10 +1647,117 @@ def _load_stylesheet(app, theme_name: str = "dark", style_path: Path = Path(__fi
                 value = str(assets_dir / value)
             text = text.replace(f"${token}", value)
         app.setStyleSheet(text)
+        _current_theme_palette.clear()
+        _current_theme_palette.update(palette)
     except OSError as exc:
         # Missing/unreadable style.qss shouldn't take the whole app down --
         # fall back to plain Fusion rather than crash at startup over theming.
         print(f"Warning: couldn't load {style_path} ({exc}); using unstyled Fusion.")
+
+
+class _ComboPopupBackgroundFilter(QObject):
+    """Fixes two real, confirmed-via-real-screen-capture combo-popup bugs
+    that QWidget.grab() had wrongly suggested were already fixed --
+    grab() renders a widget's own paint buffer, not real compositor
+    output, and missed both.
+
+    Bug 1, solid black top/bottom bars on every popup: the popup list's
+    own top-level QFrame (Qt's internal QComboBoxPrivateContainer) has
+    autoFillBackground False and frameShape NoFrame, so nothing paints
+    its background by ordinary QWidget means -- it's meant to rely
+    entirely on the QSS engine, which for some reason doesn't reach it
+    via the app-wide cascade the way it does the QComboBoxListView nested
+    inside it (that one's background applies correctly, via the existing
+    "QComboBox QAbstractItemView" rule). Setting a stylesheet directly on
+    the frame instance at Show time -- confirmed via real capture --
+    paints it correctly where the cascade alone didn't.
+
+    Matched by metaObject().className(), not isinstance/type(obj).__name__:
+    PySide6 has no Python binding for this private class, so its Python
+    type reports as the nearest exposed base (QFrame), indistinguishable
+    that way from every *other* QFrame in the app. metaObject().className()
+    reads Qt's real C++ class name regardless of Python bindings.
+
+    Bug 2, QComboBox[modified="true"]'s italic/colored styling bleeding
+    into its own popup's list items (every preset name shown italic and
+    accent-colored, not just the closed combo's own text): not a cascade
+    problem at all -- confirmed by resetting font/color directly on the
+    frame and the QListView inside it, immediately, deferred by one event
+    loop tick, every combination, with zero effect on the popup's
+    rendering. What did work: temporarily clearing the "modified" property
+    on the combo box *itself* while its popup is open. That means the
+    popup's item delegate paints using the owning combo's own currently-
+    matched QSS state directly, not anything inherited or copied onto the
+    view/frame -- so the only way to keep the popup's rendering plain is
+    to make the combo's own matched state plain for as long as the popup
+    is on screen, then restore it on Hide so the closed combo still shows
+    its modified indicator afterward.
+    """
+
+    def eventFilter(self, obj, event):
+        if obj.metaObject().className() != "QComboBoxPrivateContainer":
+            return False
+        if event.type() == QEvent.Type.Show:
+            bg = _current_theme_palette.get("BG_PANEL", "#2b2f36")
+            obj.setStyleSheet(f"background-color: {bg};")
+            for child in obj.children():
+                if isinstance(child, QWidget):
+                    child.setStyleSheet(f"background-color: {bg};")
+            combo = obj.parent()
+            if isinstance(combo, QComboBox) and combo.property("modified"):
+                combo.setProperty("modified", False)
+                combo.setProperty("_popupSuppressedModified", True)
+                combo.style().unpolish(combo)
+                combo.style().polish(combo)
+        elif event.type() == QEvent.Type.Hide:
+            combo = obj.parent()
+            if isinstance(combo, QComboBox) and combo.property("_popupSuppressedModified"):
+                combo.setProperty("modified", True)
+                combo.setProperty("_popupSuppressedModified", False)
+                combo.style().unpolish(combo)
+                combo.style().polish(combo)
+        return False
+
+
+class _FocusVisibleFilter(QObject):
+    """QSS has no :focus-visible equivalent -- plain :focus matches a
+    mouse click exactly the same as Tab, so a checkbox clicked with the
+    mouse picked up the same accent-colored ring Tab-ing to it does
+    (reported directly, confirmed by screenshot) -- wrong the same way it
+    would be in a browser without :focus-visible: a pointer click doesn't
+    need a keyboard-navigation aid pointing at where it already is.
+
+    QFocusEvent.reason() is exactly the signal a browser's own
+    :focus-visible heuristic is standing in for -- TabFocusReason/
+    BacktabFocusReason for real keyboard navigation, MouseFocusReason for
+    a click, plus a handful of others (ActiveWindowFocusReason,
+    PopupFocusReason, ShortcutFocusReason, ...) that aren't keyboard
+    navigation either. This filter watches FocusIn/FocusOut app-wide and
+    mirrors that distinction onto a "focusVisible" dynamic property,
+    which style.qss matches instead of :focus for every control this
+    applies to. Applied universally rather than scoped to specific widget
+    types: a property no QSS rule references is a harmless no-op, so
+    there's nothing to lose covering every focusable widget the same way
+    instead of maintaining a matching type list here.
+    """
+
+    def eventFilter(self, obj, event):
+        # FocusIn/FocusOut also reach plain QWindow objects (a top-level
+        # window gaining/losing OS-level focus, not any widget inside it)
+        # -- confirmed by a real crash, QWindow has no .style(). Only
+        # QWidgets carry the QSS-matched property this filter sets.
+        if not isinstance(obj, QWidget):
+            return False
+        if event.type() == QEvent.Type.FocusIn:
+            visible = event.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason)
+            obj.setProperty("focusVisible", visible)
+            obj.style().unpolish(obj)
+            obj.style().polish(obj)
+        elif event.type() == QEvent.Type.FocusOut:
+            obj.setProperty("focusVisible", False)
+            obj.style().unpolish(obj)
+            obj.style().polish(obj)
+        return False
 
 
 def _validate_theme_choice(value) -> str:
@@ -1527,6 +1789,14 @@ def main():
     # Windows) silently ignore some of the subcontrols the theme relies on,
     # e.g. the slider groove/handle and the combobox popup background.
     app.setStyle("Fusion")
+    # Kept as an attribute on app, not a bare local -- installEventFilter
+    # doesn't take Python-side ownership, and a filter with no surviving
+    # Python reference is liable to get garbage-collected out from under
+    # the C++ side and silently stop firing.
+    app._combo_popup_filter = _ComboPopupBackgroundFilter()
+    app.installEventFilter(app._combo_popup_filter)
+    app._focus_visible_filter = _FocusVisibleFilter()
+    app.installEventFilter(app._focus_visible_filter)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

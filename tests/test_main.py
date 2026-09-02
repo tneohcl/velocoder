@@ -702,6 +702,35 @@ class TestAudioBitrateSlider(unittest.TestCase):
             self.assertTrue(window.audio_bitrate_tier_label.text())
 
 
+class TestAudioDownmix(unittest.TestCase):
+    def test_default_is_off(self):
+        window = main.MainWindow()
+        self.assertFalse(window._current_settings()["audio_downmix_stereo"])
+
+    def test_checkbox_round_trips_through_current_settings(self):
+        window = main.MainWindow()
+        window.audio_downmix_check.setChecked(True)
+        self.assertTrue(window._current_settings()["audio_downmix_stereo"])
+
+    def test_apply_settings_sets_the_checkbox(self):
+        window = main.MainWindow()
+        settings = window._current_settings()
+        window._apply_settings_to_controls({**settings, "audio_downmix_stereo": True})
+        self.assertTrue(window.audio_downmix_check.isChecked())
+
+    def test_apply_settings_defaults_to_off_for_an_older_preset_missing_the_key(self):
+        # A preset saved before this control existed simply won't have this
+        # key -- .get(..., False) in _apply_settings_to_controls, not a bare
+        # index, is what keeps that from crashing (same reasoning as the
+        # container/tune/deinterlace fallbacks it sits alongside).
+        window = main.MainWindow()
+        settings = window._current_settings()
+        window.audio_downmix_check.setChecked(True)
+        old_settings = {k: v for k, v in settings.items() if k != "audio_downmix_stereo"}
+        window._apply_settings_to_controls(old_settings)
+        self.assertFalse(window.audio_downmix_check.isChecked())
+
+
 class TestComboPopupBackgroundFilter(unittest.TestCase):
     """_ComboPopupBackgroundFilter isn't installed by MainWindow() itself --
     only main() wires it onto the real QApplication -- so each test installs

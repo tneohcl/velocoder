@@ -212,7 +212,11 @@ def build_args(
     (bool, default False -- container-level progressive/interlaced flags
     are frequently wrong, especially on camcorder-sourced footage; this is
     a manual override, not auto-detected), audio_track,
-    audio_copy_if_compatible, audio_bitrate.
+    audio_copy_if_compatible, audio_bitrate, audio_downmix_stereo (bool,
+    default False -- forces a stereo mixdown of the audio track; only
+    meaningful while transcoding audio, so requesting it also forces a
+    transcode even when audio_copy_if_compatible would otherwise apply,
+    the same way audio_copy_if_compatible=False does).
 
     probe_audio=False skips the real ffprobe call and uses audio_codec as
     given instead -- for building a representative command line to *show*
@@ -233,6 +237,7 @@ def build_args(
     bit_depth = settings["bit_depth"]
     container = settings.get("container", "mp4")
     deinterlace = settings.get("deinterlace", False)
+    audio_downmix_stereo = settings.get("audio_downmix_stereo", False)
     audio_track = settings["audio_track"]
     if probe_audio:
         audio_codec = probe_audio_codec(input_path, audio_track)
@@ -305,10 +310,23 @@ def build_args(
         # exist on this file, and mapping it anyway would fail the whole job on
         # a stream ffmpeg can't find, instead of just proceeding without audio.
         args += ["-map", f"0:a:{audio_track}"]
-        if settings["audio_copy_if_compatible"] and audio_codec in ("aac", "ac3", "eac3"):
+        # A stream copy can't remix channels -- requesting downmix forces a
+        # transcode here too, the same way audio_copy_if_compatible=False
+        # does just below, so checking "downmix to stereo" always actually
+        # produces stereo output instead of silently no-op'ing whenever the
+        # source happens to already be a copy-compatible codec.
+        if settings["audio_copy_if_compatible"] and not audio_downmix_stereo and audio_codec in ("aac", "ac3", "eac3"):
             args += ["-c:a", "copy"]
         else:
             args += ["-c:a", "aac", "-b:a", settings["audio_bitrate"]]
+            if audio_downmix_stereo:
+                # Plain -ac 2 (libswresample's own remix), not an explicit
+                # pan filter with hand-picked ITU-R BS.775 coefficients --
+                # a fixed 5.1-shaped pan formula would mis-handle anything
+                # that isn't exactly that layout (7.1, quad, whatever else
+                # a real source might carry), where -ac 2 remixes correctly
+                # from any input layout automatically.
+                args += ["-ac", "2"]
 
     # Subtitle/data passthrough isn't implemented — drop both explicitly so an
     # MP4-incompatible subtitle codec (e.g. PGS) can't fail the mux. (MKV

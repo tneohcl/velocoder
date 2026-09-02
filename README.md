@@ -144,17 +144,27 @@ saved preset *is*, plus a `name` key):
 
 ## Presets
 
-Three built-in presets ship in `constants.BUILTIN_PRESETS`, in the same
-CPU → Intel iGPU → AMD GPU order the Encoder dropdown itself uses (`Encoder`
-in Controls below) — but that's *display* order, not load order: whichever
-one is actually loaded on startup is pinned explicitly
-(`MainWindow.__init__`'s `_refresh_preset_combo(select=...)`), independent
-of where it sits in the list, so reordering this list alone can't silently
-change what a fresh launch defaults to. Two are mapped from the user's
-actual HandBrake custom presets
-(`~/.var/app/fr.handbrake.ghb/config/ghb/presets.json`); all three are
-protected — `Save As…` refuses to reuse their names, `Delete` refuses to
-remove them — so there's always a known-good starting point.
+Nine built-in presets ship in `constants.BUILTIN_PRESETS`: a High/Balanced/
+Low trio per engine, in the same CPU → Intel iGPU → AMD GPU order the
+Encoder dropdown itself uses (`Encoder` in Controls below) — but that's
+*display* order, not load order: whichever one is actually loaded on
+startup is pinned explicitly (`MainWindow.__init__`'s
+`_refresh_preset_combo(select=...)`), independent of where it sits in the
+list, so reordering this list alone can't silently change what a fresh
+launch defaults to. All nine are protected — `Save As…` refuses to reuse
+their names, `Delete` refuses to remove them — so there's always a
+known-good starting point.
+
+Each engine's three differ only in `quality_value` (moved to a
+meaningfully different point on that engine's own ~50-value ICQ/CQP/CRF
+scale — the same scale the Quality slider's own 6-tier fuzzy captions
+divide up) and, for CPU, nothing else at all: speed stays whatever that
+engine's Balanced preset already uses, since the tier these three move
+along is quality/size, not effort-vs-time (a separate axis Balanced
+already settled for engine-specific reasons of its own, see below).
+
+**Balanced**, the original three, described first since they're what the
+High/Low siblings are relative to:
 
 1. **720p CPU Balanced (Software / x265)** — named to match the other two
    built-ins ("Balanced", `<category> / <encoder>`); its original name
@@ -164,7 +174,11 @@ remove them — so there's always a known-good starting point.
    -crf 23`, plus the original's
    `-x265-params "strong-intra-smoothing=0:aq-mode=3:psy-rdoq=1.0"` (fixed,
    not exposed as a control — nobody asked to tune it independently).
-2. **720p QSV Balanced (Hardware / VAAPI)** — was `qsv_h265_10bit`, ICQ 26,
+2. **720p Intel Balanced (Hardware / VAAPI)** — named "Intel", not "QSV" (Quick
+   Sync's own technology name), to match "AMD" and "CPU" on either side of it
+   in this same list — both already bare vendor/type words, not a brand or
+   technology name, so QSV was the one actually out of step, not something
+   this app invented fresh. Was `qsv_h265_10bit`, ICQ 26,
    main10. `-compression_level 1` (the vaapi "speed" value) is an estimate
    for QSV's "quality" preset, not validated by A/B — see Known gaps. This
    is the one that actually loads on startup, regardless of list position
@@ -178,6 +192,20 @@ remove them — so there's always a known-good starting point.
    "Balanced" actually means in this app's own speed semantics rather than
    inheriting Intel's "1" (chosen there for HandBrake-mapping reasons that
    don't apply here).
+
+**High** and **Low**, added later to give each engine a real tier instead
+of a single fixed point:
+
+- CPU's CRF 18 (High) and 28 (Low) are real, widely-used x265 community
+  reference points ("visually lossless" and "noticeably smaller, still
+  watchable") — not this app's own guess, x265's CRF scale has enough
+  established practice around it to just use those directly.
+- Intel/AMD's ICQ/CQP 16 (High) and 36 (Low) don't have that same body of
+  outside practice to draw on, so they're this app's own estimate by rough
+  analogy to the CPU pair's offset from its own Balanced (23) — not
+  independently validated against remembered output quality any more than
+  Intel's Balanced `-compression_level` estimate above was. Worth A/B'ing
+  for real at some point, same as that one.
 
 Anything saved via **Save As…** is appended to `user_presets.json`
 (gitignored — it's the user's own data, not source) and shows up in the
@@ -986,6 +1014,9 @@ offscreen platform.
 - `-compression_level 1` not A/B'd against remembered QSV output quality —
   try the range (1–7, lower = slower/better) if output doesn't match
   expectations.
+- Intel/AMD's High/Low preset ICQ/CQP values (16/36) are this app's own
+  estimate by analogy to CPU's real x265 community reference points, not
+  independently A/B'd against real output either — see Presets above.
 - No subtitle passthrough (explicitly `-sn`'d — originally to avoid an
   MP4-incompatible subtitle codec failing the mux; MKV output removes that
   specific risk but nothing maps subtitle streams on either container yet)

@@ -169,7 +169,7 @@ class MainWindow(QMainWindow):
         # otherwise persisted across launches at all (unlike window
         # geometry/theme/etc.), so this runs on every single startup, not
         # just a first install.
-        self._refresh_preset_combo(select="720p QSV Balanced (Hardware / VAAPI)")
+        self._refresh_preset_combo(select="720p Intel Balanced (Hardware / VAAPI)")
         self._restore_window_state()
 
     def closeEvent(self, event):
@@ -695,6 +695,17 @@ class MainWindow(QMainWindow):
         audio_bitrate_group_layout.addWidget(self.audio_bitrate_tier_label)
         form.addRow("Audio bitrate (if transcoded):", audio_bitrate_group)
 
+        self.audio_downmix_check = QCheckBox("Downmix to stereo (if source has more channels)")
+        self.audio_downmix_check.setToolTip(
+            "Mixes 5.1/7.1/etc. sources down to plain stereo -- for\n"
+            "playback on a phone, laptop, or anything without a surround\n"
+            "setup. A stream copy can't remix channels, so checking this\n"
+            "always transcodes the audio track, even if it would\n"
+            "otherwise have been copied through untouched."
+        )
+        self.audio_downmix_check.stateChanged.connect(self._on_control_changed)
+        form.addRow("", self.audio_downmix_check)
+
         outer.addWidget(group)
         return tab
 
@@ -1137,6 +1148,7 @@ class MainWindow(QMainWindow):
             "audio_track": self.audio_combo.currentIndex(),
             "audio_copy_if_compatible": self.audio_copy_check.isChecked(),
             "audio_bitrate": AUDIO_BITRATES[self.audio_bitrate_slider.value()],
+            "audio_downmix_stereo": self.audio_downmix_check.isChecked(),
         }
 
     def _apply_settings_to_controls(self, settings: dict):
@@ -1186,6 +1198,10 @@ class MainWindow(QMainWindow):
         # crashes on that where the old combo's setCurrentText() wouldn't have.
         audio_bitrate = settings["audio_bitrate"] if settings["audio_bitrate"] in AUDIO_BITRATES else "160k"
         self.audio_bitrate_slider.setValue(AUDIO_BITRATES.index(audio_bitrate))
+        # .get, not a bare index -- predates every other new-field fallback
+        # above it, an older saved preset (user or, briefly, a stale
+        # built-in during dev) simply won't have this key at all.
+        self.audio_downmix_check.setChecked(settings.get("audio_downmix_stereo", False))
         self._update_command_preview()
 
     @staticmethod

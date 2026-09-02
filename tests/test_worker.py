@@ -357,6 +357,85 @@ class TestAudioSelection(ClipTestCase):
     # rather than duplicated here with a fixture this class can't produce.
 
 
+class TestAudioDownmix(unittest.TestCase):
+    """audio_downmix_stereo -- probe_audio=False throughout except the one
+    real-encode check at the bottom, same split as TestCommandPreview vs.
+    the ClipTestCase-based classes above: these don't need a real file to
+    confirm which flags build_args emits, only to confirm ffmpeg actually
+    accepts -ac 2 and the resulting file really is 2-channel.
+    """
+
+    def test_adds_ac_2_when_transcoding(self):
+        args = worker.build_args(
+            vaapi_settings(audio_downmix_stereo=True, audio_copy_if_compatible=False),
+            Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="mp3",
+        )
+        self.assertEqual(args[args.index("-ac") + 1], "2")
+
+    def test_omits_ac_flag_when_downmix_is_off(self):
+        args = worker.build_args(
+            vaapi_settings(audio_downmix_stereo=False, audio_copy_if_compatible=False),
+            Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="mp3",
+        )
+        self.assertNotIn("-ac", args)
+
+    def test_forces_transcode_even_when_copy_would_otherwise_apply(self):
+        # aac is normally copy-compatible with audio_copy_if_compatible=True
+        # -- a stream copy can't remix channels, so requesting downmix must
+        # override that, the same way audio_copy_if_compatible=False does
+        # in TestAudioSelection above. Silently keeping -c:a copy here would
+        # mean checking "downmix to stereo" just quietly does nothing.
+        args = worker.build_args(
+            vaapi_settings(audio_downmix_stereo=True, audio_copy_if_compatible=True),
+            Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="aac",
+        )
+        self.assertEqual(args[args.index("-c:a") + 1], "aac")
+        self.assertEqual(args[args.index("-ac") + 1], "2")
+
+    def test_default_is_off_and_does_not_affect_a_normal_copy(self):
+        args = worker.build_args(
+            vaapi_settings(audio_copy_if_compatible=True), Path("in.mkv"), Path("out.mp4"),
+            probe_audio=False, audio_codec="aac",
+        )
+        self.assertEqual(args[args.index("-c:a") + 1], "copy")
+        self.assertNotIn("-ac", args)
+
+    def test_real_encode_actually_produces_two_channels(self):
+        # The flag-presence checks above confirm build_args' own logic, not
+        # that ffmpeg actually honors -ac 2 the way expected -- a genuine
+        # 6-channel source, actually encoded, actually reprobed.
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            clip = tmpdir / "surround.mkv"
+            subprocess.run([
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=1",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                "-map", "0:v", "-map", "1:a",
+                "-c:v", "libx264", "-c:a", "aac", "-ac", "6",
+                "-shortest", str(clip),
+            ], check=True, timeout=30)
+            probe_in = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a:0",
+                 "-show_entries", "stream=channels", "-of", "csv=p=0", str(clip)],
+                capture_output=True, text=True, check=True,
+            )
+            self.assertEqual(probe_in.stdout.strip(), "6")  # confirm the fixture itself is really 6ch
+
+            out = tmpdir / "downmixed.mp4"
+            args = worker.build_args(x265_settings(audio_downmix_stereo=True), clip, out)
+            result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+            probe_out = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a:0",
+                 "-show_entries", "stream=channels", "-of", "csv=p=0", str(out)],
+                capture_output=True, text=True, check=True,
+            )
+            self.assertEqual(probe_out.stdout.strip(), "2")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 class TestCommandPreview(unittest.TestCase):
     """build_args(probe_audio=False) -- the GUI's live command preview path.
 

@@ -473,6 +473,11 @@ class _UiBuilderMixin:
 
         group = QGroupBox("Audio Settings")
         form = QFormLayout(group)
+        # Matches the Video tab's encoding_group exactly (see video_form
+        # above) -- Fusion's default (~11px) was never applied here, so
+        # this tab's rows sat visibly tighter than Video's despite both
+        # using the same fuzzy-caption-box row pattern. Reported live.
+        form.setVerticalSpacing(14)
 
         self.audio_combo = QComboBox()
         self.audio_combo.addItems(AUDIO_TRACK_LABELS)
@@ -481,6 +486,15 @@ class _UiBuilderMixin:
 
         self.audio_copy_check = QCheckBox("Copy audio if compatible (aac/ac3/eac3)")
         self.audio_copy_check.setChecked(True)
+        self.audio_copy_check.setToolTip(
+            "When the source audio is already AAC, AC-3, or E-AC-3, this\n"
+            "passes it through untouched (a stream copy) instead of\n"
+            "re-encoding it -- zero quality loss and much faster, since\n"
+            "ffmpeg never has to decode and re-compress that track.\n"
+            "Unchecked, or when the source is some other codec (DTS, PCM,\n"
+            "MP3, ...), audio is always re-encoded to AAC at the bitrate\n"
+            "set below."
+        )
         self.audio_copy_check.stateChanged.connect(self._on_control_changed)
         form.addRow("", self.audio_copy_check)
 

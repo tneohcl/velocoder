@@ -482,6 +482,15 @@ class _UiBuilderMixin:
 
         self.container_combo = QComboBox()
         self.container_combo.addItems(CONTAINERS)
+        self.container_combo.setToolTip(
+            "MP4: broadest compatibility -- phones, TVs, browsers,\n"
+            "streaming platforms. Includes a \"fast start\" flag so\n"
+            "playback can begin before the whole file has downloaded.\n"
+            "MKV: the more flexible container, common for media-server\n"
+            "and archival libraries (Plex, Jellyfin, ...). No real\n"
+            "downside here otherwise -- this app doesn't carry subtitle\n"
+            "tracks through on either container yet."
+        )
         self.container_combo.currentIndexChanged.connect(self._on_control_changed)
         out_form.addRow("Container:", self.container_combo)
 

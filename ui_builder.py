@@ -418,9 +418,11 @@ class _UiBuilderMixin:
         # directly, not a unilateral call.
         self.speed_thorough_label = QLabel("Slower")
         speed_row.addWidget(self.speed_thorough_label)
-        self.speed_x265_label = QLabel()
-        self.speed_x265_label.setStyleSheet("font-size: 9pt;")
-        speed_row.addWidget(self.speed_x265_label)
+        # No separate x265-preset-name label here anymore (used to show
+        # "(medium)" etc. right after Slower) -- discussed directly,
+        # dropped as redundant with speed_tier_label's own caption right
+        # underneath, which now folds the preset name into that same line
+        # instead (see _on_speed_x265_slider_changed).
 
         self.speed_tier_label = QLabel()
         self.speed_tier_label.setAlignment(Qt.AlignCenter)

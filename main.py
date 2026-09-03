@@ -248,7 +248,6 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # now that x265 has its own real slider too, not just VAAPI.
         self.speed_slider.setVisible(is_vaapi)
         self.speed_x265_slider.setVisible(not is_vaapi)
-        self.speed_x265_label.setVisible(not is_vaapi)
         if is_vaapi:
             self._on_speed_slider_changed()
         else:
@@ -353,20 +352,12 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
 
     def _on_speed_x265_slider_changed(self):
         preset = X265_PRESETS[self.speed_x265_slider.value()]
-        # Parenthesized, matching quality_label's own "23 (CRF)" convention
-        # just above -- sitting bare right after speed_thorough_label (no
-        # separator between them) read as one run-on phrase back when that
-        # label said "More Thorough" ("More Thorough medium"). Reported
-        # live; the label's own wording was changed to "Slower" since, but
-        # the parenthesization is still correct regardless of which word
-        # precedes it.
-        self.speed_x265_label.setText(f"({preset})")
         # Same 6 captions as the VAAPI slider above (same axis, same
         # meaning, just a different underlying scale) -- but in the
         # opposite fraction order: X265_PRESETS is already sorted fastest
         # to slowest (ultrafast..placebo), so index 0 is the *fast* end
         # here, where compression_level 1 was the *slow* end there.
-        self.speed_tier_label.setText(formatting.tier_label(
+        caption = formatting.tier_label(
             formatting.fraction_of(self.speed_x265_slider),
             "Fast -- quick previews",
             "Quick -- fast turnaround",
@@ -374,7 +365,16 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             "Careful -- strong efficiency",
             "Thorough -- best efficiency",
             "Maximum effort -- best compression",
-        ))
+        )
+        # The raw x265 preset name used to sit in its own label next to
+        # "Slower" ("Slower (medium)") -- discussed directly, dropped as
+        # redundant now that the caption right underneath already
+        # describes this same position ("Careful -- strong efficiency").
+        # Folded in here instead of discarded outright, so the actual
+        # preset name (useful for anyone cross-checking Effective
+        # Command's "-preset medium") isn't lost, just shown once instead
+        # of twice.
+        self.speed_tier_label.setText(f"{caption} ({preset})")
         self._on_control_changed()
 
     # One caption per real AUDIO_BITRATES entry, not the 3-bucket

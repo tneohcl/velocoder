@@ -523,17 +523,16 @@ class TestSpeedSliderVisibility(unittest.TestCase):
     """x265 got its own real Speed slider (speed_x265_slider), not just a
     QComboBox, matching VAAPI's speed_slider -- so speed_faster_label/
     speed_thorough_label/speed_tier_label are shared by both and stay
-    visible regardless of encoder now; only which *slider* (and its own
-    value label) is showing actually changes. Was previously the reverse
-    for speed_tier_label specifically (hidden for x265, visible only for
-    VAAPI, since x265 had no slider of its own to caption yet)."""
+    visible regardless of encoder now; only which *slider* is showing
+    actually changes. Was previously the reverse for speed_tier_label
+    specifically (hidden for x265, visible only for VAAPI, since x265
+    had no slider of its own to caption yet)."""
 
     def test_x265_slider_shown_and_vaapi_slider_hidden_for_cpu(self):
         window = main.MainWindow()
         window.show()
         window.encoder_combo.setCurrentText("CPU")
         self.assertTrue(window.speed_x265_slider.isVisible())
-        self.assertTrue(window.speed_x265_label.isVisible())
         self.assertFalse(window.speed_slider.isVisible())
 
     def test_vaapi_slider_shown_and_x265_slider_hidden_for_vaapi(self):
@@ -542,7 +541,6 @@ class TestSpeedSliderVisibility(unittest.TestCase):
         window.encoder_combo.setCurrentText("Intel (iGPU)")
         self.assertTrue(window.speed_slider.isVisible())
         self.assertFalse(window.speed_x265_slider.isVisible())
-        self.assertFalse(window.speed_x265_label.isVisible())
 
     def test_shared_labels_stay_visible_regardless_of_encoder(self):
         window = main.MainWindow()
@@ -1005,7 +1003,10 @@ class TestX265SpeedSlider(unittest.TestCase):
         window.encoder_combo.setCurrentText("CPU")
         window.speed_x265_slider.setValue(main.X265_PRESETS.index("veryslow"))
         self.assertEqual(window._current_settings()["speed"], "veryslow")
-        self.assertEqual(window.speed_x265_label.text(), "(veryslow)")
+        # The preset name used to have its own separate label next to
+        # "Slower" -- discussed directly, dropped as redundant and folded
+        # into speed_tier_label's own caption instead, so it isn't lost.
+        self.assertIn("(veryslow)", window.speed_tier_label.text())
 
     def test_apply_settings_sets_the_slider_to_the_matching_index(self):
         window = main.MainWindow()
@@ -1063,8 +1064,11 @@ class TestX265SpeedSlider(unittest.TestCase):
             window.speed_slider.setValue(i)
             vaapi_captions.append(window.speed_tier_label.text())
 
-        self.assertEqual(x265_captions[0], vaapi_captions[-1])
-        self.assertEqual(x265_captions[-1], vaapi_captions[0])
+        # startswith, not equal -- x265's caption now has the raw preset
+        # name folded on the end ("... (medium)"), which the VAAPI side
+        # has no equivalent of (see _on_speed_x265_slider_changed).
+        self.assertTrue(x265_captions[0].startswith(vaapi_captions[-1]))
+        self.assertTrue(x265_captions[-1].startswith(vaapi_captions[0]))
 
 
 class TestAudioDownmix(unittest.TestCase):

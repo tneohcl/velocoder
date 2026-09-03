@@ -1,7 +1,12 @@
 """Static configuration: encoders, rate-control modes, resolutions, and the
-built-in seed presets. Nothing here is user-editable at runtime — user-saved
-presets live separately, in presets.py / user_presets.json.
+built-in seed presets. The seed presets themselves live in
+builtin_presets.json (see presets.py) -- BUILTIN_PRESETS/
+BUILTIN_PRESET_NAMES below just load and expose them, they're not
+user-editable at runtime; the app's real runtime preset list (built-ins
+plus anything the user has saved) lives in presets.py / presets.json.
 """
+
+from presets import load_builtin_presets
 
 VIDEO_FILTER = "Video files (*.mkv *.mp4 *.avi *.mov *.m4v *.ts *.wmv);;All files (*)"
 AUDIO_TRACK_LABELS = ["Track 1", "Track 2", "Track 3", "Track 4"]
@@ -100,95 +105,29 @@ X265_TUNES = ["None", "animation", "grain", "psnr", "ssim", "fastdecode", "zerol
 # each used to be alone -- same speed as that engine's own Balanced (the
 # quality/size tradeoff is the axis these tiers move along, not effort-vs-
 # time, which Balanced already picked for engine-specific reasons of its
-# own -- see AMD's comment below), quality_value moved to a meaningfully
-# different point on the same ~50-value ICQ/CQP/CRF scale the Quality
-# slider's own 6-tier fuzzy captions (main.py) divide up. CPU's CRF 18/28
-# are real, widely-used x265 community reference points ("visually
+# own -- see AMD Balanced's own note below), quality_value moved to a
+# meaningfully different point on the same ~50-value ICQ/CQP/CRF scale the
+# Quality slider's own 6-tier fuzzy captions (main.py) divide up. CPU's CRF
+# 18/28 are real, widely-used x265 community reference points ("visually
 # lossless" / "noticeably smaller, still watchable"); ICQ/CQP's 16/36 are
 # this app's own estimate by rough analogy to those, not independently
 # A/B'd against remembered output quality any more than Intel's Balanced
 # compression_level was -- see Known gaps.
-BUILTIN_PRESETS = [
-    {
-        "name": "720p CPU High (Software / x265)",
-        "encoder": "libx265", "rc_mode": "CRF", "quality_value": 18, "speed": "medium",
-        "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
-        "deinterlace": False,
-        "audio_track": 0, "audio_copy_if_compatible": True, "audio_bitrate": "160k",
-        "audio_downmix_stereo": False,
-    },
-    {
-        "name": "720p CPU Balanced (Software / x265)",
-        "encoder": "libx265", "rc_mode": "CRF", "quality_value": 23, "speed": "medium",
-        "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
-        "deinterlace": False,
-        "audio_track": 0, "audio_copy_if_compatible": True, "audio_bitrate": "160k",
-        "audio_downmix_stereo": False,
-    },
-    {
-        "name": "720p CPU Low (Software / x265)",
-        "encoder": "libx265", "rc_mode": "CRF", "quality_value": 28, "speed": "medium",
-        "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
-        "deinterlace": False,
-        "audio_track": 0, "audio_copy_if_compatible": True, "audio_bitrate": "160k",
-        "audio_downmix_stereo": False,
-    },
-    {
-        "name": "720p Intel High (Hardware / VAAPI)",
-        "encoder": "hevc_vaapi", "gpu_vendor": "intel", "rc_mode": "ICQ", "quality_value": 16, "speed": "1",
-        "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
-        "deinterlace": False,
-        "audio_track": 0, "audio_copy_if_compatible": True, "audio_bitrate": "160k",
-        "audio_downmix_stereo": False,
-    },
-    {
-        "name": "720p Intel Balanced (Hardware / VAAPI)",
-        "encoder": "hevc_vaapi", "gpu_vendor": "intel", "rc_mode": "ICQ", "quality_value": 26, "speed": "1",
-        "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
-        "deinterlace": False,
-        "audio_track": 0, "audio_copy_if_compatible": True, "audio_bitrate": "160k",
-        "audio_downmix_stereo": False,
-    },
-    {
-        "name": "720p Intel Low (Hardware / VAAPI)",
-        "encoder": "hevc_vaapi", "gpu_vendor": "intel", "rc_mode": "ICQ", "quality_value": 36, "speed": "1",
-        "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
-        "deinterlace": False,
-        "audio_track": 0, "audio_copy_if_compatible": True, "audio_bitrate": "160k",
-        "audio_downmix_stereo": False,
-    },
-    {
-        "name": "720p AMD High (Hardware / VAAPI)",
-        "encoder": "hevc_vaapi", "gpu_vendor": "amd", "rc_mode": "CQP", "quality_value": 16, "speed": "4",
-        "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
-        "deinterlace": False,
-        "audio_track": 0, "audio_copy_if_compatible": True, "audio_bitrate": "160k",
-        "audio_downmix_stereo": False,
-    },
-    {
-        # No HandBrake/QSV legacy to map from (unlike the Intel preset above)
-        # -- speed "4" is a genuine middle-of-the-ladder default (1..7),
-        # matching what "Balanced" actually means in this app's own speed
-        # semantics, rather than inheriting Intel's "1" (its slowest,
-        # highest-effort setting, chosen there for unrelated historical
-        # reasons -- see that preset's own history). CQP 26 mirrors the
-        # Intel preset's ICQ 26 -- AMD's driver has no ICQ (see RC_MODES),
-        # so CQP is the closest quality-family equivalent. High/Low mirror
-        # the Intel trio's own ICQ 16/36 the same way, for the same reason.
-        "name": "720p AMD Balanced (Hardware / VAAPI)",
-        "encoder": "hevc_vaapi", "gpu_vendor": "amd", "rc_mode": "CQP", "quality_value": 26, "speed": "4",
-        "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
-        "deinterlace": False,
-        "audio_track": 0, "audio_copy_if_compatible": True, "audio_bitrate": "160k",
-        "audio_downmix_stereo": False,
-    },
-    {
-        "name": "720p AMD Low (Hardware / VAAPI)",
-        "encoder": "hevc_vaapi", "gpu_vendor": "amd", "rc_mode": "CQP", "quality_value": 36, "speed": "4",
-        "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
-        "deinterlace": False,
-        "audio_track": 0, "audio_copy_if_compatible": True, "audio_bitrate": "160k",
-        "audio_downmix_stereo": False,
-    },
-]
+#
+# The actual 9 presets live in builtin_presets.json, not here -- plain,
+# readable/inspectable JSON, rather than a literal Python list baked into
+# this file. Loaded once at import time since nothing in the app ever
+# writes to it (unlike presets.json, which save_presets/_save_preset_as/
+# _delete_preset do write -- see presets.py).
+#
+# AMD Balanced's speed="4": no HandBrake/QSV legacy to map from (unlike the
+# Intel preset) -- "4" is a genuine middle-of-the-ladder default (1..7),
+# matching what "Balanced" actually means in this app's own speed
+# semantics, rather than inheriting Intel's "1" (its slowest, highest-
+# effort setting, chosen there for unrelated historical reasons -- see
+# that preset's own history). CQP 26 mirrors the Intel preset's ICQ 26 --
+# AMD's driver has no ICQ (see RC_MODES), so CQP is the closest quality-
+# family equivalent. High/Low mirror the Intel trio's own ICQ 16/36 the
+# same way, for the same reason.
+BUILTIN_PRESETS = load_builtin_presets()
 BUILTIN_PRESET_NAMES = {p["name"] for p in BUILTIN_PRESETS}

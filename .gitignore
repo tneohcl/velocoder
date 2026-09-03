@@ -2,5 +2,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# Generated runtime state, not source -- the user's own saved presets.
-user_presets.json
+# Generated runtime state, not source -- seeded from builtin_presets.json
+# (which IS tracked) on first run, then grows with whatever the user saves.
+presets.json
+presets.json.corrupt

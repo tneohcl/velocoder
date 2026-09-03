@@ -88,28 +88,61 @@ into a path that was never broken isn't worth the risk. See
 ## Project layout
 
 ```
-constants.py   Static config: encoders, rate-control modes, resolutions,
-               the two built-in seed presets. No I/O, no Qt.
-presets.py     User preset persistence (load/save user_presets.json).
-worker.py      The engine: turns a settings dict into an ffmpeg argv
-               (build_args), and TranscodeQueue, which runs jobs one at a
-               time via QProcess. No preset concept here — by design, this
-               module never looks up a preset by name, it only ever sees
-               a fully-resolved settings dict. Presets are a GUI-only
-               convenience for naming/saving a settings snapshot.
-main.py        PySide6 GUI: MainWindow (preset toolbar + two-pane layout —
-               settings tabs and a live command preview on the left,
-               queue/progress/log on the right), DropTreeWidget
-               (drag-and-drop, multi-column queue).
-themes.py      Dark/Light color-token dicts (see Theming below); style.qss
-               is otherwise theme-agnostic.
-style.qss      Layout/structure for every widget, with $TOKEN color
-               placeholders substituted by _load_stylesheet() in main.py
-               against themes.py — see Theming below.
-assets/        SVG glyphs style.qss paints on top of Fusion's native
-               checkbox/spinbox subcontrols (see Known gaps for why), one
-               set per theme (_dark/_light suffix).
-tests/         unittest suite for constants.py/presets.py/worker.py/main.py.
+constants.py         Static config: encoders, rate-control modes,
+                      resolutions. BUILTIN_PRESETS/BUILTIN_PRESET_NAMES
+                      load the 9 seed presets from builtin_presets.json
+                      (see presets.py) — no I/O of their own, no Qt.
+builtin_presets.json  The 9 built-in presets, plain readable/inspectable
+                      JSON, tracked in git — the seed presets.json gets
+                      (re)created from on first run or after corruption.
+presets.py            Preset persistence: presets.json is the one file
+                      the app actually reads/writes (built-ins first,
+                      any user-saved preset appended after them), seeded
+                      from builtin_presets.json.
+worker.py             The engine: turns a settings dict into an ffmpeg
+                      argv (build_args), and TranscodeQueue, which runs
+                      jobs one at a time via QProcess. No preset concept
+                      here — by design, this module never looks up a
+                      preset by name, it only ever sees a fully-resolved
+                      settings dict. Presets are a GUI-only convenience
+                      for naming/saving a settings snapshot.
+main.py               PySide6 GUI entry point and MainWindow's own core:
+                      settings↔control sync, preset load/save/delete,
+                      theme-choice handlers, module-level main(). The
+                      bulk of MainWindow's behavior lives in the two
+                      mixins below — main.py itself doesn't build any
+                      widgets or drive the queue directly anymore.
+ui_builder.py         _UiBuilderMixin: every tab's widget construction,
+                      the left/right panel shells, the collapsible-group
+                      helper, the command preview box.
+queue_controller.py   _QueueControllerMixin: queue add/probe/run, the
+                      file/output pickers, and the TranscodeQueue signal
+                      handlers.
+queue_widget.py       DropTreeWidget (drag-and-drop, multi-column queue)
+                      plus the queue table's column constants.
+theming.py            Stylesheet loading/token substitution, system-accent
+                      derivation, and the two QSS-gap event filters
+                      (combo-popup background, focus-visible) — see
+                      Theming below.
+formatting.py         Pure display-formatting helpers (codec/channel
+                      friendly names, size/ETA strings, the fuzzy-tier
+                      caption bucketing) — no Qt, no `self`, directly
+                      unit-testable on their own.
+themes.py             Dark/Light color-token dicts (see Theming below);
+                      style.qss is otherwise theme-agnostic.
+style.qss             Layout/structure for every widget, with $TOKEN
+                      color placeholders substituted by theming.py's
+                      _load_stylesheet() against themes.py.
+assets/               SVG glyphs style.qss paints on top of Fusion's
+                      native checkbox/spinbox subcontrols (see Known
+                      gaps for why), one set per theme (_dark/_light
+                      suffix).
+tests/                unittest suite: test_worker.py, test_presets.py,
+                      and test_main.py — the latter covers the whole
+                      assembled GUI (ui_builder.py/queue_controller.py/
+                      queue_widget.py/theming.py/formatting.py all get
+                      exercised through it, via the one real MainWindow
+                      instance, rather than one test file each).
 ```
 
 The GUI is a `QSplitter`. Left pane: a **Preset** row (load/Save As/Delete)
@@ -119,7 +152,7 @@ pane: the queue, output folder, run controls, progress bar, a live stats
 line, and the full log. Window geometry and the splitter position are
 remembered across launches via `QSettings("TITAN-i", "Transcoder")` (on
 Linux: `~/.config/TITAN-i/Transcoder.conf`) — separate from
-`user_presets.json`, since this is per-viewer window state, not app data.
+`presets.json`, since this is per-viewer window state, not app data.
 
 The settings dict that flows from the GUI into `build_args()` (and that a
 saved preset *is*, plus a `name` key):
@@ -174,17 +207,16 @@ High/Low siblings are relative to:
    already pure CPU x265, so this is a clean 1:1 mapping: `-preset medium
    -crf 23`, plus the original's
    `-x265-params "strong-intra-smoothing=0:aq-mode=3:psy-rdoq=1.0"` (fixed,
-   not exposed as a control — nobody asked to tune it independently).
+   not exposed as a control — nobody asked to tune it independently). This
+   is the one that actually loads on startup, regardless of list position
+   (see above) — by request.
 2. **720p Intel Balanced (Hardware / VAAPI)** — named "Intel", not "QSV" (Quick
    Sync's own technology name), to match "AMD" and "CPU" on either side of it
    in this same list — both already bare vendor/type words, not a brand or
    technology name, so QSV was the one actually out of step, not something
    this app invented fresh. Was `qsv_h265_10bit`, ICQ 26,
    main10. `-compression_level 1` (the vaapi "speed" value) is an estimate
-   for QSV's "quality" preset, not validated by A/B — see Known gaps. This
-   is the one that actually loads on startup, regardless of list position
-   (see above) — this app exists to get real hardware encoding working
-   again, so every launch should land there by default.
+   for QSV's "quality" preset, not validated by A/B — see Known gaps.
 3. **720p AMD Balanced (Hardware / VAAPI)** — no HandBrake/QSV legacy to
    map from, unlike the Intel preset. CQP 26 mirrors the Intel preset's
    ICQ 26 (AMD's driver has no ICQ — see Controls' Rate control below —
@@ -208,9 +240,10 @@ of a single fixed point:
   Intel's Balanced `-compression_level` estimate above was. Worth A/B'ing
   for real at some point, same as that one.
 
-Anything saved via **Save As…** is appended to `user_presets.json`
-(gitignored — it's the user's own data, not source) and shows up in the
-same dropdown as the built-ins from then on.
+Anything saved via **Save As…** is appended to the bottom of
+`presets.json`, after the 9 built-ins (gitignored — once seeded, it's the
+user's own data, not source) and shows up in the same dropdown as the
+built-ins from then on.
 
 Output is MP4 or MKV (see Container below), first video stream
 (attached-pic/cover-art excluded) + one selectable audio track (no
@@ -228,7 +261,7 @@ isn't reliably playable.
 - **Preset** — load a saved settings snapshot into every control below.
   This is the main lever — it sets everything else at once — so it isn't a
   tab alongside its own dependents, it sits above them instead.
-  **Save As…** / **Delete** manage `user_presets.json`.
+  **Save As…** / **Delete** manage `presets.json`.
 - **Modified indicator** — the preset dropdown's own text goes bold,
   italic, and `$ACCENT`-colored the moment any control drifts from the
   loaded preset's saved values, and back to normal if you change it back.

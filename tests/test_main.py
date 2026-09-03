@@ -27,7 +27,10 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
 
+import formatting  # noqa: E402
 import main  # noqa: E402
+import presets  # noqa: E402
+import theming  # noqa: E402
 import worker  # noqa: E402
 
 
@@ -158,13 +161,13 @@ class TestStylesheetLoading(unittest.TestCase):
         main._load_stylesheet(dark_app, "dark", style_path=REPO_ROOT / "style.qss")
         main._load_stylesheet(light_app, "light", style_path=REPO_ROOT / "style.qss")
         self.assertNotEqual(dark_app.received, light_app.received)
-        self.assertIn(main.themes.DARK["BG_WINDOW"], dark_app.received)
-        self.assertIn(main.themes.LIGHT["BG_WINDOW"], light_app.received)
+        self.assertIn(theming.themes.DARK["BG_WINDOW"], dark_app.received)
+        self.assertIn(theming.themes.LIGHT["BG_WINDOW"], light_app.received)
 
     def test_unknown_theme_name_falls_back_to_dark(self):
         app = _FakeApp()
         main._load_stylesheet(app, "not-a-real-theme", style_path=REPO_ROOT / "style.qss")
-        self.assertIn(main.themes.DARK["BG_WINDOW"], app.received)
+        self.assertIn(theming.themes.DARK["BG_WINDOW"], app.received)
 
 
 class _AccentFakeApp:
@@ -665,9 +668,9 @@ class TestClearQueueConfirmation(unittest.TestCase):
 
 class TestResultSizeFormatting(unittest.TestCase):
     def test_format_size_units(self):
-        self.assertEqual(main.MainWindow._format_size(500), "500B")
-        self.assertEqual(main.MainWindow._format_size(2048), "2.0KB")
-        self.assertEqual(main.MainWindow._format_size(300 * 1024 * 1024), "300.0MB")
+        self.assertEqual(formatting.format_size(500), "500B")
+        self.assertEqual(formatting.format_size(2048), "2.0KB")
+        self.assertEqual(formatting.format_size(300 * 1024 * 1024), "300.0MB")
 
     def test_append_result_size_shows_shrinkage(self):
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_gui_test_"))
@@ -744,10 +747,88 @@ class TestPresetModifiedIndicator(unittest.TestCase):
         self.assertFalse(window.preset_combo.property("modified"))
 
     def test_settings_differ_treats_missing_key_and_explicit_none_the_same(self):
-        self.assertFalse(main.MainWindow._settings_differ({"a": None}, {}))
-        self.assertFalse(main.MainWindow._settings_differ({}, {"a": None}))
-        self.assertTrue(main.MainWindow._settings_differ({"a": 1}, {"a": 2}))
-        self.assertTrue(main.MainWindow._settings_differ({"a": 1}, {}))
+        self.assertFalse(formatting.settings_differ({"a": None}, {}))
+        self.assertFalse(formatting.settings_differ({}, {"a": None}))
+        self.assertTrue(formatting.settings_differ({"a": 1}, {"a": 2}))
+        self.assertTrue(formatting.settings_differ({"a": 1}, {}))
+
+
+class TestSavePresetAsAndDelete(unittest.TestCase):
+    """_save_preset_as/_delete_preset mutate window.presets in memory and
+    persist via presets.save_presets() -- patched to a Mock in every test
+    here so real file I/O (and the real project's presets.json) is never
+    touched, regardless of what this test happens to save/delete."""
+
+    @staticmethod
+    def _window():
+        with patch.object(main, "load_presets", return_value=presets.load_builtin_presets()):
+            return main.MainWindow()
+
+    def test_save_as_appends_a_new_preset_after_the_built_ins(self):
+        window = self._window()
+        original_count = len(window.presets)
+        with patch.object(main, "save_presets") as mock_save, \
+                patch.object(main.QInputDialog, "getText", return_value=("My Preset", True)):
+            window._save_preset_as()
+        self.assertEqual(len(window.presets), original_count + 1)
+        self.assertEqual(window.presets[-1]["name"], "My Preset")  # appended, not inserted
+        mock_save.assert_called_once_with(window.presets)
+
+    def test_save_as_refuses_a_builtin_name(self):
+        window = self._window()
+        original_count = len(window.presets)
+        with patch.object(main, "save_presets") as mock_save, \
+                patch.object(main.QInputDialog, "getText",
+                              return_value=("720p Intel Balanced (Hardware / VAAPI)", True)), \
+                patch.object(main.QMessageBox, "warning") as mock_warning:
+            window._save_preset_as()
+        mock_warning.assert_called_once()
+        mock_save.assert_not_called()
+        self.assertEqual(len(window.presets), original_count)
+
+    def test_save_as_overwrites_an_existing_user_preset_in_place(self):
+        window = self._window()
+        with patch.object(main, "save_presets"), \
+                patch.object(main.QInputDialog, "getText", return_value=("My Preset", True)):
+            window._save_preset_as()
+        original_count = len(window.presets)
+        window.quality_slider.setValue(window.quality_slider.value() + 1)
+        new_value = window.quality_slider.value()
+        with patch.object(main, "save_presets") as mock_save, \
+                patch.object(main.QInputDialog, "getText", return_value=("My Preset", True)), \
+                patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
+            window._save_preset_as()
+        self.assertEqual(len(window.presets), original_count)  # overwritten, not appended again
+        saved = next(p for p in window.presets if p["name"] == "My Preset")
+        self.assertEqual(saved["quality_value"], new_value)
+        mock_save.assert_called_once_with(window.presets)
+
+    def test_delete_removes_a_user_preset(self):
+        window = self._window()
+        with patch.object(main, "save_presets"), \
+                patch.object(main.QInputDialog, "getText", return_value=("My Preset", True)):
+            window._save_preset_as()
+        original_count = len(window.presets)
+        window.preset_combo.setCurrentIndex(window.preset_combo.findText("My Preset"))
+        with patch.object(main, "save_presets") as mock_save, \
+                patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
+            window._delete_preset()
+        self.assertEqual(len(window.presets), original_count - 1)
+        self.assertNotIn("My Preset", {p["name"] for p in window.presets})
+        mock_save.assert_called_once_with(window.presets)
+
+    def test_delete_refuses_a_builtin(self):
+        window = self._window()
+        original_count = len(window.presets)
+        window.preset_combo.setCurrentIndex(
+            window.preset_combo.findText("720p Intel Balanced (Hardware / VAAPI)")
+        )
+        with patch.object(main, "save_presets") as mock_save, \
+                patch.object(main.QMessageBox, "warning") as mock_warning:
+            window._delete_preset()
+        mock_warning.assert_called_once()
+        mock_save.assert_not_called()
+        self.assertEqual(len(window.presets), original_count)
 
 
 class TestAudioBitrateSlider(unittest.TestCase):
@@ -1199,27 +1280,27 @@ class TestVideoAudioLabels(unittest.TestCase):
     in test_worker.TestSourceProbeHelpers; this is just the display layer."""
 
     def test_known_video_codec_gets_friendly_name(self):
-        self.assertEqual(main.MainWindow._video_codec_label("hevc"), "HEVC")
-        self.assertEqual(main.MainWindow._video_codec_label("h264"), "H.264")
+        self.assertEqual(formatting.video_codec_label("hevc"), "HEVC")
+        self.assertEqual(formatting.video_codec_label("h264"), "H.264")
 
     def test_unknown_video_codec_falls_back_to_uppercased_raw_name(self):
-        self.assertEqual(main.MainWindow._video_codec_label("theora"), "THEORA")
+        self.assertEqual(formatting.video_codec_label("theora"), "THEORA")
 
     def test_missing_video_codec_is_a_question_mark(self):
-        self.assertEqual(main.MainWindow._video_codec_label(None), "?")
+        self.assertEqual(formatting.video_codec_label(None), "?")
 
     def test_known_audio_codec_gets_friendly_name(self):
-        self.assertEqual(main.MainWindow._audio_codec_label("eac3"), "E-AC3")
+        self.assertEqual(formatting.audio_codec_label("eac3"), "E-AC3")
 
     def test_channel_count_maps_to_surround_label(self):
-        self.assertEqual(main.MainWindow._audio_channel_label(2), "Stereo")
-        self.assertEqual(main.MainWindow._audio_channel_label(6), "5.1")
+        self.assertEqual(formatting.audio_channel_label(2), "Stereo")
+        self.assertEqual(formatting.audio_channel_label(6), "5.1")
 
     def test_unusual_channel_count_falls_back_to_raw_number(self):
-        self.assertEqual(main.MainWindow._audio_channel_label(3), "3ch")
+        self.assertEqual(formatting.audio_channel_label(3), "3ch")
 
     def test_missing_channel_count_is_a_question_mark(self):
-        self.assertEqual(main.MainWindow._audio_channel_label(None), "?")
+        self.assertEqual(formatting.audio_channel_label(None), "?")
 
 
 class TestRefreshVideoCell(unittest.TestCase):

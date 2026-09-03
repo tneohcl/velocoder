@@ -544,10 +544,14 @@ class _UiBuilderMixin:
         layout.setContentsMargins(PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN)
         layout.setSpacing(PANEL_SPACING)
 
-        layout.addWidget(QLabel(
-            "Queue (drag files here, or use Add Files — select a row to edit its settings live):"
-        ))
-        self.queue_list = DropTreeWidget(self.add_files)
+        # Just "Queue" -- the fuller instructional text used to live here
+        # ("drag files here, or use Add Files -- select a row to edit its
+        # settings live") but was redundant either way: DropTreeWidget's
+        # own empty-state placeholder ("Drag video files here, or click
+        # 'Add Files...'") already carries that message exactly when it's
+        # relevant (queue is empty), and disappears once it isn't needed.
+        layout.addWidget(QLabel("Queue"))
+        self.queue_list = DropTreeWidget(self.add_files, on_reordered=self._push_undo_snapshot)
         self.queue_list.setColumnCount(len(QUEUE_COLUMN_HEADERS))
         self.queue_list.setHeaderLabels(QUEUE_COLUMN_HEADERS)
         # File is Interactive/user-resizable, not Stretch (which auto-
@@ -568,6 +572,8 @@ class _UiBuilderMixin:
         ):
             self.queue_list.setColumnWidth(col, width)
         self.queue_list.itemSelectionChanged.connect(self._on_queue_selection_changed)
+        self.queue_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.queue_list.customContextMenuRequested.connect(self._on_queue_context_menu)
         layout.addWidget(self.queue_list, 1)
 
         q_btns = QHBoxLayout()

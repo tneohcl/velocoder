@@ -5,6 +5,7 @@ building a QApplication/MainWindow, which they now are."""
 from PySide6.QtWidgets import QSlider
 
 import worker
+from constants import ENCODERS, RESOLUTIONS
 
 _VIDEO_CODEC_LABELS = {
     "h264": "H.264", "hevc": "HEVC", "vp9": "VP9", "av1": "AV1",
@@ -100,3 +101,49 @@ def format_size(num_bytes: int) -> str:
             return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
         size /= 1024
     return f"{size:.1f}TB"
+
+
+def settings_summary(job: dict) -> str:
+    """Human-readable multi-line rendering of a queue row's chosen output
+    settings, for the queue table's hover tooltip -- distinct from the
+    Effective Command preview (main.py), which shows the raw ffmpeg argv
+    for a technical reader; this is the friendly summary for everyone
+    else."""
+    encoder = job.get("encoder")
+    gpu_vendor = job.get("gpu_vendor")
+    encoder_label = next(
+        (label for enc, vendor, label in ENCODERS if enc == encoder and vendor == gpu_vendor),
+        encoder or "?",
+    )
+
+    rc_mode = job.get("rc_mode")
+    if rc_mode in worker.BITRATE_RC_MODES:
+        rate_line = f"Target size: {job.get('quality_value')} MB"
+    else:
+        rate_line = f"{rc_mode} {job.get('quality_value')}"
+
+    width, height = job.get("width"), job.get("height")
+    res_label = next(
+        (r["label"] for r in RESOLUTIONS if r["width"] == width and r["height"] == height),
+        f"{width}x{height}" if width and height else "?",
+    )
+
+    lines = [
+        f"{encoder_label} -- {rate_line}",
+        f"{res_label}, {job.get('bit_depth')}-bit, {str(job.get('container', '?')).upper()}",
+        f"Speed: {job.get('speed')}",
+    ]
+    tune = job.get("tune")
+    if tune and tune != "None":
+        lines.append(f"Tune: {tune}")
+    lines.append(f"Deinterlace: {'on' if job.get('deinterlace') else 'off'}")
+
+    audio_bits = [f"Track {job.get('audio_track', 0) + 1}"]
+    if job.get("audio_copy_if_compatible"):
+        audio_bits.append("copy if compatible")
+    audio_bits.append(str(job.get("audio_bitrate", "?")))
+    if job.get("audio_downmix_stereo"):
+        audio_bits.append("downmix to stereo")
+    lines.append("Audio: " + ", ".join(audio_bits))
+
+    return "\n".join(lines)

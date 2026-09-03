@@ -518,6 +518,18 @@ class TranscodeQueue(QObject):
         input_path: Path = job["path"]
         container = job.get("container", "mp4")
 
+        # Emitted here, before any of the preflight checks below that can
+        # themselves fail (same-as-input, duration/audio probing,
+        # build_args) -- not only once everything succeeds. Confirmed a
+        # real bug otherwise: job_failed can fire for *this* job before
+        # job_started ever does, but the GUI's _current_running_item is
+        # only updated inside its job_started handler, so a preflight
+        # failure got blamed on whichever job *previously* had
+        # job_started fire (the last one that actually started encoding,
+        # possibly from an earlier run entirely) instead of the job that
+        # actually failed.
+        self.job_started.emit(str(input_path), self._index, len(self._jobs))
+
         # Checked against the *un*-disambiguated name specifically, before
         # _resolve_output_path ever runs -- confirmed directly that doing
         # this check after resolving would let this exact case slip
@@ -573,7 +585,6 @@ class TranscodeQueue(QObject):
             self._run_next()
             return
 
-        self.job_started.emit(str(input_path), self._index, len(self._jobs))
         self.job_log.emit("ffmpeg " + " ".join(args[1:]))
 
         proc = QProcess()

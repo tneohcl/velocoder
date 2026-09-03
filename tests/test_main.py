@@ -24,12 +24,14 @@ sys.path.insert(0, str(REPO_ROOT))
 from PySide6.QtCore import QEvent, QEventLoop, QMimeData, QPoint, Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QColor, QDropEvent, QFocusEvent, QPalette  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
 
 import formatting  # noqa: E402
 import main  # noqa: E402
 import presets  # noqa: E402
+import queue_controller  # noqa: E402
 import theming  # noqa: E402
 import worker  # noqa: E402
 
@@ -349,6 +351,49 @@ class TestThemeIntegration(unittest.TestCase):
         mock_refresh.assert_called_once()
 
 
+class TestFuzzyTextColor(unittest.TestCase):
+    """theming._fuzzy_text_color backs both the quality/speed/audio-bitrate
+    tier captions (main.py) and the empty-queue placeholder text
+    (queue_widget.py). Palette roles are set directly on a plain QWidget
+    here rather than depending on this machine's real Fusion defaults --
+    those turned out to vary (confirmed empirically: identical RGB to
+    WindowText, alpha 128, under the offscreen QPA platform used for this
+    whole suite) and are exactly the condition each branch below needs to
+    control precisely, not incidentally inherit."""
+
+    @staticmethod
+    def _widget_with_roles(window_text: QColor, placeholder: QColor):
+        from PySide6.QtWidgets import QWidget
+        widget = QWidget()
+        palette = widget.palette()
+        palette.setColor(QPalette.WindowText, window_text)
+        palette.setColor(QPalette.PlaceholderText, placeholder)
+        widget.setPalette(palette)
+        return widget
+
+    def test_translucent_placeholder_keeps_its_alpha_not_silently_dropped(self):
+        # The real bug: QColor.name() drops alpha entirely, which used to
+        # turn a legitimately-translucent PlaceholderText role back into a
+        # fully-opaque, indistinguishable-from-regular-text color.
+        widget = self._widget_with_roles(QColor(20, 20, 20), QColor(20, 20, 20, 128))
+        result = theming._fuzzy_text_color(widget)
+        self.assertEqual(result, "rgba(20, 20, 20, 0.502)")
+
+    def test_distinct_solid_placeholder_role_is_honored_as_is(self):
+        widget = self._widget_with_roles(QColor(20, 20, 20), QColor(120, 120, 120))
+        result = theming._fuzzy_text_color(widget)
+        self.assertEqual(result, "rgba(120, 120, 120, 1.000)")
+
+    def test_placeholder_identical_to_window_text_falls_back_to_text_secondary(self):
+        # The genuine "nothing distinct here at all" case (both RGB and
+        # alpha equal) -- falls back to this app's own token rather than
+        # rendering fuzzy captions at full text strength.
+        widget = self._widget_with_roles(QColor(20, 20, 20), QColor(20, 20, 20))
+        with patch.dict(theming._current_theme_palette, {"TEXT_SECONDARY": "#6b7280"}):
+            result = theming._fuzzy_text_color(widget)
+        self.assertEqual(result, "#6b7280")
+
+
 class TestStartupOrdering(unittest.TestCase):
     """rc_mode_combo must be populated before any preset gets applied."""
 
@@ -643,6 +688,30 @@ class TestCommandPreviewAudioAccuracy(unittest.TestCase):
         preview_text = window.command_preview.toPlainText()
         self.assertNotIn("-c:a", preview_text)
 
+    def test_preview_follows_the_selected_row_not_always_row_0(self):
+        # Real, confirmed bug: this always probed queue_list.topLevelItem(0)
+        # regardless of what's actually selected -- display-only (the real
+        # encode always uses each job's own file), but selecting a
+        # different row to edit its settings still showed row 0's
+        # duration/audio in the preview. aac vs mp3 makes this directly
+        # observable: aac is copy-compatible, mp3 forces a transcode.
+        aac_clip = self.tmpdir / "aac_clip.mkv"
+        _make_clip(aac_clip, "aac")
+        window = main.MainWindow()
+        window.add_files([aac_clip, self.mp3_clip])
+        _wait_for_detection(window)
+
+        window.queue_list.topLevelItem(0).setSelected(True)
+        window._update_command_preview()
+        self.assertIn("-c:a copy", window.command_preview.toPlainText())
+
+        window.queue_list.topLevelItem(0).setSelected(False)
+        window.queue_list.topLevelItem(1).setSelected(True)
+        window._update_command_preview()
+        preview_text = window.command_preview.toPlainText()
+        self.assertIn("-c:a aac", preview_text)
+        self.assertNotIn("-c:a copy", preview_text)
+
 
 class TestClearQueueConfirmation(unittest.TestCase):
     def test_declining_confirmation_keeps_the_queue(self):
@@ -654,7 +723,9 @@ class TestClearQueueConfirmation(unittest.TestCase):
 
     def test_confirming_clears_the_queue(self):
         window = main.MainWindow()
-        window.queue_list.addTopLevelItem(main.QTreeWidgetItem(["dummy"]))
+        item = main.QTreeWidgetItem(["dummy"])
+        item.setData(main.STATUS_COL, main.Qt.UserRole, {"path": Path("dummy.mkv"), **window._current_settings()})
+        window.queue_list.addTopLevelItem(item)
         with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
             window._clear_queue()
         self.assertEqual(window.queue_list.topLevelItemCount(), 0)
@@ -1274,6 +1345,92 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         _wait_for_detection(window)
 
 
+class TestProbeProcessesFailedToStart(unittest.TestCase):
+    """QProcess.finished never fires when the process fails to even start
+    (see tests/test_worker.py's TestProcessFailedToStart for the same gap
+    already fixed on the main encode process) -- _start_interlace_detection
+    and _start_source_probe (queue_controller.py) didn't have the matching
+    errorOccurred handling, so a missing/broken ffmpeg or ffprobe install
+    left the failed process stuck in _detection_processes forever, and
+    _start() refuses to run while that list is non-empty. Confirmed real
+    via a PATH pointed at an empty fakebin/ -- both binaries genuinely
+    missing, not just one specific tool broken."""
+
+    def test_missing_binaries_does_not_wedge_detection_processes_forever(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        fakebin = Path(tempfile.mkdtemp(prefix="transcoder_test_fakebin_"))
+        try:
+            clip = tmpdir / "clip.mp4"
+            clip.write_bytes(b"not a real video, never actually read")
+
+            window = main.MainWindow()
+            old_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = str(fakebin)
+            try:
+                window.add_files([clip])
+                self.assertTrue(
+                    window._detection_processes, "test assumes both probes are in flight"
+                )
+                _wait_for_detection(window, timeout_ms=5000)
+            finally:
+                os.environ["PATH"] = old_path
+
+            self.assertEqual(
+                window._detection_processes, [],
+                "a probe that failed to start must not stay queued forever",
+            )
+            # And Start must not be permanently refused because of it.
+            window.queue_list.addTopLevelItem(main.QTreeWidgetItem(["dummy"]))
+            window.queue_list.topLevelItem(0).setData(
+                main.STATUS_COL, main.Qt.UserRole, {"path": clip, **window._current_settings()}
+            )
+            with patch.object(window.queue, "start") as mock_start:
+                window._start()
+                mock_start.assert_called_once()
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            shutil.rmtree(fakebin, ignore_errors=True)
+
+
+class TestOutputEditNormalization(unittest.TestCase):
+    """A manually-typed output path skipped normalization entirely --
+    unlike Browse (_pick_output_dir), which only ever hands back a clean
+    absolute path from the OS's own directory picker. Two real,
+    confirmed consequences: no ~ expansion (Path('~/x') does not expand
+    the tilde on its own), and build_args appends the output path as a
+    bare final argv element, so a relative path/folder starting with "-"
+    gets parsed by ffmpeg as a flag instead of a filename."""
+
+    def test_tilde_expands_to_the_real_home_directory(self):
+        window = main.MainWindow()
+        window.output_edit.setText("~/some_transcoder_test_subdir")
+        window._on_output_edit_changed()
+        self.assertEqual(
+            window.output_dir, Path.home() / "some_transcoder_test_subdir"
+        )
+        self.assertNotIn("~", str(window.output_dir))
+
+    def test_field_reflects_the_normalized_path_back(self):
+        window = main.MainWindow()
+        window.output_edit.setText("~/some_transcoder_test_subdir")
+        window._on_output_edit_changed()
+        self.assertEqual(window.output_edit.text(), str(window.output_dir))
+
+    def test_dash_prefixed_relative_path_resolves_to_a_safe_absolute_one(self):
+        window = main.MainWindow()
+        window.output_edit.setText("-render")
+        window._on_output_edit_changed()
+        self.assertTrue(window.output_dir.is_absolute())
+        self.assertFalse(str(window.output_dir).startswith("-"))
+
+    def test_empty_text_leaves_output_dir_unchanged(self):
+        window = main.MainWindow()
+        original = window.output_dir
+        window.output_edit.setText("   ")
+        window._on_output_edit_changed()
+        self.assertEqual(window.output_dir, original)
+
+
 class TestVideoAudioLabels(unittest.TestCase):
     """Pure-logic tests for the queue table's codec/channel friendly-name
     helpers -- worker.parse_probe_output's own field extraction is covered
@@ -1301,6 +1458,161 @@ class TestVideoAudioLabels(unittest.TestCase):
 
     def test_missing_channel_count_is_a_question_mark(self):
         self.assertEqual(formatting.audio_channel_label(None), "?")
+
+
+class TestSettingsSummary(unittest.TestCase):
+    """formatting.settings_summary() -- the queue table's hover tooltip
+    content, distinct from Effective Command's raw ffmpeg argv (that one's
+    for a technical reader; this is the friendly version)."""
+
+    def test_vaapi_quality_mode_job(self):
+        job = presets.load_builtin_presets()[4]  # 720p Intel Balanced
+        summary = formatting.settings_summary(job)
+        self.assertIn("Intel (iGPU)", summary)
+        self.assertIn("ICQ 26", summary)
+        self.assertIn("720p", summary)
+        self.assertIn("10-bit", summary)
+        self.assertIn("MP4", summary)
+        self.assertIn("Deinterlace: off", summary)
+        self.assertIn("Track 1", summary)
+        self.assertIn("copy if compatible", summary)
+        self.assertIn("160k", summary)
+
+    def test_cpu_job_omits_gpu_specific_wording(self):
+        job = presets.load_builtin_presets()[1]  # 720p CPU Balanced
+        summary = formatting.settings_summary(job)
+        self.assertIn("CPU", summary)
+        self.assertIn("CRF 23", summary)
+
+    def test_target_size_mode_shows_mb_not_a_bare_rc_mode_value(self):
+        job = {**presets.load_builtin_presets()[4], "rc_mode": "VBR", "quality_value": 800}
+        summary = formatting.settings_summary(job)
+        self.assertIn("Target size: 800 MB", summary)
+        self.assertNotIn("VBR 800", summary)
+
+    def test_deinterlace_on_is_shown(self):
+        job = {**presets.load_builtin_presets()[4], "deinterlace": True}
+        self.assertIn("Deinterlace: on", formatting.settings_summary(job))
+
+    def test_downmix_shown_only_when_checked(self):
+        job = presets.load_builtin_presets()[4]
+        self.assertNotIn("downmix", formatting.settings_summary(job))
+        job = {**job, "audio_downmix_stereo": True}
+        self.assertIn("downmix to stereo", formatting.settings_summary(job))
+
+
+class TestQueueRowTooltip(unittest.TestCase):
+    """The queue table's per-row tooltip -- file path plus a friendly
+    settings summary (formatting.settings_summary), not just the bare path
+    it used to be."""
+
+    def test_tooltip_includes_both_path_and_settings(self):
+        window = main.MainWindow()
+        job = {"path": Path("/tmp/some_clip.mkv"), **window._current_settings()}
+        item = window._make_queue_row(job)
+        window.queue_list.addTopLevelItem(item)
+        tooltip = item.toolTip(main.FILE_COL)
+        self.assertIn(str(job["path"]), tooltip)
+        self.assertIn(formatting.settings_summary(job), tooltip)
+
+    def test_tooltip_refreshes_after_a_live_settings_edit(self):
+        window = main.MainWindow()
+        job = {"path": Path("/tmp/some_clip.mkv"), **window._current_settings()}
+        item = window._make_queue_row(job)
+        window.queue_list.addTopLevelItem(item)
+        item.setSelected(True)
+        window.quality_slider.setValue(window.quality_slider.value() + 1)
+        updated_job = item.data(main.STATUS_COL, main.Qt.UserRole)
+        self.assertIn(formatting.settings_summary(updated_job), item.toolTip(main.FILE_COL))
+
+
+class TestQueueContextMenu(unittest.TestCase):
+    """Right-click on a queue row -- Reveal Source File / Reveal Output
+    File. Both open the *containing folder* (QDesktopServices.openUrl),
+    matching _open_output_dir's own existing behavior exactly, not a
+    "select this file" action (not portably available outside a
+    dolphin --select-style shell-out).
+
+    Exercises _build_queue_context_menu/_handle_queue_context_action
+    directly, never QMenu.exec() (called only from the thin
+    _on_queue_context_menu glue, intentionally untested) or
+    _on_queue_context_menu itself -- confirmed the hard way that a real
+    QMenu.exec() blocks in a real, C++-level modal loop that
+    unittest.mock.patch.object cannot intercept, even under the offscreen
+    platform, with no timeout of its own."""
+
+    @staticmethod
+    def _find_action(menu, text):
+        return next(a for a in menu.actions() if a.text() == text)
+
+    def test_reveal_output_is_disabled_before_a_job_completes(self):
+        window = main.MainWindow()
+        job = {"path": Path("/tmp/clip.mkv"), **window._current_settings()}
+        menu = window._build_queue_context_menu(job)
+        self.assertFalse(self._find_action(menu, "Reveal Output File").isEnabled())
+
+    def test_reveal_output_is_enabled_once_the_completed_file_exists(self):
+        window = main.MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            out_file = Path(tmp) / "done.mp4"
+            out_file.write_bytes(b"fake output")
+            job = {
+                "path": Path("/tmp/clip.mkv"), **window._current_settings(),
+                "_completed_output_path": str(out_file),
+            }
+            menu = window._build_queue_context_menu(job)
+            self.assertTrue(self._find_action(menu, "Reveal Output File").isEnabled())
+
+    def test_reveal_output_stays_disabled_if_the_file_was_since_deleted(self):
+        window = main.MainWindow()
+        job = {
+            "path": Path("/tmp/clip.mkv"), **window._current_settings(),
+            "_completed_output_path": "/tmp/does_not_exist_anymore_12345.mp4",
+        }
+        menu = window._build_queue_context_menu(job)
+        self.assertFalse(self._find_action(menu, "Reveal Output File").isEnabled())
+
+    def test_reveal_source_opens_the_containing_folder(self):
+        window = main.MainWindow()
+        job = {"path": Path("/tmp/some/dir/clip.mkv"), **window._current_settings()}
+        menu = window._build_queue_context_menu(job)
+        action = self._find_action(menu, "Reveal Source File")
+        with patch.object(queue_controller.QDesktopServices, "openUrl") as mock_open:
+            window._handle_queue_context_action(job, action)
+        mock_open.assert_called_once()
+        self.assertEqual(mock_open.call_args[0][0].toLocalFile(), str(job["path"].parent))
+
+    def test_reveal_output_opens_the_containing_folder(self):
+        window = main.MainWindow()
+        job = {
+            "path": Path("/tmp/clip.mkv"), **window._current_settings(),
+            "_completed_output_path": "/tmp/out/clip.mp4",
+        }
+        menu = window._build_queue_context_menu(job)
+        action = self._find_action(menu, "Reveal Output File")
+        with patch.object(queue_controller.QDesktopServices, "openUrl") as mock_open:
+            window._handle_queue_context_action(job, action)
+        mock_open.assert_called_once()
+        self.assertEqual(mock_open.call_args[0][0].toLocalFile(), "/tmp/out")
+
+    def test_no_action_chosen_does_nothing(self):
+        # The real "dismissed the menu without picking anything" case --
+        # QMenu.exec() returns None then.
+        window = main.MainWindow()
+        job = {"path": Path("/tmp/clip.mkv"), **window._current_settings()}
+        with patch.object(queue_controller.QDesktopServices, "openUrl") as mock_open:
+            window._handle_queue_context_action(job, None)
+        mock_open.assert_not_called()
+
+    def test_completed_output_path_is_recorded_on_job_finished(self):
+        window = main.MainWindow()
+        job = {"path": Path("/tmp/clip.mkv"), **window._current_settings()}
+        item = window._make_queue_row(job)
+        window.queue_list.addTopLevelItem(item)
+        window._current_running_item = item
+        window._on_job_finished("/tmp/clip.mkv", "/tmp/out/clip.mp4")
+        updated = item.data(main.STATUS_COL, main.Qt.UserRole)
+        self.assertEqual(updated["_completed_output_path"], "/tmp/out/clip.mp4")
 
 
 class TestRefreshVideoCell(unittest.TestCase):
@@ -1632,6 +1944,173 @@ class TestQueueDragReorder(unittest.TestCase):
         self.assertFalse(event.isAccepted())
 
 
+class TestQueueUndoRedo(unittest.TestCase):
+    """Undo/redo covers queue *structure* only -- add files, remove
+    selected, clear queue, drag-reorder -- not per-item settings edits or
+    preset save/delete. Snapshot-based (each stack entry is the full
+    queue's job-dict list at that point, see _queue_snapshot in
+    queue_controller.py), not a diff/command stack -- simplest robust
+    option given rows carry live UI state (icons, probed column text)
+    that's easier to re-derive on restore than replay precisely."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_gui_test_"))
+        cls.clip = cls.tmpdir / "clip.mkv"
+        _make_clip(cls.clip, "aac")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmpdir, ignore_errors=True)
+
+    def test_undo_reverses_add_files(self):
+        window = main.MainWindow()
+        window.add_files([self.clip])
+        _wait_for_detection(window)
+        self.assertEqual(window.queue_list.topLevelItemCount(), 1)
+        window._undo()
+        self.assertEqual(window.queue_list.topLevelItemCount(), 0)
+
+    def test_redo_reapplies_an_undone_add(self):
+        window = main.MainWindow()
+        window.add_files([self.clip])
+        _wait_for_detection(window)
+        window._undo()
+        window._redo()
+        _wait_for_detection(window)
+        self.assertEqual(window.queue_list.topLevelItemCount(), 1)
+
+    def test_undo_reverses_remove_selected(self):
+        window = main.MainWindow()
+        TestQueueDragReorder._add_rows(window, ["a", "b", "c"])
+        window.queue_list.topLevelItem(1).setSelected(True)
+        window._remove_selected()
+        self.assertEqual(TestQueueDragReorder._names(window), ["a", "c"])
+        window._undo()
+        self.assertEqual(TestQueueDragReorder._names(window), ["a", "b", "c"])
+
+    def test_undo_reverses_clear_queue(self):
+        window = main.MainWindow()
+        TestQueueDragReorder._add_rows(window, ["a", "b", "c"])
+        with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
+            window._clear_queue()
+        self.assertEqual(window.queue_list.topLevelItemCount(), 0)
+        window._undo()
+        self.assertEqual(TestQueueDragReorder._names(window), ["a", "b", "c"])
+
+    def test_undo_reverses_a_drag_reorder(self):
+        window = main.MainWindow()
+        window.show()
+        TestQueueDragReorder._add_rows(window, ["a", "b", "c"])
+        target_rect = window.queue_list.visualItemRect(window.queue_list.topLevelItem(2))
+        TestQueueDragReorder._drop_at(window, target_rect.center(), ["a"])
+        self.assertEqual(TestQueueDragReorder._names(window), ["b", "c", "a"])
+        window._undo()
+        self.assertEqual(TestQueueDragReorder._names(window), ["a", "b", "c"])
+
+    def test_a_new_action_clears_the_redo_stack(self):
+        window = main.MainWindow()
+        TestQueueDragReorder._add_rows(window, ["a", "b", "c"])
+        window.queue_list.topLevelItem(0).setSelected(True)
+        window._remove_selected()
+        window._undo()
+        self.assertTrue(window._redo_stack, "test assumes there's something to redo")
+        window.queue_list.topLevelItem(1).setSelected(True)
+        window._remove_selected()  # a new action -- must invalidate the old redo history
+        self.assertEqual(window._redo_stack, [])
+
+    def test_undo_and_redo_are_refused_during_a_run(self):
+        window = main.MainWindow()
+        TestQueueDragReorder._add_rows(window, ["a", "b"])
+        window.queue_list.topLevelItem(0).setSelected(True)
+        window._remove_selected()
+        window._set_queue_editable(False)  # simulates a run in progress
+        window._undo()
+        self.assertEqual(TestQueueDragReorder._names(window), ["b"], "undo must be a no-op mid-run")
+        window._set_queue_editable(True)
+        window._undo()
+        window._set_queue_editable(False)
+        window._redo()
+        self.assertEqual(TestQueueDragReorder._names(window), ["a", "b"], "redo must be a no-op mid-run")
+
+    def test_undo_with_nothing_to_undo_does_nothing(self):
+        window = main.MainWindow()
+        TestQueueDragReorder._add_rows(window, ["a"])
+        window._undo()  # add_rows bypasses add_files, so nothing was ever pushed
+        self.assertEqual(TestQueueDragReorder._names(window), ["a"])
+
+
+class TestDeleteKeyRemovesSelectedQueueItem(unittest.TestCase):
+    def test_delete_key_removes_the_selected_row_when_queue_list_has_focus(self):
+        window = main.MainWindow()
+        window.show()
+        window.activateWindow()
+        QApplication.instance().processEvents()
+        TestQueueDragReorder._add_rows(window, ["a", "b"])
+        window.queue_list.topLevelItem(0).setSelected(True)
+        window.queue_list.setFocus()
+        QApplication.instance().processEvents()
+        QTest.keyClick(window.queue_list, Qt.Key_Delete)
+        self.assertEqual(TestQueueDragReorder._names(window), ["b"])
+
+    def test_delete_key_does_not_fire_when_output_edit_has_focus(self):
+        # Scoped to queue_list specifically (Qt.WidgetWithChildrenShortcut,
+        # not the window-wide default Ctrl+Z/Ctrl+Shift+Z use) -- otherwise
+        # Delete/Backspace would misfire as "remove queue item" while
+        # actually editing the output-folder text field.
+        window = main.MainWindow()
+        window.show()
+        TestQueueDragReorder._add_rows(window, ["a", "b"])
+        window.queue_list.topLevelItem(0).setSelected(True)
+        window.output_edit.setFocus()
+        QTest.keyClick(window.output_edit, Qt.Key_Delete)
+        self.assertEqual(TestQueueDragReorder._names(window), ["a", "b"])
+
+
+class TestQueueStructureLockedDuringRun(unittest.TestCase):
+    """Remove/Clear are normally only reachable via buttons that
+    _set_queue_editable(False) disables during a run. The Delete-key
+    shortcut reaches _remove_selected directly, bypassing that button
+    state -- both methods need their own internal guard so a run's
+    _running_items index-based lookup can't be corrupted out from under
+    it, regardless of how the call is triggered."""
+
+    def test_delete_key_is_a_no_op_mid_run(self):
+        window = main.MainWindow()
+        window.show()
+        window.activateWindow()
+        QApplication.instance().processEvents()
+        TestQueueDragReorder._add_rows(window, ["a", "b"])
+        window._set_queue_editable(False)  # simulates a run in progress
+        window.queue_list.topLevelItem(0).setSelected(True)
+        window.queue_list.setFocus()
+        QApplication.instance().processEvents()
+        QTest.keyClick(window.queue_list, Qt.Key_Delete)
+        self.assertEqual(TestQueueDragReorder._names(window), ["a", "b"])
+
+    def test_remove_selected_is_a_no_op_mid_run(self):
+        window = main.MainWindow()
+        TestQueueDragReorder._add_rows(window, ["a", "b"])
+        window._set_queue_editable(False)
+        window.queue_list.topLevelItem(0).setSelected(True)
+        window._remove_selected()
+        self.assertEqual(TestQueueDragReorder._names(window), ["a", "b"])
+
+    def test_clear_queue_is_a_no_op_mid_run(self):
+        window = main.MainWindow()
+        TestQueueDragReorder._add_rows(window, ["a", "b"])
+        window._set_queue_editable(False)
+        # The mid-run guard must return before the confirmation dialog is
+        # even reached -- patched (and asserted uncalled) rather than
+        # trusted, so a regression that removes the guard fails loudly
+        # instead of hanging the suite on a real modal with no display to
+        # dismiss it.
+        with patch.object(main.QMessageBox, "question") as mock_question:
+            window._clear_queue()
+        mock_question.assert_not_called()
+        self.assertEqual(TestQueueDragReorder._names(window), ["a", "b"])
+
+
 class TestLiveAppendDuringRun(unittest.TestCase):
     """A file added (button or drag-drop -- both go through add_files())
     while a run is already in progress should join that run automatically,
@@ -1661,11 +2140,12 @@ class TestLiveAppendDuringRun(unittest.TestCase):
         self.assertEqual(len(window.queue._jobs), 0)
         self.assertEqual(len(window._running_items), 0)
 
-    def test_detection_result_patches_the_already_queued_copy(self):
-        # The dict handed to queue.add_job is a snapshot, not a live
-        # reference (QTreeWidgetItem.setData/.data() round-trips a copy,
-        # confirmed empirically) -- update_pending_job is what's supposed
-        # to keep it in sync once async interlace detection lands.
+    def test_a_mid_run_add_is_submitted_with_its_real_detected_deinterlace_value(self):
+        # add_job() is deferred until both interlace detection and source
+        # probe have actually landed for a mid-run add (see
+        # _maybe_submit_mid_run_job in queue_controller.py) specifically so
+        # this can't race: the job handed to the engine already carries the
+        # real detected value, never a since-corrected snapshot.
         window = main.MainWindow()
         window._set_queue_editable(False)
         with tempfile.TemporaryDirectory() as tmp:
@@ -1674,6 +2154,32 @@ class TestLiveAppendDuringRun(unittest.TestCase):
             window.add_files([clip])
             _wait_for_detection(window)
         self.assertEqual(window.queue._jobs[0]["deinterlace"], True)
+
+    def test_mid_run_add_is_not_submitted_to_the_engine_until_both_probes_land(self):
+        # The actual race this fixes: previously add_job() ran immediately
+        # inside add_files(), so if the currently-running job finished
+        # before this file's own ~20s interlace sample did,
+        # update_pending_job (worker.py) couldn't help -- its own docstring
+        # says it only patches jobs still ahead of the queue's position.
+        # Verified directly here rather than just trusting the eventual
+        # correct outcome (the test above): immediately after add_files()
+        # returns, before either probe has landed, the job must not be in
+        # the engine's queue yet at all.
+        window = main.MainWindow()
+        window._set_queue_editable(False)
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            _make_clip(clip, "aac")
+            window.add_files([clip])
+            self.assertEqual(
+                len(window.queue._jobs), 0,
+                "must not be submitted before both probes complete",
+            )
+            item = window.queue_list.topLevelItem(0)
+            self.assertIn(item, window._pending_mid_run_items)
+            _wait_for_detection(window)
+        self.assertEqual(len(window.queue._jobs), 1)
+        self.assertNotIn(item, window._pending_mid_run_items)
 
 
 if __name__ == "__main__":

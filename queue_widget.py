@@ -4,8 +4,10 @@ MainWindow coupling to carry along."""
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPainter, QPalette
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QAbstractItemView, QTreeWidget
+
+from theming import _fuzzy_text_color
 
 # Queue table columns -- source-file properties only; output settings live
 # in the right-hand panel and apply live to whatever row is selected
@@ -39,7 +41,7 @@ class DropTreeWidget(QTreeWidget):
 
     PLACEHOLDER_TEXT = "Drag video files here,\nor click “Add Files…”"
 
-    def __init__(self, on_files_dropped, parent=None):
+    def __init__(self, on_files_dropped, on_reordered=None, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -49,6 +51,11 @@ class DropTreeWidget(QTreeWidget):
         self.setUniformRowHeights(True)
         self.setAlternatingRowColors(True)
         self._on_files_dropped = on_files_dropped
+        # Called right before a real internal-move drop is about to
+        # reorder rows (undo/redo's push point for this one operation --
+        # see _push_undo_snapshot in queue_controller.py). Optional so
+        # this widget stays usable standalone without wiring undo/redo.
+        self._on_reordered = on_reordered
         # Dropping a file in mid-run is fine (add_files pushes it straight
         # into the run in progress) and was never gated by this -- but
         # reordering *existing* rows mid-run is different: the running
@@ -99,6 +106,9 @@ class DropTreeWidget(QTreeWidget):
             event.ignore()
             return
 
+        if self._on_reordered:
+            self._on_reordered()
+
         pos = event.position().toPoint()
         target_item = self.itemAt(pos)
         if target_item is None or target_item in selected:
@@ -125,6 +135,6 @@ class DropTreeWidget(QTreeWidget):
         super().paintEvent(event)
         if self.topLevelItemCount() == 0:
             painter = QPainter(self.viewport())
-            painter.setPen(self.palette().color(QPalette.PlaceholderText))
+            painter.setPen(QColor(_fuzzy_text_color(self)))
             painter.drawText(self.viewport().rect(), Qt.AlignCenter, self.PLACEHOLDER_TEXT)
             painter.end()

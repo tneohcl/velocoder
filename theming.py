@@ -72,6 +72,46 @@ def _system_accent_tokens(app) -> dict:
     }
 
 
+def _fuzzy_text_color(widget) -> str:
+    """Muted-text color for de-emphasized captions/placeholders -- the
+    queue's empty-state "Drag video files here..." text (queue_widget.py)
+    and the quality/speed/audio-bitrate tier captions (main.py) both call
+    this rather than reading QPalette.PlaceholderText directly.
+
+    QPalette.PlaceholderText was trusted directly at first -- confirmed
+    correct via a real screenshot on a real desktop session -- but two
+    separate problems turned up after it stopped looking muted on a real
+    live session:
+
+    1. Fusion's own *default* PlaceholderText (no platform theme plugin
+       enriching the palette, e.g. under the offscreen QPA platform) isn't
+       a distinct color at all -- it's WindowText's exact same RGB at
+       roughly half alpha (128 vs 255), meant to read as muted by
+       blending partially into whatever's behind it, not by being a
+       different solid color.
+    2. `.color(...).name()` silently drops that alpha channel -- so even
+       when the role legitimately *was* "WindowText, but translucent",
+       reading it back through plain hex `.name()` collapsed it to a
+       fully-opaque color indistinguishable from ordinary text. This is
+       reproducible even outside any offscreen/live-session difference:
+       any translucent PlaceholderText role loses its muting through
+       `.name()` regardless of environment.
+
+    Fixed by keeping the alpha channel (rgba(), not hex) whenever the
+    role is genuinely translucent or otherwise distinct from WindowText,
+    and only falling back to this app's own $TEXT_SECONDARY token for the
+    genuine "nothing distinct here at all" case -- same defensive shape
+    as _system_accent_tokens' own accent fallback above: don't trust a
+    system palette role blindly, fall back rather than silently losing
+    the visual hierarchy the muted color exists for.
+    """
+    palette = widget.palette()
+    placeholder = palette.color(QPalette.PlaceholderText)
+    if placeholder != palette.color(QPalette.WindowText):
+        return f"rgba({placeholder.red()}, {placeholder.green()}, {placeholder.blue()}, {placeholder.alphaF():.3f})"
+    return _current_theme_palette.get("TEXT_SECONDARY", "#8b93a1")
+
+
 def _load_stylesheet(app, theme_name: str = "dark", style_path: Path = Path(__file__).parent / "style.qss"):
     try:
         text = style_path.read_text()

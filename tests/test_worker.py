@@ -857,6 +857,52 @@ class TestOutputPathCollisionGuard(unittest.TestCase):
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+class TestJobStartedFiresBeforeAnyFailureForThatJob(unittest.TestCase):
+    """Real regression: job_started used to only fire after preflight
+    (duration/audio probing, build_args) succeeded, so a preflight
+    failure emitted job_failed for a job the GUI's _current_running_item
+    (queue_controller.py) had never actually been pointed at yet --
+    whatever job *previously* had job_started fire (from this run, or a
+    stale reference from an earlier one) got blamed instead. Verified
+    directly against the real signal sequence here, not the GUI layer
+    (see tests/test_main.py for that side)."""
+
+    def test_second_jobs_preflight_failure_gets_its_own_job_started_first(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            # In its own subdirectory, distinct from output_dir=tmpdir
+            # below -- so *only* bad_clip collides with its own natural
+            # output path, not both.
+            source_dir = tmpdir / "source"
+            source_dir.mkdir()
+            good_clip = source_dir / "good.mp4"
+            _make_clip(good_clip)
+            # Sits directly at what would be its own natural output path
+            # (same stem/container/directory as output_dir=tmpdir below) --
+            # deterministically triggers the same-as-input preflight
+            # refusal, same technique as TestOutputPathCollisionGuard above.
+            bad_clip = tmpdir / "bad.mp4"
+            _make_clip(bad_clip)
+
+            jobs = [
+                {"path": good_clip, **x265_settings(container="mp4")},
+                {"path": bad_clip, **x265_settings(container="mp4")},
+            ]
+            queue = worker.TranscodeQueue()
+            events = _run_queue_and_collect(queue, jobs, tmpdir)
+
+            self.assertEqual(
+                [e[0] for e in events],
+                ["job_started", "job_finished", "job_started", "job_failed"],
+                events,
+            )
+            self.assertEqual(events[0][1], (str(good_clip), 1, 2))
+            self.assertEqual(events[2][1], (str(bad_clip), 2, 2))
+            self.assertEqual(events[3][1][0], str(bad_clip))
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 class TestAtomicOutputRename(unittest.TestCase):
     """ffmpeg now writes to a hidden temp name during the encode and this
     only ever gets renamed onto the real output name after a confirmed

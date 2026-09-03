@@ -613,6 +613,40 @@ QToolTip {
     padding: 4px 6px;
 }
 
+/* The queue row right-click menu (Reveal Source/Output File) had no rule
+   here at all, so it fell through to Fusion's own unstyled popup look --
+   confirmed by real screenshot: a plain black surface, unreadable against
+   this app's light theme (Dark happened to still read fine, coincidence
+   of Fusion's own default being dark, not this app's palette). Same
+   background/border/selection vocabulary as QComboBox QAbstractItemView
+   above -- both are the same kind of floating popup-over-content surface. */
+QMenu {
+    background-color: $BG_PANEL;
+    border: 1px solid $BORDER;
+    padding: 4px;
+}
+
+QMenu::item {
+    padding: 6px 24px 6px 12px;
+    border-radius: 4px;
+    color: $TEXT_PRIMARY;
+}
+
+QMenu::item:selected {
+    background-color: $ACCENT;
+    color: $TEXT_ON_ACCENT;
+}
+
+QMenu::item:disabled {
+    color: $TEXT_DISABLED;
+}
+
+QMenu::separator {
+    height: 1px;
+    background: $BORDER;
+    margin: 4px 8px;
+}
+
 /* Chrome (this footer strip) should read as a distinct layer from
    content, not blend into $BG_WINDOW the way it did before -- it had no
    background rule of its own at all. $BG_CONTROL (already used for

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSettings, QProcess
-from PySide6.QtGui import QIcon, QPalette
+from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTreeWidgetItem, QLabel, QInputDialog, QMessageBox,
 )
@@ -26,7 +26,7 @@ from queue_widget import (
 from theming import (
     _current_theme_palette, _system_accent_tokens, _load_stylesheet,
     _ComboPopupBackgroundFilter, _FocusVisibleFilter,
-    _validate_theme_choice, _resolve_theme,
+    _validate_theme_choice, _resolve_theme, _fuzzy_text_color,
 )
 from ui_builder import _UiBuilderMixin
 from queue_controller import _QueueControllerMixin
@@ -48,6 +48,17 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._current_running_item: QTreeWidgetItem | None = None
         self._syncing_controls_from_selection = False
         self._queue_editable = True
+        # Counts remaining outstanding probes (interlace detection + source
+        # probe, starts at 2) for a file added while a run is already in
+        # progress -- see add_files/_maybe_submit_mid_run_job in
+        # queue_controller.py. Only ever populated for a genuinely mid-run
+        # add; an item added while idle is never in here.
+        self._pending_mid_run_items: dict[QTreeWidgetItem, int] = {}
+        # Queue-structure undo/redo (add/remove/clear/reorder) -- see
+        # _push_undo_snapshot/_undo/_redo in queue_controller.py. Each
+        # entry is a full snapshot (list of job dicts), not a diff.
+        self._undo_stack: list[list[dict]] = []
+        self._redo_stack: list[list[dict]] = []
         self._detection_processes: list[QProcess] = []  # keep references alive; Qt won't
         self.output_dir = Path.home() / "Videos" / "transcoded"
         self._qsettings = QSettings("TITAN-i", "Transcoder")
@@ -69,6 +80,20 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self.queue.all_finished.connect(self._on_all_finished)
 
         self._build_ui()
+        # Ctrl+Z/Ctrl+Shift+Z -- default Qt.WindowShortcut context, fires
+        # regardless of which child widget has focus, matching how
+        # document-level undo normally behaves. Queue-structure only (add/
+        # remove/clear/reorder) -- see _push_undo_snapshot/_undo/_redo in
+        # queue_controller.py.
+        QShortcut(QKeySequence("Ctrl+Z"), self, self._undo)
+        QShortcut(QKeySequence("Ctrl+Shift+Z"), self, self._redo)
+        # Delete removes the selected queue row(s) -- scoped to queue_list
+        # itself (Qt.WidgetWithChildrenShortcut, not the window-wide
+        # default above) so Delete/Backspace still edits text normally
+        # when output_edit or a dialog field has focus instead of
+        # misfiring as "remove queue item".
+        delete_shortcut = QShortcut(QKeySequence(Qt.Key_Delete), self.queue_list, self._remove_selected)
+        delete_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         # Deferred to here rather than set inline at the end of
         # _build_audio_tab(), same reason quality_slider/speed_slider's real
         # initial values are set later too (via _on_encoder_changed below),
@@ -135,18 +160,14 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             self._refresh_fuzzy_caption_style()
 
     def _apply_fuzzy_caption_style(self, label: QLabel):
-        # Matches "Drag video files here..." (DropTreeWidget.paintEvent)
-        # exactly, pulled from the same real QPalette role rather than a
-        # guessed/hardcoded gray -- confirmed via real screenshot that the
-        # fuzzy captions were rendering full-strength $TEXT_PRIMARY (QSS's
-        # blanket QWidget{color:...} rule) while the placeholder, painted
-        # directly with QPainter and never touched by QSS, was visibly
-        # muted. Applying PlaceholderText here keeps both looking the same
-        # kind of secondary/explanatory text, and staying correct across
-        # every theme including "Match System" since it's read fresh each
-        # call rather than baked in once.
-        color = self.palette().color(QPalette.PlaceholderText).name()
-        label.setStyleSheet(f"font-size: 9pt; color: {color};")
+        # Matches "Drag video files here..." (DropTreeWidget.paintEvent) --
+        # both go through theming._fuzzy_text_color so they stay the same
+        # kind of secondary/explanatory text, and both fall back the same
+        # way if QPalette.PlaceholderText isn't actually distinct from
+        # regular text on this session (see that function's docstring).
+        # Read fresh each call rather than baked in once, so this stays
+        # correct across every theme including "Match System".
+        label.setStyleSheet(f"font-size: 9pt; color: {_fuzzy_text_color(self)};")
 
     def _refresh_fuzzy_caption_style(self):
         for label in (self.quality_tier_label, self.speed_tier_label, self.audio_bitrate_tier_label):
@@ -376,6 +397,12 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             job = item.data(STATUS_COL, Qt.UserRole)
             job.update(settings)
             item.setData(STATUS_COL, Qt.UserRole, job)
+            # Otherwise the tooltip goes stale the moment a selected row's
+            # settings actually change -- still showing whatever was true
+            # when the row was first added.
+            tooltip = self._row_tooltip(job)
+            for col in range(len(QUEUE_COLUMN_HEADERS)):
+                item.setToolTip(col, tooltip)
 
     def _on_queue_selection_changed(self):
         selected = self.queue_list.selectedItems()
@@ -402,8 +429,15 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
                 # A real file is queued -- probe its actual audio track and
                 # duration (both cached, so dragging a slider doesn't shell
                 # out to ffprobe repeatedly) instead of guessing, so the
-                # preview matches what will really run.
-                first_path = self.queue_list.topLevelItem(0).data(STATUS_COL, Qt.UserRole)["path"]
+                # preview matches what will really run. Whichever row is
+                # actually selected (the one these settings apply to and
+                # came from -- see _on_queue_selection_changed), not always
+                # row 0 -- confirmed a real bug otherwise: selecting a
+                # different file to edit its settings still showed the
+                # *first* queued file's duration/audio in the preview.
+                selected = self.queue_list.selectedItems()
+                reference_item = selected[0] if selected else self.queue_list.topLevelItem(0)
+                first_path = reference_item.data(STATUS_COL, Qt.UserRole)["path"]
                 audio_codec = self._preview_audio_codec(first_path, settings["audio_track"])
                 # Only probed when downmix is actually checked -- same
                 # "don't pay for it unless it matters" reasoning as

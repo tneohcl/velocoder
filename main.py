@@ -114,9 +114,46 @@ class DropTreeWidget(QTreeWidget):
             paths = [Path(u.toLocalFile()) for u in event.mimeData().urls() if u.isLocalFile()]
             self._on_files_dropped(paths)
         elif not self.reorder_locked:
-            super().dropEvent(event)  # internal row-reorder drop
+            self._reorder_rows(event)
         else:
             event.ignore()
+
+    def _reorder_rows(self, event):
+        # QTreeWidget's own InternalMove drop handling is built for real
+        # trees: dropping squarely on top of a row (rather than near its
+        # top/bottom edge) reparents the dragged row as a CHILD of the
+        # target instead of reordering siblings. This list is flat by
+        # design (setRootIsDecorated(False), items never expanded), so
+        # that child silently stops being drawn -- it reads as the
+        # dragged file "disappearing". Reimplemented as a manual
+        # top-level-only move so every drop, anywhere on a row, is a
+        # sibling reorder and nothing ever becomes a child.
+        selected = sorted(self.selectedItems(), key=self.indexOfTopLevelItem)
+        if not selected:
+            event.ignore()
+            return
+
+        pos = event.position().toPoint()
+        target_item = self.itemAt(pos)
+        if target_item is None or target_item in selected:
+            insert_at = self.topLevelItemCount()
+        else:
+            insert_at = self.indexOfTopLevelItem(target_item)
+            row_rect = self.visualItemRect(target_item)
+            if pos.y() >= row_rect.center().y():
+                insert_at += 1  # dropped on the lower half: insert after
+
+        removed_before_target = sum(
+            1 for it in selected if self.indexOfTopLevelItem(it) < insert_at
+        )
+        for it in selected:
+            self.takeTopLevelItem(self.indexOfTopLevelItem(it))
+        insert_at = max(0, min(insert_at - removed_before_target, self.topLevelItemCount()))
+        for offset, it in enumerate(selected):
+            self.insertTopLevelItem(insert_at + offset, it)
+            it.setSelected(True)
+
+        event.acceptProposedAction()
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -234,11 +271,13 @@ class MainWindow(QMainWindow):
         self._qsettings.setValue("theme_choice", choice)
         _load_stylesheet(QApplication.instance(), _resolve_theme(choice))
         self._refresh_themed_icons()
+        self._refresh_fuzzy_caption_style()
 
     def _on_system_theme_changed(self, _scheme):
         if self._theme_choice == "system":
             _load_stylesheet(QApplication.instance(), _resolve_theme("system"))
             self._refresh_themed_icons()
+            self._refresh_fuzzy_caption_style()
 
     def _build_status_bar(self):
         # A qBittorrent-style footer strip: ambient, persistent, out of the
@@ -326,6 +365,24 @@ class MainWindow(QMainWindow):
         row.addWidget(self.save_btn)
         row.addWidget(self.delete_btn)
         return row
+
+    def _apply_fuzzy_caption_style(self, label: QLabel):
+        # Matches "Drag video files here..." (DropTreeWidget.paintEvent)
+        # exactly, pulled from the same real QPalette role rather than a
+        # guessed/hardcoded gray -- confirmed via real screenshot that the
+        # fuzzy captions were rendering full-strength $TEXT_PRIMARY (QSS's
+        # blanket QWidget{color:...} rule) while the placeholder, painted
+        # directly with QPainter and never touched by QSS, was visibly
+        # muted. Applying PlaceholderText here keeps both looking the same
+        # kind of secondary/explanatory text, and staying correct across
+        # every theme including "Match System" since it's read fresh each
+        # call rather than baked in once.
+        color = self.palette().color(QPalette.PlaceholderText).name()
+        label.setStyleSheet(f"font-size: 9pt; color: {color};")
+
+    def _refresh_fuzzy_caption_style(self):
+        for label in (self.quality_tier_label, self.speed_tier_label, self.audio_bitrate_tier_label):
+            self._apply_fuzzy_caption_style(label)
 
     def _themed_icon(self, name: str) -> QIcon:
         theme = _resolve_theme(self._theme_choice)
@@ -569,7 +626,7 @@ class MainWindow(QMainWindow):
         quality_detail_row = QHBoxLayout()
         self.quality_tier_label = QLabel()
         self.quality_tier_label.setAlignment(Qt.AlignCenter)
-        self.quality_tier_label.setStyleSheet("font-size: 9pt;")
+        self._apply_fuzzy_caption_style(self.quality_tier_label)
         self.size_estimate_label = QLabel()
         self.size_estimate_label.setAlignment(Qt.AlignCenter)
         self.size_estimate_label.setStyleSheet("font-size: 9pt;")
@@ -586,6 +643,10 @@ class MainWindow(QMainWindow):
         quality_group.setObjectName("fuzzyGroup")
         quality_group_layout = QVBoxLayout(quality_group)
         quality_group_layout.setContentsMargins(8, 6, 8, 6)
+        # Default QVBoxLayout spacing (Fusion's ~11px) read as the caption
+        # floating unrelated to the slider above it rather than explaining
+        # it -- confirmed by screenshot.
+        quality_group_layout.setSpacing(2)
         quality_group_layout.addLayout(quality_row)
         quality_group_layout.addLayout(quality_detail_row)
         form.addRow("Quality:", quality_group)
@@ -633,13 +694,14 @@ class MainWindow(QMainWindow):
         self.speed_tier_label = QLabel()
         self.speed_tier_label.setAlignment(Qt.AlignCenter)
         self.speed_tier_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.speed_tier_label.setStyleSheet("font-size: 9pt;")
+        self._apply_fuzzy_caption_style(self.speed_tier_label)
 
         # Same outlined-box grouping as Quality above, same #fuzzyGroup rule.
         speed_group = QWidget()
         speed_group.setObjectName("fuzzyGroup")
         speed_group_layout = QVBoxLayout(speed_group)
         speed_group_layout.setContentsMargins(8, 6, 8, 6)
+        speed_group_layout.setSpacing(2)  # see Quality's identical fix above
         speed_group_layout.addLayout(speed_row)
         speed_group_layout.addWidget(self.speed_tier_label)
         form.addRow("Speed:", speed_group)
@@ -730,7 +792,7 @@ class MainWindow(QMainWindow):
 
         self.audio_bitrate_tier_label = QLabel()
         self.audio_bitrate_tier_label.setAlignment(Qt.AlignCenter)
-        self.audio_bitrate_tier_label.setStyleSheet("font-size: 9pt;")
+        self._apply_fuzzy_caption_style(self.audio_bitrate_tier_label)
 
         # Same slider-plus-fuzzy-caption outlined box as Quality/Speed on
         # the Video tab (#fuzzyGroup in style.qss) -- same reasoning: the
@@ -740,6 +802,7 @@ class MainWindow(QMainWindow):
         audio_bitrate_group.setObjectName("fuzzyGroup")
         audio_bitrate_group_layout = QVBoxLayout(audio_bitrate_group)
         audio_bitrate_group_layout.setContentsMargins(8, 6, 8, 6)
+        audio_bitrate_group_layout.setSpacing(2)  # see Quality's identical fix above
         audio_bitrate_group_layout.addLayout(audio_bitrate_row)
         audio_bitrate_group_layout.addWidget(self.audio_bitrate_tier_label)
         form.addRow("Audio bitrate (if transcoded):", audio_bitrate_group)
@@ -944,13 +1007,15 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _tier_label(fraction: float, *labels: str) -> str:
-        # Variadic rather than a fixed low/mid/high trio -- Quality passes
-        # 6 of these (a 3-way split felt too coarse dragging across a
-        # ~50-value ICQ/CQP/CRF range: reported directly, a wide stretch of
-        # the slider before the caption underneath ever changed), Speed
-        # still passes 3 (its own range is only 1-7, where 6 buckets would
-        # be finer than the slider itself can even land on). Same bucketing
-        # math either way, just over however many labels got passed.
+        # Variadic rather than a fixed low/mid/high trio -- both Quality and
+        # Speed pass 6 of these now (a 3-way split felt too coarse: Quality
+        # dragging across a ~50-value ICQ/CQP/CRF range, Speed just because
+        # 3 buckets was reported as too coarse directly). Speed's own range
+        # is only 1-7 (VAAPI) / 10 presets (x265), so 6 buckets lands closer
+        # to one caption per real slider stop than a fuzzy zone -- fine,
+        # same reasoning Quality already accepted for its own case. Same
+        # bucketing math either way, just over however many labels got
+        # passed.
         bucket = min(int(fraction * len(labels)), len(labels) - 1)
         return labels[bucket]
 
@@ -963,15 +1028,18 @@ class MainWindow(QMainWindow):
         # first. "Movies & TV" and the near-lossless/lighter-footage labels
         # either side of it are the original 3-tier set, kept as the
         # anchors readers may already recognize; the other 3 fill in the
-        # gaps a plain 3-way split left too wide.
+        # gaps a plain 3-way split left too wide. Trimmed to a short
+        # "Label -- descriptor" pair per tier -- the original wordier
+        # phrasing read as too long next to Speed's captions once both
+        # sat in the same size fuzzyGroup box.
         self.quality_tier_label.setText(self._tier_label(
             self._fraction_of(self.quality_slider),
-            "Production / archival -- near-lossless, largest files",
-            "High quality -- crisp detail, larger files",
-            "Movies & TV -- a solid general-purpose target",
-            "Streaming quality -- efficient, close to source",
-            "Documentary / lighter footage -- more compression, smaller files",
-            "Heavy compression -- smallest files, visible quality loss",
+            "Archival -- near-lossless",
+            "High quality -- crisp detail",
+            "Movies & TV -- general purpose",
+            "Streaming -- efficient",
+            "Lighter footage -- more compression",
+            "Heavy compression -- visible quality loss",
         ))
         self._on_control_changed()
 
@@ -1005,27 +1073,35 @@ class MainWindow(QMainWindow):
         # Fraction 0 = compression_level 1 = confirmed (real timing test:
         # 22.4s vs. 11.3s at level 7, smaller output too) the slowest and
         # most size-efficient end, not just the visually-leftmost one.
+        # "Thorough"/"Balanced"/"Fast" are the original 3-tier set, kept as
+        # anchors; the other 3 fill the gaps, same expansion Quality got.
         self.speed_tier_label.setText(self._tier_label(
             self._fraction_of(self.speed_slider),
-            "Thorough -- best efficiency, worth it for archival masters",
-            "Balanced -- a solid default for most encodes",
-            "Fast -- good for quick previews or large batches",
+            "Maximum effort -- best compression",
+            "Thorough -- best efficiency",
+            "Careful -- strong efficiency",
+            "Balanced -- solid default",
+            "Quick -- fast turnaround",
+            "Fast -- quick previews",
         ))
         self._on_control_changed()
 
     def _on_speed_x265_slider_changed(self):
         preset = X265_PRESETS[self.speed_x265_slider.value()]
         self.speed_x265_label.setText(preset)
-        # Same 3 captions as the VAAPI slider above (same axis, same
+        # Same 6 captions as the VAAPI slider above (same axis, same
         # meaning, just a different underlying scale) -- but in the
         # opposite fraction order: X265_PRESETS is already sorted fastest
         # to slowest (ultrafast..placebo), so index 0 is the *fast* end
         # here, where compression_level 1 was the *slow* end there.
         self.speed_tier_label.setText(self._tier_label(
             self._fraction_of(self.speed_x265_slider),
-            "Fast -- good for quick previews or large batches",
-            "Balanced -- a solid default for most encodes",
-            "Thorough -- best efficiency, worth it for archival masters",
+            "Fast -- quick previews",
+            "Quick -- fast turnaround",
+            "Balanced -- solid default",
+            "Careful -- strong efficiency",
+            "Thorough -- best efficiency",
+            "Maximum effort -- best compression",
         ))
         self._on_control_changed()
 

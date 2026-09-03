@@ -21,8 +21,8 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from PySide6.QtCore import QEvent, QEventLoop, Qt, QTimer  # noqa: E402
-from PySide6.QtGui import QColor, QFocusEvent, QPalette  # noqa: E402
+from PySide6.QtCore import QEvent, QEventLoop, QMimeData, QPoint, Qt, QTimer  # noqa: E402
+from PySide6.QtGui import QColor, QDropEvent, QFocusEvent, QPalette  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
@@ -844,7 +844,29 @@ class TestX265SpeedSlider(unittest.TestCase):
         window.speed_x265_slider.setValue(0)
         self.assertIn("Fast", window.speed_tier_label.text())
         window.speed_x265_slider.setValue(len(main.X265_PRESETS) - 1)
-        self.assertIn("Thorough", window.speed_tier_label.text())
+        self.assertIn("Maximum effort", window.speed_tier_label.text())
+
+    def test_six_tiers_match_the_vaapi_slider_reversed(self):
+        # Speed's caption list was expanded from 3 to 6 tiers (matching
+        # Quality's own earlier expansion), reusing the same 6 captions for
+        # both engines just in opposite order -- confirmed here rather than
+        # assumed, since a copy-paste ordering mistake between the two
+        # _tier_label() calls wouldn't show up any other way.
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("CPU")
+        x265_captions = []
+        for i in range(len(main.X265_PRESETS)):
+            window.speed_x265_slider.setValue(i)
+            x265_captions.append(window.speed_tier_label.text())
+
+        window.encoder_combo.setCurrentText("Intel (iGPU)")
+        vaapi_captions = []
+        for i in range(window.speed_slider.minimum(), window.speed_slider.maximum() + 1):
+            window.speed_slider.setValue(i)
+            vaapi_captions.append(window.speed_tier_label.text())
+
+        self.assertEqual(x265_captions[0], vaapi_captions[-1])
+        self.assertEqual(x265_captions[-1], vaapi_captions[0])
 
 
 class TestAudioDownmix(unittest.TestCase):
@@ -1428,6 +1450,105 @@ class TestQueueLockingDuringRun(unittest.TestCase):
         window._on_all_finished()
         self.assertTrue(window.clear_btn.isEnabled())
         self.assertTrue(window._queue_editable)
+
+
+class TestQueueDragReorder(unittest.TestCase):
+    """Regression coverage for a real, user-reported bug: dragging a queue
+    row and dropping it squarely on top of another row (not near its top/
+    bottom edge) made the dragged file vanish from the list. Root cause:
+    QTreeWidget's built-in InternalMove drop handling treats a drop "on" a
+    row as "make this a child of that row" -- correct for a real tree, but
+    this list is deliberately flat (setRootIsDecorated(False), items never
+    expanded), so the reparented row silently stopped being drawn.
+    DropTreeWidget._reorder_rows() replaces that with a manual top-level-
+    only move: every drop, anywhere on a row, is a sibling reorder."""
+
+    @staticmethod
+    def _add_rows(window, names):
+        # A row without job data crashes _on_queue_selection_changed the
+        # moment it gets selected (as every row here does, via
+        # setSelected() in _drop_at) -- give each a minimal real job dict,
+        # same shape TestQueueLockingDuringRun's fake rows use.
+        for name in names:
+            item = main.QTreeWidgetItem([name])
+            item.setData(main.STATUS_COL, Qt.UserRole,
+                         {"path": Path(name), **window._current_settings()})
+            window.queue_list.addTopLevelItem(item)
+
+    @staticmethod
+    def _names(window):
+        return [window.queue_list.topLevelItem(i).text(0)
+                for i in range(window.queue_list.topLevelItemCount())]
+
+    @staticmethod
+    def _drop_at(window, pos, selected_names):
+        queue_list = window.queue_list
+        for i in range(queue_list.topLevelItemCount()):
+            item = queue_list.topLevelItem(i)
+            item.setSelected(item.text(0) in selected_names)
+        # QDropEvent only stores a raw pointer to the QMimeData it's given
+        # -- it doesn't take ownership -- so the caller has to keep a real
+        # Python reference alive for as long as the event is in use, or
+        # PySide6 garbage-collects it out from under the event (segfault,
+        # confirmed the hard way while writing this test).
+        mime = QMimeData()
+        event = QDropEvent(QPoint(pos), Qt.MoveAction, mime, Qt.NoButton, Qt.NoModifier)
+        queue_list.dropEvent(event)
+        return event
+
+    def test_dropping_squarely_on_a_row_does_not_delete_it_reorders_instead(self):
+        window = main.MainWindow()
+        window.show()
+        self._add_rows(window, ["a", "b", "c"])
+        target_rect = window.queue_list.visualItemRect(window.queue_list.topLevelItem(2))
+        self._drop_at(window, target_rect.center(), ["a"])
+        self.assertEqual(self._names(window), ["b", "c", "a"])
+
+    def test_dropping_on_the_top_half_of_a_row_inserts_before_it(self):
+        window = main.MainWindow()
+        window.show()
+        self._add_rows(window, ["a", "b", "c"])
+        target_rect = window.queue_list.visualItemRect(window.queue_list.topLevelItem(0))
+        pos = QPoint(target_rect.center().x(), target_rect.top())
+        self._drop_at(window, pos, ["c"])
+        self.assertEqual(self._names(window), ["c", "a", "b"])
+
+    def test_dropping_below_the_last_row_appends_at_the_end(self):
+        window = main.MainWindow()
+        window.show()
+        self._add_rows(window, ["a", "b", "c"])
+        last_rect = window.queue_list.visualItemRect(window.queue_list.topLevelItem(2))
+        pos = QPoint(last_rect.center().x(), last_rect.bottom() + 50)
+        self._drop_at(window, pos, ["a"])
+        self.assertEqual(self._names(window), ["b", "c", "a"])
+
+    def test_multi_selected_rows_preserve_relative_order_when_reordered(self):
+        window = main.MainWindow()
+        window.show()
+        self._add_rows(window, ["a", "b", "c", "d"])
+        last_rect = window.queue_list.visualItemRect(window.queue_list.topLevelItem(3))
+        pos = QPoint(last_rect.center().x(), last_rect.bottom() + 50)
+        self._drop_at(window, pos, ["a", "c"])
+        self.assertEqual(self._names(window), ["b", "d", "a", "c"])
+
+    def test_dropping_a_selected_row_onto_another_selected_row_keeps_every_row(self):
+        window = main.MainWindow()
+        window.show()
+        self._add_rows(window, ["a", "b", "c"])
+        target_rect = window.queue_list.visualItemRect(window.queue_list.topLevelItem(2))
+        self._drop_at(window, target_rect.center(), ["a", "c"])
+        self.assertEqual(set(self._names(window)), {"a", "b", "c"})
+        self.assertEqual(window.queue_list.topLevelItemCount(), 3)
+
+    def test_reorder_locked_blocks_the_drop_entirely(self):
+        window = main.MainWindow()
+        window.show()
+        self._add_rows(window, ["a", "b", "c"])
+        window.queue_list.reorder_locked = True
+        target_rect = window.queue_list.visualItemRect(window.queue_list.topLevelItem(2))
+        event = self._drop_at(window, target_rect.center(), ["a"])
+        self.assertEqual(self._names(window), ["a", "b", "c"])
+        self.assertFalse(event.isAccepted())
 
 
 class TestLiveAppendDuringRun(unittest.TestCase):

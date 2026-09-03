@@ -311,8 +311,8 @@ this is presentation only. See `constants.RC_MODE_FRIENDLY` for the mapping.
   `setInvertedControls` flip the slider so **left is worse/smaller, right is
   better/larger** — matching every rc_mode's underlying scale direction is
   the opposite of intuitive otherwise (e.g. ICQ/CRF: a *lower* number means
-  *better* quality). A fuzzy tier label underneath ("Movies & TV — a solid
-  general-purpose target", etc., centered under the slider) names what the
+  *better* quality). A fuzzy tier label underneath ("Movies & TV — general
+  purpose", etc., centered under the slider) names what the
   current position is actually good for, and a hover tooltip spells out
   which end is which, so the raw number was never the only thing to go on
   (the quality slider's tooltip is static; the speed slider's below
@@ -374,10 +374,11 @@ this is presentation only. See `constants.RC_MODE_FRIENDLY` for the mapping.
   landing on the visual left is already correct without flipping anything
   — an index into that list, not a value with arithmetic meaning of its
   own, same reasoning as Audio Bitrate's slider below. A shared fuzzy tier
-  label under whichever slider is showing ("Thorough — best efficiency,
-  worth it for archival masters", etc., same 3 captions either way, just
-  opposite fraction direction since the two underlying scales run opposite
-  ways) sits in the same `#fuzzyGroup` outlined box as Quality above, and
+  label under whichever slider is showing ("Thorough — best efficiency",
+  etc., same 6 captions either way — expanded from an original 3, same
+  reasoning as Quality's own expansion above — just opposite fraction
+  direction since the two underlying scales run opposite ways) sits in the
+  same `#fuzzyGroup` outlined box as Quality above, and
   is unconditionally visible now — there's always a real slider to caption
   regardless of which encoder is selected, so it no longer needs to hide
   for one of them the way it did back when x265 only had a plain dropdown.

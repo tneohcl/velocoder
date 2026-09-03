@@ -1005,7 +1005,7 @@ class TestX265SpeedSlider(unittest.TestCase):
         window.encoder_combo.setCurrentText("CPU")
         window.speed_x265_slider.setValue(main.X265_PRESETS.index("veryslow"))
         self.assertEqual(window._current_settings()["speed"], "veryslow")
-        self.assertEqual(window.speed_x265_label.text(), "veryslow")
+        self.assertEqual(window.speed_x265_label.text(), "(veryslow)")
 
     def test_apply_settings_sets_the_slider_to_the_matching_index(self):
         window = main.MainWindow()

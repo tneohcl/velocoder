@@ -256,6 +256,16 @@ class _UiBuilderMixin:
         for _, _, label in ENCODERS:
             self.encoder_combo.addItem(label)
         self.encoder_combo.currentIndexChanged.connect(self._on_encoder_changed)
+        self.encoder_combo.setToolTip(
+            "CPU (libx265, software): best quality-per-bitrate, but far\n"
+            "slower -- minutes to hours depending on length and settings.\n"
+            "Intel (iGPU) / AMD (GPU) (hevc_vaapi, hardware): much\n"
+            "faster and barely touches the CPU, but generally trades away\n"
+            "some quality-per-bitrate versus a well-tuned x265 software\n"
+            "encode at the same file size.\n"
+            "Pick hardware for speed or large batches; CPU when quality\n"
+            "matters most."
+        )
         form.addRow("Encoder:", self.encoder_combo)
 
         # rc_mode_combo stays the source of truth (everything downstream --
@@ -434,6 +444,17 @@ class _UiBuilderMixin:
         self.tune_combo = QComboBox()
         self.tune_combo.addItems(X265_TUNES)
         self.tune_combo.currentIndexChanged.connect(self._on_control_changed)
+        self.tune_combo.setToolTip(
+            "x265's built-in tuning presets -- \"None\" (the default) is\n"
+            "right for most sources. Only switch if one clearly applies:\n"
+            "animation -- flat colors, sharp edges (cartoons/anime).\n"
+            "grain -- preserves film grain instead of smoothing it away.\n"
+            "fastdecode -- eases decoding for low-power playback devices.\n"
+            "zerolatency -- minimizes encode delay for live streaming,\n"
+            "not useful for this app's batch transcodes.\n"
+            "psnr/ssim -- optimizes for a benchmark metric, not\n"
+            "perceptual quality -- rarely what you actually want."
+        )
         form.addRow("Tune (x265 only):", self.tune_combo)
 
         self.deinterlace_check = QCheckBox("Deinterlace (interlaced or telecined source)")

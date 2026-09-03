@@ -353,7 +353,11 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
 
     def _on_speed_x265_slider_changed(self):
         preset = X265_PRESETS[self.speed_x265_slider.value()]
-        self.speed_x265_label.setText(preset)
+        # Parenthesized, matching quality_label's own "23 (CRF)" convention
+        # just above -- sitting bare right after speed_thorough_label's
+        # "More Thorough" (no separator between them) read as one run-on
+        # phrase, "More Thorough medium". Reported live.
+        self.speed_x265_label.setText(f"({preset})")
         # Same 6 captions as the VAAPI slider above (same axis, same
         # meaning, just a different underlying scale) -- but in the
         # opposite fraction order: X265_PRESETS is already sorted fastest

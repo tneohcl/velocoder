@@ -72,11 +72,17 @@ def _system_accent_tokens(app) -> dict:
     }
 
 
-def _fuzzy_text_color(widget) -> str:
+def _fuzzy_text_color(widget) -> QColor:
     """Muted-text color for de-emphasized captions/placeholders -- the
     queue's empty-state "Drag video files here..." text (queue_widget.py)
     and the quality/speed/audio-bitrate tier captions (main.py) both call
     this rather than reading QPalette.PlaceholderText directly.
+
+    Returns a real QColor, not a string -- queue_widget.py's paintEvent
+    needs one directly for painter.setPen(), and re-parsing a formatted
+    string back into a QColor turned out to be its own bug (see below):
+    each caller that needs a string (main.py's QSS `color:` property)
+    formats this return value itself instead.
 
     QPalette.PlaceholderText was trusted directly at first -- confirmed
     correct via a real screenshot on a real desktop session -- but two
@@ -97,19 +103,29 @@ def _fuzzy_text_color(widget) -> str:
        any translucent PlaceholderText role loses its muting through
        `.name()` regardless of environment.
 
-    Fixed by keeping the alpha channel (rgba(), not hex) whenever the
-    role is genuinely translucent or otherwise distinct from WindowText,
-    and only falling back to this app's own $TEXT_SECONDARY token for the
-    genuine "nothing distinct here at all" case -- same defensive shape
-    as _system_accent_tokens' own accent fallback above: don't trust a
-    system palette role blindly, fall back rather than silently losing
-    the visual hierarchy the muted color exists for.
+    Fixed by keeping the alpha channel (a real QColor, not hex) whenever
+    the role is genuinely translucent or otherwise distinct from
+    WindowText, and only falling back to this app's own $TEXT_SECONDARY
+    token for the genuine "nothing distinct here at all" case -- same
+    defensive shape as _system_accent_tokens' own accent fallback above:
+    don't trust a system palette role blindly, fall back rather than
+    silently losing the visual hierarchy the muted color exists for.
+
+    That fallback used to be formatted as a "rgba(...)" CSS string here
+    (fine for a QSS `color:` property, which does parse that syntax) --
+    but queue_widget.py's paintEvent needed a real QColor for
+    painter.setPen(), and re-wrapped that same string in QColor(...) to
+    get one. QColor's own string constructor does NOT understand CSS
+    rgba() syntax (confirmed directly: QColor("rgba(20, 20, 20, 0.5)")
+    comes back invalid, i.e. solid black) -- reported live as "always
+    black text" in both themes. Returning the QColor itself sidesteps
+    that string round-trip entirely.
     """
     palette = widget.palette()
     placeholder = palette.color(QPalette.PlaceholderText)
     if placeholder != palette.color(QPalette.WindowText):
-        return f"rgba({placeholder.red()}, {placeholder.green()}, {placeholder.blue()}, {placeholder.alphaF():.3f})"
-    return _current_theme_palette.get("TEXT_SECONDARY", "#8b93a1")
+        return placeholder
+    return QColor(_current_theme_palette.get("TEXT_SECONDARY", "#8b93a1"))
 
 
 def _load_stylesheet(app, theme_name: str = "dark", style_path: Path = Path(__file__).parent / "style.qss"):

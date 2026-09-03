@@ -377,12 +377,20 @@ class TestFuzzyTextColor(unittest.TestCase):
         # fully-opaque, indistinguishable-from-regular-text color.
         widget = self._widget_with_roles(QColor(20, 20, 20), QColor(20, 20, 20, 128))
         result = theming._fuzzy_text_color(widget)
-        self.assertEqual(result, "rgba(20, 20, 20, 0.502)")
+        # A real, directly-usable QColor -- not a string. Reported live as
+        # "always black text" in both themes when this used to return a
+        # "rgba(...)" CSS string instead: queue_widget.py's paintEvent
+        # re-wrapped that string in QColor(...) to get a pen color, and
+        # QColor's own string constructor does not understand CSS rgba()
+        # syntax at all -- it silently comes back invalid (== black),
+        # confirmed directly against this exact string.
+        self.assertTrue(result.isValid())
+        self.assertEqual((result.red(), result.green(), result.blue(), result.alpha()), (20, 20, 20, 128))
 
     def test_distinct_solid_placeholder_role_is_honored_as_is(self):
         widget = self._widget_with_roles(QColor(20, 20, 20), QColor(120, 120, 120))
         result = theming._fuzzy_text_color(widget)
-        self.assertEqual(result, "rgba(120, 120, 120, 1.000)")
+        self.assertEqual((result.red(), result.green(), result.blue(), result.alpha()), (120, 120, 120, 255))
 
     def test_placeholder_identical_to_window_text_falls_back_to_text_secondary(self):
         # The genuine "nothing distinct here at all" case (both RGB and
@@ -391,7 +399,7 @@ class TestFuzzyTextColor(unittest.TestCase):
         widget = self._widget_with_roles(QColor(20, 20, 20), QColor(20, 20, 20))
         with patch.dict(theming._current_theme_palette, {"TEXT_SECONDARY": "#6b7280"}):
             result = theming._fuzzy_text_color(widget)
-        self.assertEqual(result, "#6b7280")
+        self.assertEqual(result.name(), "#6b7280")
 
 
 class TestStartupOrdering(unittest.TestCase):

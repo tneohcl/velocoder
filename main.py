@@ -166,8 +166,15 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # way if QPalette.PlaceholderText isn't actually distinct from
         # regular text on this session (see that function's docstring).
         # Read fresh each call rather than baked in once, so this stays
-        # correct across every theme including "Match System".
-        label.setStyleSheet(f"font-size: 9pt; color: {_fuzzy_text_color(self)};")
+        # correct across every theme including "Match System". QSS's
+        # `color:` property does understand rgba() -- unlike QColor's own
+        # string constructor, which is what tripped this up in
+        # queue_widget.py (see _fuzzy_text_color's docstring) -- so
+        # formatting it here, for this one QSS-consuming call site, is
+        # safe.
+        color = _fuzzy_text_color(self)
+        rgba = f"rgba({color.red()}, {color.green()}, {color.blue()}, {color.alphaF():.3f})"
+        label.setStyleSheet(f"font-size: 9pt; color: {rgba};")
 
     def _refresh_fuzzy_caption_style(self):
         for label in (self.quality_tier_label, self.speed_tier_label, self.audio_bitrate_tier_label):

@@ -4,7 +4,7 @@ MainWindow coupling to carry along."""
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QAbstractItemView, QTreeWidget
 
 from theming import _fuzzy_text_color
@@ -135,6 +135,6 @@ class DropTreeWidget(QTreeWidget):
         super().paintEvent(event)
         if self.topLevelItemCount() == 0:
             painter = QPainter(self.viewport())
-            painter.setPen(QColor(_fuzzy_text_color(self)))
+            painter.setPen(_fuzzy_text_color(self))
             painter.drawText(self.viewport().rect(), Qt.AlignCenter, self.PLACEHOLDER_TEXT)
             painter.end()

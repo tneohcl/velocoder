@@ -400,7 +400,7 @@ class _UiBuilderMixin:
         # above: X265_PRESETS is already ordered fastest-to-slowest
         # (ultrafast..placebo), so index 0 landing on the visual left and
         # the last index on the right is already the correct "Faster ...
-        # More Thorough" direction without flipping anything.
+        # Slower" direction without flipping anything.
         self.speed_x265_slider.setRange(0, len(X265_PRESETS) - 1)
         self.speed_x265_slider.setToolTip(
             "Left: faster encode.\n"
@@ -410,7 +410,13 @@ class _UiBuilderMixin:
         self.speed_x265_slider.valueChanged.connect(self._on_speed_x265_slider_changed)
         speed_row.addWidget(self.speed_x265_slider, 1)
 
-        self.speed_thorough_label = QLabel("More Thorough")
+        # "Slower" (not "More Thorough") -- plain opposite of "Faster",
+        # layman-friendly. The *why* (smaller file / better efficiency at
+        # this end) already lives in speed_tier_label's own caption right
+        # underneath ("Maximum effort -- best compression" etc.), so the
+        # axis-end label itself doesn't need to carry that too. Discussed
+        # directly, not a unilateral call.
+        self.speed_thorough_label = QLabel("Slower")
         speed_row.addWidget(self.speed_thorough_label)
         self.speed_x265_label = QLabel()
         self.speed_x265_label.setStyleSheet("font-size: 9pt;")

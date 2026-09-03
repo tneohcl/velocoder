@@ -243,7 +243,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self.rc_filesize_btn.style().polish(self.rc_filesize_btn)
 
         # speed_faster_label/speed_thorough_label/speed_tier_label are
-        # shared by both sliders below (same "Faster .. More Thorough" axis,
+        # shared by both sliders below (same "Faster .. Slower" axis,
         # same 3-tier fuzzy caption vocabulary either way) -- always visible
         # now that x265 has its own real slider too, not just VAAPI.
         self.speed_slider.setVisible(is_vaapi)
@@ -354,9 +354,12 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
     def _on_speed_x265_slider_changed(self):
         preset = X265_PRESETS[self.speed_x265_slider.value()]
         # Parenthesized, matching quality_label's own "23 (CRF)" convention
-        # just above -- sitting bare right after speed_thorough_label's
-        # "More Thorough" (no separator between them) read as one run-on
-        # phrase, "More Thorough medium". Reported live.
+        # just above -- sitting bare right after speed_thorough_label (no
+        # separator between them) read as one run-on phrase back when that
+        # label said "More Thorough" ("More Thorough medium"). Reported
+        # live; the label's own wording was changed to "Slower" since, but
+        # the parenthesization is still correct regardless of which word
+        # precedes it.
         self.speed_x265_label.setText(f"({preset})")
         # Same 6 captions as the VAAPI slider above (same axis, same
         # meaning, just a different underlying scale) -- but in the

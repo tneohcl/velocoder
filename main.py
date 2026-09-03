@@ -227,7 +227,20 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
 
         # CQP (the Advanced button) has no libx265 equivalent, and AMD's
         # driver has no ICQ to demote it in favor of in the first place.
-        self.rc_advanced_btn.setVisible(RC_MODE_FRIENDLY[encoder_key]["advanced"] is not None)
+        advanced_visible = RC_MODE_FRIENDLY[encoder_key]["advanced"] is not None
+        self.rc_advanced_btn.setVisible(advanced_visible)
+        # File Size (#segMid in style.qss) is styled as a middle segment --
+        # square on both sides, the outer two only round their own outer
+        # corner -- which is wrong whenever Advanced (#segRight) is hidden:
+        # File Size becomes the row's actual last visible button but still
+        # renders cut off square on the right, since QSS has no selector
+        # for "my sibling is hidden". Reported live, confirmed by
+        # screenshot. Same setProperty/unpolish/polish pattern the preset
+        # combo's "modified" indicator already uses just below for the
+        # same reason: state a QSS selector alone can't express.
+        self.rc_filesize_btn.setProperty("segEnd", not advanced_visible)
+        self.rc_filesize_btn.style().unpolish(self.rc_filesize_btn)
+        self.rc_filesize_btn.style().polish(self.rc_filesize_btn)
 
         # speed_faster_label/speed_thorough_label/speed_tier_label are
         # shared by both sliders below (same "Faster .. More Thorough" axis,

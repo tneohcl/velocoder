@@ -202,6 +202,15 @@ QPushButton#segRight {
     border-bottom-right-radius: 6px;
 }
 
+/* segEnd is set on #segMid (main.py's _on_encoder_changed) whenever
+   #segRight (Advanced) is hidden -- an encoder with no CQP equivalent
+   makes File Size the row's actual last visible button, which needs
+   the same right-corner rounding #segRight normally carries. */
+QPushButton#segMid[segEnd="true"] {
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
+}
+
 /* Without this, a checked segmented button and its unchecked neighbors
    were pixel-for-pixel identical -- confirmed by screenshot, no way to
    tell which of the three was actually selected. font-weight is a second,

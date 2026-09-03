@@ -481,6 +481,44 @@ class TestRateControlButtons(unittest.TestCase):
         self.assertTrue(window.rc_quality_btn.isChecked())
 
 
+class TestFileSizeButtonEndRounding(unittest.TestCase):
+    """File Size (#segMid in style.qss) is styled as a middle segment --
+    square on both sides -- which is wrong whenever Advanced (#segRight)
+    is hidden (any encoder with no CQP equivalent, e.g. x265): File Size
+    becomes the row's actual last visible button but stayed visually cut
+    off square on the right, since QSS has no selector for "my sibling is
+    hidden". Reported live, confirmed by screenshot. Fixed via a "segEnd"
+    dynamic property set alongside rc_advanced_btn's own visibility in
+    _on_encoder_changed -- these tests check that property directly
+    rather than rendered pixels, matching how the sibling "modified"
+    combo-box indicator is tested elsewhere in this file."""
+
+    def test_file_size_gets_the_end_rounding_when_advanced_is_hidden(self):
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("CPU")  # no CQP equivalent
+        self.assertFalse(window.rc_advanced_btn.isVisible())
+        self.assertTrue(window.rc_filesize_btn.property("segEnd"))
+
+    def test_file_size_stays_a_plain_middle_segment_when_advanced_is_shown(self):
+        # isVisible() reflects the whole ancestor chain, not just this
+        # widget's own flag -- show() is needed before True reads back True
+        # (see test_advanced_button_visible_again_switching_back_to_vaapi
+        # above for the same gotcha; a hidden widget doesn't need it, which
+        # is why the "hidden" test above doesn't call show()).
+        window = main.MainWindow()
+        window.show()
+        window.encoder_combo.setCurrentText("Intel (iGPU)")
+        self.assertTrue(window.rc_advanced_btn.isVisible())
+        self.assertFalse(window.rc_filesize_btn.property("segEnd"))
+
+    def test_switching_back_to_vaapi_clears_the_end_rounding(self):
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("CPU")
+        self.assertTrue(window.rc_filesize_btn.property("segEnd"))
+        window.encoder_combo.setCurrentText("Intel (iGPU)")
+        self.assertFalse(window.rc_filesize_btn.property("segEnd"))
+
+
 class TestSpeedSliderVisibility(unittest.TestCase):
     """x265 got its own real Speed slider (speed_x265_slider), not just a
     QComboBox, matching VAAPI's speed_slider -- so speed_faster_label/

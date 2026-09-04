@@ -1,4 +1,13 @@
-# TITAN-i Transcoder
+# TITAN Video
+
+A simplified, consumer-facing fork of [TITAN-i Transcoder](/mnt/data/tools/transcoder)
+-- same ffmpeg engine, same settings model, same everything below this
+section (shared history, unchanged). The difference is the UI layer:
+Normal-mode controls (Processing/Quality/Compatibility/Audio, in plain
+language) sit always visible above a collapsed-by-default "Expert" section
+holding the sibling app's full technical control set untouched -- no
+capability lost, just deferred behind one click. See that sibling app's own
+README for anything not specific to this fork.
 
 Minimal ffmpeg front-end replacing HandBrake, whose QSV path is dead on this
 box (see Root cause below). PySide6 GUI queue, one file at a time.
@@ -145,13 +154,15 @@ tests/                unittest suite: test_worker.py, test_presets.py,
                       instance, rather than one test file each).
 ```
 
-The GUI is a `QSplitter`. Left pane: a **Preset** row (load/Save As/Delete)
-above a `QTabWidget` (**Video** / **Audio**, grouped by what each setting
-is — see Controls below), then a live **Effective Command** preview. Right
-pane: the queue, output folder, run controls, progress bar, a live stats
-line, and the full log. Window geometry and the splitter position are
-remembered across launches via `QSettings("TITAN-i", "Transcoder")` (on
-Linux: `~/.config/TITAN-i/Transcoder.conf`) — separate from
+The GUI is a fixed-width (470px) settings inspector on the left and a
+flexible workspace on the right, laid out with a plain `QHBoxLayout` (not
+a resizable `QSplitter` — window resizing goes entirely to the right
+pane). Left pane: a **Preset** row (load/Save As/Delete) above a
+`QTabWidget` (**Video** / **Audio**, grouped by what each setting is —
+see Controls below). Right pane: the queue, output folder, run controls,
+progress bar, a live stats line, and the full log. Window geometry is
+remembered across launches via `QSettings("TITAN", "TitanVideo")` (on
+Linux: `~/.config/TITAN/TitanVideo.conf`) — separate from
 `presets.json`, since this is per-viewer window state, not app data.
 
 The settings dict that flows from the GUI into `build_args()` (and that a
@@ -178,16 +189,30 @@ saved preset *is*, plus a `name` key):
 
 ## Presets
 
-Nine built-in presets ship in `constants.BUILTIN_PRESETS`: a High/Balanced/
-Low trio per engine, in the same CPU → Intel iGPU → AMD GPU order the
-Encoder dropdown itself uses (`Encoder` in Controls below) — but that's
-*display* order, not load order: whichever one is actually loaded on
-startup is pinned explicitly (`MainWindow.__init__`'s
+12 built-in presets ship in `constants.BUILTIN_PRESETS`: a High/Balanced/
+Low trio per encoder+codec combination — CPU/x265 → CPU/x264 → Intel iGPU
+→ AMD GPU — even though nothing in the Controls themselves lists them
+quite that way any more: Encoder (CPU/Intel iGPU/AMD GPU) and Codec
+(H.265/H.264, Format section, CPU-only) are two separate controls now
+(see Controls below), not one flat per-preset row. That's *display* order
+in this list, anyway, not load order: whichever preset is actually loaded
+on startup is pinned explicitly (`MainWindow.__init__`'s
 `_refresh_preset_combo(select=...)`), independent of where it sits in the
 list, so reordering this list alone can't silently change what a fresh
-launch defaults to. All nine are protected — `Save As…` refuses to reuse
+launch defaults to. All 12 are protected — `Save As…` refuses to reuse
 their names, `Delete` refuses to remove them — so there's always a
 known-good starting point.
+
+An already-installed `presets.json` predating a newly-added built-in
+(x264's own trio, the first time this happened) doesn't just miss it
+forever: `presets.migrate_missing_builtins`, called once at startup right
+after `load_presets()`, adds any built-in present in
+`constants.BUILTIN_PRESETS` but absent from the loaded file, at that
+built-in's own canonical position (not appended past the user's own
+saved presets), and persists the result back to disk. A no-op, and no
+extra disk write, once nothing's missing — confirmed real: this repo's
+own `presets.json` went from the original 9 to all 12 the first time
+this code ran here, no manual edit.
 
 Each engine's three differ only in `quality_value` (moved to a
 meaningfully different point on that engine's own ~50-value ICQ/CQP/CRF
@@ -197,8 +222,8 @@ engine's Balanced preset already uses, since the tier these three move
 along is quality/size, not effort-vs-time (a separate axis Balanced
 already settled for engine-specific reasons of its own, see below).
 
-**Balanced**, the original three, described first since they're what the
-High/Low siblings are relative to:
+**Balanced**, the original three plus x264's later addition, described
+first since they're what the High/Low siblings are relative to:
 
 1. **720p CPU Balanced (Software / x265)** — named to match the other two
    built-ins ("Balanced", `<category> / <encoder>`); its original name
@@ -210,14 +235,25 @@ High/Low siblings are relative to:
    not exposed as a control — nobody asked to tune it independently). This
    is the one that actually loads on startup, regardless of list position
    (see above) — by request.
-2. **720p Intel Balanced (Hardware / VAAPI)** — named "Intel", not "QSV" (Quick
+2. **720p CPU Balanced (Software / x264)** — added later, once libx264
+   became a second software encoder alongside libx265 (see Controls'
+   Encoder below). Simply mirrors x265 Balanced's own numbers (`-preset
+   medium -crf 23`) rather than an independently-reasoned value — x264's
+   CRF scale happens to share the same practical range and default as
+   x265's (confirmed directly against this build, not assumed), so
+   there's no equivalent of x265's own community reference points (see
+   High/Low below) to draw a *different* number from. No
+   `-x265-params`-equivalent tuning here: unlike x265's historically
+   conservative defaults, libx264's own upstream defaults are already
+   well-regarded, so there was nothing to override.
+3. **720p Intel Balanced (Hardware / VAAPI)** — named "Intel", not "QSV" (Quick
    Sync's own technology name), to match "AMD" and "CPU" on either side of it
    in this same list — both already bare vendor/type words, not a brand or
    technology name, so QSV was the one actually out of step, not something
    this app invented fresh. Was `qsv_h265_10bit`, ICQ 26,
    main10. `-compression_level 1` (the vaapi "speed" value) is an estimate
    for QSV's "quality" preset, not validated by A/B — see Known gaps.
-3. **720p AMD Balanced (Hardware / VAAPI)** — no HandBrake/QSV legacy to
+4. **720p AMD Balanced (Hardware / VAAPI)** — no HandBrake/QSV legacy to
    map from, unlike the Intel preset. CQP 26 mirrors the Intel preset's
    ICQ 26 (AMD's driver has no ICQ — see Controls' Rate control below —
    so CQP is the closest quality-family equivalent); speed "4" is a
@@ -229,10 +265,14 @@ High/Low siblings are relative to:
 **High** and **Low**, added later to give each engine a real tier instead
 of a single fixed point:
 
-- CPU's CRF 18 (High) and 28 (Low) are real, widely-used x265 community
-  reference points ("visually lossless" and "noticeably smaller, still
-  watchable") — not this app's own guess, x265's CRF scale has enough
-  established practice around it to just use those directly.
+- CPU's (x265) CRF 18 (High) and 28 (Low) are real, widely-used x265
+  community reference points ("visually lossless" and "noticeably
+  smaller, still watchable") — not this app's own guess, x265's CRF scale
+  has enough established practice around it to just use those directly.
+- CPU (x264)'s CRF 18/28 simply mirror x265's own — same reasoning as its
+  Balanced preset above: x264 and x265 share the same practical CRF
+  range, and there's no x264-specific community reference point being
+  drawn on independently here.
 - Intel/AMD's ICQ/CQP 16 (High) and 36 (Low) don't have that same body of
   outside practice to draw on, so they're this app's own estimate by rough
   analogy to the CPU pair's offset from its own Balanced (23) — not
@@ -241,7 +281,7 @@ of a single fixed point:
   for real at some point, same as that one.
 
 Anything saved via **Save As…** is appended to the bottom of
-`presets.json`, after the 9 built-ins (gitignored — once seeded, it's the
+`presets.json`, after the 12 built-ins (gitignored — once seeded, it's the
 user's own data, not source) and shows up in the same dropdown as the
 built-ins from then on.
 
@@ -311,18 +351,42 @@ five separate rate-control modes and a raw `-compression_level` readout. The
 underlying settings dict and `worker.build_args` are completely unaffected;
 this is presentation only. See `constants.RC_MODE_FRIENDLY` for the mapping.
 
-- **Encoder** — "CPU" (`libx265`), "Intel (iGPU)", or "AMD (GPU)" (the
-  latter two both `hevc_vaapi`, distinguished by the `gpu_vendor`
-  settings-dict key — this machine has both a real Intel iGPU and an AMD
-  discrete GPU), in that order. No NVIDIA option — no such hardware here,
-  and there's no NVENC code in `worker.py` to back one.
-  `constants.ENCODERS` is a list of `(ffmpeg codec, gpu_vendor, label)`
+- **Encoder** — which *engine* runs the encode: "CPU" (software), "Intel
+  (iGPU)", or "AMD (GPU)" (the latter two both `hevc_vaapi`, distinguished
+  by the `gpu_vendor` settings-dict key — this machine has both a real
+  Intel iGPU and an AMD discrete GPU), in that order. No NVIDIA option —
+  no such hardware here, and there's no NVENC code in `worker.py` to back
+  one. `constants.ENCODERS` is a list of `(engine id, gpu_vendor, label)`
   triples, in this same CPU/Intel/AMD order, specifically so one ffmpeg
   codec (`hevc_vaapi`) can back two distinct menu entries;
   `constants.encoder_profile_key()` turns a resolved `(encoder,
   gpu_vendor)` pair back into the key `RC_MODES`/`RC_MODE_FRIENDLY` are
-  keyed by (`"hevc_vaapi_intel"`, `"hevc_vaapi_amd"`, or plain
-  `"libx265"`).
+  keyed by (`"hevc_vaapi_intel"`, `"hevc_vaapi_amd"`, `"libx265"`, or
+  `"libx264"`). The CPU row's own id here (`"libx265"`) is really just a
+  placeholder/default now, not necessarily what actually runs — see Codec
+  below, a second axis this one doesn't decide alone any more.
+- **Codec** (Format section, alongside Resolution/Container) — H.265
+  (HEVC, `libx265`) or H.264 (AVC, `libx264`), the CPU engine's own
+  second axis. Split out as its own control rather than folded into
+  Encoder as more flat rows (discussed directly): hardware here is
+  HEVC-only (no `h264_vaapi` wired up), so a codec choice that only ever
+  means something for one of Encoder's three rows read better as its own
+  control than as extra combined entries. Disabled and forced to H.265
+  whenever Encoder is set to a hardware engine — not hidden, since
+  "H.265 (HEVC)" is still the real, correct answer for hardware, just no
+  longer a choice. `main.py`'s `_current_encoder_id()` resolves Encoder +
+  Codec together into the one real ffmpeg encoder id everything
+  downstream (`RC_MODES`, `build_args`, ...) actually keys off of.
+  libx264 shares almost the entire settings surface libx265 already
+  exposed here before this existed — CRF/bitrate rate control, 10-bit,
+  the same `ultrafast`..`placebo` preset names (confirmed against this
+  exact ffmpeg build, not assumed) — except its own, larger Tune list
+  (`constants.X264_TUNES`, includes `film`/`stillimage`, both confirmed
+  rejected outright by this exact libx265 build — see Tune below) and no
+  equivalent of libx265's own `-x265-params` psycho-visual tuning
+  (meaningless to libx264, and unlike x265's historically conservative
+  defaults, libx264's own upstream defaults are already well-regarded, so
+  there was nothing to override).
 - **Rate control** — a three-button row, not a dropdown: **Quality** / **File
   Size** / **Advanced**. Quality and File Size mean the same thing regardless
   of encoder (mapped to ICQ/VBR for Intel VAAPI, CQP/VBR for AMD VAAPI,
@@ -431,12 +495,21 @@ this is presentation only. See `constants.RC_MODE_FRIENDLY` for the mapping.
 - **Container** — MP4 or MKV. `-movflags +faststart` is only added for MP4
   (it's a mov/mp4-muxer-private option — ffmpeg silently ignores it on MKV,
   but there's no reason to carry a flag that means nothing there).
-- **Tune (x265 only)** — hidden when Encoder is VAAPI (`hevc_vaapi` has no
-  equivalent option). Options: `animation`, `grain`, `psnr`, `ssim`,
+- **Tune (software only)** — hidden when Encoder is VAAPI (`hevc_vaapi` has
+  no equivalent option), repopulated whenever Encoder *or* Codec changes
+  (`main.py`'s `_on_encoder_changed`, wired to both). x265
+  (`constants.X265_TUNES`): `animation`, `grain`, `psnr`, `ssim`,
   `fastdecode`, `zerolatency`, or `None` to omit `-tune` entirely. **`film`
-  is deliberately not offered** — it's a real x265 tune name in general, but
-  this exact libx265 build rejects it outright (`Error setting preset/tune
-  (null)/film.`, confirmed by actually running it, not assumed).
+  is deliberately not offered for x265** — it's a real x265 tune name in
+  general, but this exact libx265 build rejects it outright (`Error
+  setting preset/tune (null)/film.`, confirmed by actually running it,
+  not assumed). x264 (`constants.X264_TUNES`) gets two more on top of
+  that same list — `film` and `stillimage` — both confirmed to actually
+  work against this exact libx264 build, unlike x265's rejection of
+  `film`. Switching Codec while a tune value only the *other* codec
+  offers is selected (e.g. `film` on x264, then switching to x265) resets
+  it to `None` rather than silently carrying over to whatever tune
+  happened to land at that index once the list shrinks.
 - **Deinterlace** — auto-detected the moment a file is added (see
   "The queue itself" below), and still a manual checkbox on top of that.
   This exists because a container's progressive/interlaced flag is
@@ -489,59 +562,70 @@ this is presentation only. See `constants.RC_MODE_FRIENDLY` for the mapping.
   exactly that layout (7.1, quad, ...), where `-ac 2` remixes correctly
   from whatever the source's real layout turns out to be.
 
-**Below the tabs, left side**
-- **Effective Command** — a live, read-only preview of the actual ffmpeg
-  argv the current settings resolve to (`worker.build_args(...,
-  probe_audio=False, ...)` — same function real jobs use, so the video-side
-  flags can never drift from what actually runs). When a file is already
-  queued, the audio side is genuinely accurate too — it probes that file's
-  real audio track and duration (both cached per file, so dragging a
-  slider doesn't shell out to ffprobe repeatedly) instead of guessing. With
-  an empty queue there's no real track/duration to reflect, so those are
-  omitted rather than asserting values that might be wrong. If building the
-  preview fails (e.g. VAAPI selected on a machine with no Intel render
-  node), it shows an inline message instead of taking the app down. Broken
-  into a handful of lines (input / video encode / stream mapping /
-  container flags, `_format_preview_text`) purely for readability — it's
-  still the exact same argv underneath, just joined with newlines instead
-  of spaces at the display step. **Collapsed by default** (a checkable
-  `QGroupBox`, repurposed as a disclosure toggle rather than its usual
-  enable/disable meaning — see `_make_collapsible_group`) since this is a
-  technical double-check, not something the default view needs open; state
-  persists across launches the same way window geometry does. A **▸/▾**
-  glyph appended to the title text (not a separate button) shows which way
-  it'll go next — an earlier version tried a dedicated header button/arrow
-  instead, but that changed the section title's layout relative to every
-  other (non-collapsible) section title in the app, which broke the
-  design-consistency the rest of the UI relies on; the native
-  `QGroupBox` title bar's own click-to-toggle hit region already covers the
-  whole title, arrow glyph included, confirmed via a direct `QTest.
-  mouseClick`. A **Copy** button puts the exact text on the clipboard --
-  below the command text, not above it, and visibly smaller than a normal
-  button: it's a power-user convenience for a section that's already
-  collapsed by default, and doesn't need Start/preset-button-level visual
-  weight.
+**Below the tabs, left side** *(TITAN Video specifically — see this fork's
+own note at the top of this file. The sibling TITAN-i Transcoder app still
+keeps Effective Command inline exactly as described in its own copy of
+this section.)*
+- **Effective Command** no longer has a visible panel in the main window at
+  all. `self.command_preview` (`worker.build_args(..., probe_audio=False,
+  ...)` under the hood — same function real jobs use, so it can never drift
+  from what actually runs) still exists and still updates on every settings
+  change; it's just never added to any layout. The only exposed entry point
+  now is **Copy FFmpeg Command** in the **⋯** overflow menu (queue pane,
+  see below), which reads the resolved argv list directly
+  (`self._last_preview_args`) rather than this widget's own display text —
+  `_copy_command_to_clipboard` needs no visible preview to work at all.
 
-The old hardware-status caption ("Hardware encode available via
-/dev/dri/renderD129 (Intel iGPU)") now lives in the window's status bar —
-a permanent widget in the bottom-right corner (`QMainWindow.statusBar()`,
-`addPermanentWidget` specifically so nothing that later shows a temporary
-status message can clobber it), qBittorrent-style, rather than competing
-with the actual settings for space in the left column.
+Theme (System/Light/Dark) and hardware-acceleration status used to sit in a
+permanent, qBittorrent-style footer strip at all times — reported live as
+the most generic-desktop-utility-feeling part of an otherwise much
+friendlier window, so this fork's own footer is gone entirely. Theme moved
+into **Settings…** (same overflow menu), a small `QDialog` hosting the
+exact same `theme_combo` widget, reparented in on open rather than
+duplicated. Hardware status is now silent during normal operation —
+Automatic Processing already picks the best available engine on its own,
+nobody needs ambient reassurance a render node exists — and only speaks up
+once, at startup, in the one case that actually matters: no hardware found
+at all, so Processing will always mean CPU regardless of which button is
+picked (`_maybe_note_no_hardware`, main.py).
 
 **Queue pane (right side)**
 - **The queue itself** — a `DropTreeWidget` (flat `QTreeWidget`, no actual
   hierarchy): a real multi-column grid with a header bar, not a single-line
-  list. Columns are deliberately **source-file properties only** — File /
-  Video (codec + resolution, e.g. "HEVC 3840x2160") / Duration / Audio
-  (codec + channel layout, e.g. "AAC 5.1") / Size / Result (populated only
-  once that row finishes encoding, e.g. "301.1MB (73% smaller)"). The
-  chosen *output* settings (encoder, quality, container, …) are
-  deliberately **not** repeated here — they already live in, and edit live
-  from, the right-hand settings panel for whichever row is selected (see
-  "Selecting a row edits it live" below), so a second copy in the grid
-  would just be the same information twice. `_make_queue_row` fills in
-  File/Size synchronously (no I/O beyond a `stat()`); Video/Duration/Audio
+  list. Four columns, not the technical File/Video/Duration/Audio/Size/
+  Result grid the underlying engine's own sibling app still uses — **Video**
+  (the delegate-painted two-line card described next) / **Duration** /
+  **Size** / **Status** (`Ready` while queued, live `Converting… NN%` while
+  running, a size-change summary once done, or a short `Failed` — the full
+  reason stays in that cell's tooltip and the Log). The chosen *output*
+  settings (encoder, quality, container, …) are deliberately **not**
+  repeated here — they already live in, and edit live from, the right-hand
+  settings panel for whichever row is selected (see "Selecting a row edits
+  it live" below), so a second copy in the grid would just be the same
+  information twice.
+
+  The **Video** column is the one with a real custom painter
+  (`queue_widget._VideoCellDelegate`, installed via
+  `setItemDelegateForColumn`) rather than plain `QTreeWidgetItem` text: a
+  bold filename title over a muted subtitle line (codec + resolution +
+  audio, e.g. "H.264 1920x1080 · AAC 5.1"), closer to a list of videos than
+  a spreadsheet row. `item.text(VIDEO_COL)` is *only* ever the filename
+  (set once, in `_make_queue_row`) — the subtitle lives on a second,
+  distinct data role, `queue_widget.VIDEO_SUBTITLE_ROLE`
+  (`Qt.UserRole + 1`), composed fresh by `_refresh_video_cell` from
+  whichever of the source probe's video/audio labels and the interlace
+  detector's `deinterlace` flag have landed so far (see below) — three
+  independent async results that can arrive in any order, none of which
+  touch the title. `STATUS_COL` still exists as a name (an alias, now for
+  `VIDEO_COL` rather than the old six-column layout's `FILE_COL`) purely so
+  call sites reading/writing the row's job settings dict via
+  `item.data(STATUS_COL, Qt.UserRole)` stay self-explanatory about *why*
+  they're touching that particular column — genuinely a different
+  `Qt.UserRole` slot than the subtitle's, on the same column index, which
+  is exactly the collision `VIDEO_SUBTITLE_ROLE` exists to avoid.
+
+  `_make_queue_row` fills in the Video title/Size synchronously (no I/O
+  beyond a `stat()`) and Status as `"Ready"`; the subtitle and Duration
   arrive from an async `ffprobe` metadata probe once it lands (see below).
   Drag files in from a file manager to add them, or drag existing rows to
   reorder them (`QAbstractItemView.InternalMove`; `DropTreeWidget` tells
@@ -575,13 +659,16 @@ with the actual settings for space in the left column.
   Audio columns once it lands. Runs alongside the existing interlace probe
   below rather than instead of it — both append to the same
   `_detection_processes` list, so anything that already waited on that list
-  (tests included) transparently waits for both. The Video cell's text
-  depends on *both* async results (the probe's codec+resolution label and
-  the interlace detector's `deinterlace` flag, appended as "(interlaced)")
-  and they can land in either order — `_refresh_video_cell` recomputes the
-  full cell text from both pieces of stashed state every time either one
-  arrives, rather than concatenating piecemeal, so the result is correct
-  regardless of which finishes first.
+  (tests included) transparently waits for both. The Video cell's
+  *subtitle* (see above — not `item.text()`, that's just the filename)
+  depends on *three* independent async results now: the probe's own video
+  codec+resolution label, the probe's audio codec+channel label (folded in
+  alongside the video one now, not a separate column), and the interlace
+  detector's `deinterlace` flag, appended as "(interlaced)" — they can land
+  in any order, and `_refresh_video_cell` recomposes the full subtitle from
+  all three pieces of stashed raw state every time any one of them arrives,
+  rather than concatenating piecemeal, so the result is correct regardless
+  of arrival order.
 - **Interlace probe** — kicks off the same moment as the source-metadata
   probe above and flips Deinterlace on the *individual file* on or off once
   it lands (`worker.build_idet_args`/`parse_idet_output`, ~20s sample) — a
@@ -589,17 +676,21 @@ with the actual settings for space in the left column.
   file added after an interlaced one doesn't inherit a stale "on." Each row
   also picks up a status icon once a run starts (▶ encoding, ✓ done, ⚠
   failed — a failed row's tooltip holds the failure reason, replacing the
-  File cell's usual path tooltip specifically, since that's exactly where
-  the eye already goes to see why). The icon lives *on* the File cell
-  itself (`QTreeWidgetItem` supports an icon and text on the same column
-  at once) rather than a dedicated status column of its own — a separate
-  narrow column was tried first, as unobtrusive as it could reasonably be
-  made (24px, blank header), but an empty column with nothing in every row
-  until a run actually starts still read as a stray gap rather than a
-  deliberate part of the design (confirmed by feedback, not just a
-  guess). `STATUS_COL` still exists as a name in main.py — an alias for
-  `FILE_COL` — purely so call sites that touch the icon/failure-tooltip
-  stay self-explanatory about *why* they're touching that column. The
+  Video cell's usual path tooltip specifically, since that's exactly where
+  the eye already goes to see why; the Status column's own text goes to a
+  short "Failed" alongside it, live percentage while running). The icon
+  lives *on* the Video cell itself (`QTreeWidgetItem` supports an icon and
+  text on the same column at once) rather than the Status column — a
+  separate narrow column was tried first for just the icon, as unobtrusive
+  as it could reasonably be made (24px, blank header), but an empty column
+  with nothing in every row until a run actually starts still read as a
+  stray gap rather than a deliberate part of the design (confirmed by
+  feedback, not just a guess); Status itself only came later, once there
+  was real per-row text worth a column of its own. `STATUS_COL` still
+  exists as a name in main.py — an alias, now for `VIDEO_COL` (see above)
+  rather than the old six-column layout's `FILE_COL` — purely so call sites
+  that touch the icon/job-dict/failure-tooltip stay self-explanatory about
+  *why* they're touching that column. The
   ▶/✓/⚠ glyphs are custom SVGs now (`assets/status_play_*`/`status_done_*`/
   `status_warning_*`), not `style().standardIcon(...)` — an Apple-design-
   language pass's "one icon family, one weight, throughout" moved these
@@ -626,37 +717,93 @@ with the actual settings for space in the left column.
   `TranscodeQueue.start()` snapshots the job list once, so editing the
   visible queue after Start can't affect what's actually running; it can
   only make the list lie about it, or (for selection-edits specifically)
-  overwrite a finished row's now-historical settings. **Add Files is
+  overwrite a finished row's now-historical settings. **Add Videos is
   deliberately exempt** — see next.
 - **Adding files mid-run joins the run in progress** — dropping a file in
-  (or clicking Add Files) while a run is already going doesn't just sit
-  there waiting for a second click of Start; `add_files` pushes it straight
-  into `TranscodeQueue` (`queue.add_job`) and it runs once its turn comes
-  up. This needed its own patch path (`TranscodeQueue.update_pending_job`)
-  rather than sharing a live reference with the visible row, because
-  `QTreeWidgetItem.setData`/`.data()` round-trips a **copy** of the job
-  dict, confirmed empirically — the running queue's snapshot, taken at add
-  time, wouldn't otherwise see the async interlace-detection result land
-  moments later.
-- **Clear Queue** asks for confirmation first (skipped entirely if the
-  queue is already empty) — it can discard real per-file setup, so it
-  gets the same treatment Delete Preset already had.
-- **Output folder** — deliberately *not* the first thing in the window; it's
-  a per-run detail, so it sits right next to Start, where it's used. The
-  field is directly editable, not just settable via **Change…**'s browse
-  dialog — typing a path doesn't check it exists (`editingFinished` just
-  updates `self.output_dir`), the same as a browsed-to path already
-  didn't; both get created on demand (`mkdir(parents=True, exist_ok=True)`)
-  right before they're actually needed, at Start or Open.
+  (or clicking **Add Videos…**) while a run is already going doesn't just
+  sit there waiting for a second click of Convert; `add_files` pushes it
+  straight into `TranscodeQueue` (`queue.add_job`) and it runs once its
+  turn comes up. This needed its own patch path (`TranscodeQueue.
+  update_pending_job`) rather than sharing a live reference with the
+  visible row, because `QTreeWidgetItem.setData`/`.data()` round-trips a
+  **copy** of the job dict, confirmed empirically — the running queue's
+  snapshot, taken at add time, wouldn't otherwise see the async
+  interlace-detection result land moments later.
+- **Remove Selected / Clear Queue** live in the **⋯** overflow menu next to
+  **Add Videos…** now, not permanent buttons of their own — Delete-key
+  (queue focused) and the right-click context menu still reach Remove
+  directly either way. Clear Queue still asks for confirmation first
+  (skipped entirely if the queue is already empty) — it can discard real
+  per-file setup, so it gets the same treatment Delete Preset already had.
+- **Save to** (labelled **Output folder** in the sibling TITAN-i Transcoder
+  app) — deliberately *not* the first thing in the window; it's a per-run
+  detail, so it sits below the queue, near where it's used, not up with
+  Quality/Format. The field is directly editable, not just settable via
+  **Change…**'s browse dialog — typing a path doesn't check it exists
+  (`editingFinished` just updates `self.output_dir`), the same as a
+  browsed-to path already didn't; both get created on demand
+  (`mkdir(parents=True, exist_ok=True)`) right before they're actually
+  needed, at Convert or Open.
 - **Open** — opens the current output folder in the desktop file manager.
-- **Live stats line** (under the progress bar) — fps / bitrate / speed /
-  ETA for the job currently running, parsed from ffmpeg's `-progress`
-  stream (`TranscodeQueue._emit_stats`). Separate from the full scrolling
-  **Log** further down, which stays raw ffmpeg stderr — also collapsed by
-  default now, same disclosure pattern and same reasoning as Effective
-  Command above (a debugging aid, not default-view material). The queue
-  list happily reclaims the freed space when it's collapsed, since it was
-  already the only other stretch-factor widget sharing this column.
+- **Run status, phase-dependent** — `status_label` reads "Converting N of M
+  — filename" while running (was "[N/M] Encoding filename"); underneath it,
+  a plain-language **`eta_label`** ("About 8 min remaining", derived from
+  the same whole-queue ETA estimate `_queue_eta_seconds` already computed)
+  is the prominent number, with the detailed telemetry — fps / bitrate /
+  speed / this job's own ETA / whole-queue ETA, parsed from ffmpeg's
+  `-progress` stream (`TranscodeQueue._emit_stats`) — staying exactly as
+  technical as before in `stats_label` right below, just visually secondary.
+  All of `progress_bar`/`eta_label`/`stats_label` are hidden while idle
+  (`_apply_run_phase_visuals`, `queue_controller.py`) instead of always
+  showing an empty bar and dashes — idle just shows "Idle" and Convert.
+  Preparing shows an indeterminate progress bar (no real fraction exists
+  yet during file analysis); Converting/Paused show the full determinate
+  telemetry. Checking **Stop After Current Video** (`pause_after_check`, a
+  checkable action in the **⋯** menu) appends "— will stop after this
+  video" to the status line, centralized through the `_set_status` helper
+  every status update goes through.
+- **Convert / Cancel**, bottom-right of the panel, below status/progress/
+  ETA/stats rather than right under Save to — while converting, the
+  progress area *is* the content, and Cancel is an action on that content,
+  so it reads better trailing it. Right-anchored with Convert rightmost
+  (`run_row.addStretch()` before the buttons, Convert added last), borrowing
+  macOS's own dialog/sheet button convention. Cancel is a plain secondary
+  button now, not red/destructive-styled — cancelling an encode isn't
+  destructive in the sense deleting something permanently is. Convert's own
+  label is phase-dependent: "Convert N Videos" while idle, "Preparing…"
+  (disabled — no cancel path exists yet for in-flight analysis) while
+  videos are still being analyzed, "Converting…" (disabled) while a job is
+  running, "Resume" while paused. Cancel itself is hidden entirely (not
+  just disabled) whenever there's nothing to cancel, rather than sitting
+  there grayed out.
+- **Finished-run summary** — `_on_all_finished` no longer collapses straight
+  back to "Idle": whenever at least one video actually completed during the
+  run (even a partial one, cancelled or partly failed part-way through), it
+  shows the count ("4 videos converted", in `eta_label` — "3 videos
+  converted · 1 failed" if any jobs failed) and a whole-run size comparison
+  ("12.4GB → 4.1GB · 67% smaller", in `stats_label`, via
+  `formatting.format_run_summary`) alongside a new **Open Folder** button
+  (reusing the existing `_open_output_dir`) in Cancel's old slot — Convert
+  stays visible too, so re-running is still one click away. The heading
+  itself (`status_label`) distinguishes *why* the run ended, not just
+  whether anything completed — "✓ Conversion Complete" only when every job
+  actually succeeded, "Conversion Stopped" if the user clicked Cancel at
+  any point (even after some jobs had already finished), "Completed with
+  Issues" if it ran to completion on its own but with some failures along
+  the way, cancelled taking priority if somehow both happened in the same
+  run. A run where nothing ever completed falls straight back to plain
+  "Idle" instead of claiming "0 videos converted". The summary (both the
+  heading and the two labels/Open Folder) persists until the queue's
+  contents change (add/remove/clear/undo/redo — `_refresh_idle_controls`,
+  which resets `status_label` back to "Idle" too, but only when a summary
+  was actually showing — it leaves an ordinary idle status, like the
+  one-time no-hardware notice, alone) or another conversion begins,
+  whichever comes first.
+- **Log** (raw ffmpeg stderr) has no permanent panel either, collapsed or
+  otherwise — **Show Conversion Log** (the **⋯** menu) opens it in its own
+  small non-modal window, reparenting the real, already-live `log_view`
+  widget rather than duplicating it. `queue_list`'s own stretch factor
+  simply claims the space Log used to share space with it for.
 
 ## Theming
 
@@ -841,7 +988,7 @@ test that never calls ffmpeg/never starts a real QProcess can catch.
 `test_main.py` covers GUI-level behavior that isn't `build_args`'
 responsibility: startup ordering, the command preview's error handling,
 audio accuracy and line grouping, the queue being locked during a run
-(except Add Files, which stays live), live mid-run queue append, Clear
+(except Add Videos, which stays live), live mid-run queue append, Clear
 Queue's confirmation, per-row status icons/result-size text, the queue
 table's source-metadata probe, theming, and the preset-modified indicator.
 One gotcha if you're adding to it:
@@ -968,9 +1115,9 @@ the strength of the report alone:
   literal string `"true"`/`"false"` (confirmed on this Linux/INI backend) --
   a plain `if value:` truthiness check on a restored value is a bug, since
   the *string* `"false"` is itself truthy. `_restore_window_state` compares
-  `str(value) != "false"` for exactly this reason (window_geometry/
-  splitter_state predate this and get away with it because `restoreGeometry`/
-  `restoreState` take the raw QByteArray directly, never a bool).
+  `str(value) != "false"` for exactly this reason (window_geometry predates
+  this and gets away with it because `restoreGeometry` takes the raw
+  QByteArray directly, never a bool).
 - `style.qss` is not valid QSS on its own — every color, plus the
   checkmark/arrow SVG paths (`$CHECK_ICON`, `$ARROW_UP_ICON`,
   `$ARROW_DOWN_ICON`), is a literal `$TOKEN` placeholder that only becomes
@@ -1051,7 +1198,7 @@ the strength of the report alone:
   signal to fix the actual cause instead of patching each widget type as
   it turned up: the top-level rule is `background-color: transparent` now,
   and only the specific widgets that truly need an opaque background of
-  their own (`QMainWindow`/`QSplitter`, `QGroupBox`, form fields,
+  their own (`QMainWindow`, `QGroupBox`, form fields,
   `QPushButton`, `QTreeWidget`, ...) carry an explicit rule, which still
   wins over the default regardless of what it is. Dark's
   `BG_WINDOW`/`BG_PANEL` are close enough (#1a1d23/#21252c) that none of

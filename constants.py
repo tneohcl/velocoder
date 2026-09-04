@@ -11,16 +11,41 @@ from presets import load_builtin_presets
 VIDEO_FILTER = "Video files (*.mkv *.mp4 *.avi *.mov *.m4v *.ts *.wmv);;All files (*)"
 AUDIO_TRACK_LABELS = ["Track 1", "Track 2", "Track 3", "Track 4"]
 
-# (encoder id, gpu_vendor or None, display label). Two rows share the same
-# encoder id ("hevc_vaapi") because it's the same ffmpeg codec/profile/pixel
-# -format logic on either GPU -- only which render node gets opened and
-# which rc_modes are valid differ by vendor (see RC_MODES below; confirmed
-# empirically, not assumed: this exact machine has both a real Intel iGPU
-# and a real AMD discrete GPU, `vainfo` + real encodes run against each).
+# (engine id, gpu_vendor or None, display label) -- which *engine*
+# (software/CPU vs. which GPU) runs the encode. Two rows share the same
+# engine id ("hevc_vaapi") because it's the same ffmpeg codec/profile/
+# pixel-format logic on either GPU -- only which render node gets opened
+# and which rc_modes are valid differ by vendor (see RC_MODES below;
+# confirmed empirically, not assumed: this exact machine has both a real
+# Intel iGPU and a real AMD discrete GPU, `vainfo` + real encodes run
+# against each).
+#
+# The CPU row's own id ("libx265") is really just a placeholder/default,
+# not necessarily what actually runs -- CODECS below is a second,
+# independent axis (H.265 vs H.264) that only applies to the CPU engine;
+# main.py's _current_encoder_id() resolves the two together into the real
+# ffmpeg codec. Hardware stays HEVC-only here (no h264_vaapi wired up),
+# which is exactly why this isn't a single flat "4 combined choices"
+# list -- codec choice would be meaningless noise on the Intel/AMD rows.
 ENCODERS = [
     ("libx265", None, "CPU"),
     ("hevc_vaapi", "intel", "Intel (iGPU)"),
     ("hevc_vaapi", "amd", "AMD (GPU)"),
+]
+
+# (ffmpeg codec id, display label) -- the CPU engine's own second axis,
+# a separate Format-box control (main.py/ui_builder.py) rather than
+# folded into ENCODERS above as more flat rows: confirmed direct testing
+# against this ffmpeg build that libx264 shares almost the entire
+# settings surface libx265 already exposes (CRF/bitrate rate control,
+# 10-bit, tune, the same ultrafast..placebo preset names) -- worker.py's
+# build_args treats it as a second software path alongside libx265, not
+# a separate one. Meaningless for hardware (VAAPI is HEVC-only here), so
+# this control is disabled -- not just hidden, since "H.265 (HEVC)" is
+# still the real answer -- whenever a hardware engine is selected.
+CODECS = [
+    ("libx265", "H.265 (HEVC)"),
+    ("libx264", "H.264 (AVC)"),
 ]
 
 
@@ -53,6 +78,13 @@ RC_MODES = {
         ("CRF", "CRF (quality)"),
         ("bitrate", "Target bitrate"),
     ],
+    # Same two rc_mode values as libx265 -- x264's CRF scale is nominally
+    # 0-51 too, with the same default (23), so QUALITY_RANGES["CRF"]
+    # below is shared rather than needing its own libx264-specific entry.
+    "libx264": [
+        ("CRF", "CRF (quality)"),
+        ("bitrate", "Target bitrate"),
+    ],
 }
 
 # The GUI's Rate Control control is two plain-English buttons -- Quality /
@@ -67,6 +99,7 @@ RC_MODE_FRIENDLY = {
     "hevc_vaapi_intel": {"quality": "ICQ", "file_size": "VBR", "advanced": "CQP"},
     "hevc_vaapi_amd": {"quality": "CQP", "file_size": "VBR", "advanced": None},
     "libx265": {"quality": "CRF", "file_size": "bitrate", "advanced": None},
+    "libx264": {"quality": "CRF", "file_size": "bitrate", "advanced": None},
 }
 
 # rc_mode -> (min, max, default) for the quality control (ignored for bitrate modes)
@@ -82,7 +115,10 @@ X265_PRESETS = [
 ]
 
 RESOLUTIONS = [
-    {"label": "Source (no scale)", "width": 99999, "height": 99999},
+    # "Keep Original" here, not the sibling TITAN-i Transcoder app's
+    # "Source (no scale)" -- same width/height sentinel (build_args reads
+    # this pair, never the label), plain language only.
+    {"label": "Keep Original", "width": 99999, "height": 99999},
     {"label": "1080p", "width": 1920, "height": 1080},
     {"label": "720p", "width": 1280, "height": 720},
     {"label": "480p", "width": 854, "height": 480},
@@ -97,6 +133,31 @@ CONTAINERS = ["mp4", "mkv"]
 # ("Error setting preset/tune (null)/film"), so it's deliberately excluded.
 # "None" means omit -tune entirely, x265's own default. VAAPI ignores this.
 X265_TUNES = ["None", "animation", "grain", "psnr", "ssim", "fastdecode", "zerolatency"]
+
+# x264's own tune list -- a real superset of X265_TUNES above, not just
+# assumed to match: every X265_TUNES value plus "film" and "stillimage",
+# both confirmed to actually work against this exact libx264 build (real
+# encodes run with each, none rejected) despite "film" specifically being
+# the one value x265 here refuses outright. Kept as its own separate list
+# rather than adding film/stillimage to X265_TUNES -- that would silently
+# offer them for x265 too, right back into the bug X265_TUNES's own
+# comment above already documents fixing.
+X264_TUNES = ["None", "film", "animation", "grain", "stillimage", "psnr", "ssim", "fastdecode", "zerolatency"]
+
+# Normal-mode's Quality button row (Smaller File / Balanced / Better
+# Quality) -- three plain-English buttons that resolve, per current
+# encoder+vendor, to the exact same numeric quality_value the matching
+# Low/Balanced/High built-in preset already ships (see BUILTIN_PRESETS'
+# own comment below for where 18/23/28 and 16/26/36 come from). Always
+# paired with RC_MODE_FRIENDLY[key]["quality"] as the rc_mode -- every
+# High/Balanced/Low built-in uses the quality-family rc_mode (CRF/ICQ/CQP),
+# never bitrate, so Quality tiers don't need their own rc_mode axis.
+QUALITY_TIERS = {
+    "libx265": {"smaller": 28, "balanced": 23, "better": 18},
+    "libx264": {"smaller": 28, "balanced": 23, "better": 18},
+    "hevc_vaapi_intel": {"smaller": 36, "balanced": 26, "better": 16},
+    "hevc_vaapi_amd": {"smaller": 36, "balanced": 26, "better": 16},
+}
 
 # Mapped from the user's real HandBrake custom presets — see README's Presets
 # section. Protected: Save As refuses these names, Delete refuses these entries.

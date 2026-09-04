@@ -1,26 +1,33 @@
 #!/usr/bin/env python3
-"""TITAN-i Transcoder: minimal ffmpeg front-end replacing HandBrake QSV."""
+"""TITAN Video: simplified, consumer-facing fork of TITAN-i Transcoder
+(/mnt/data/tools/transcoder) -- same ffmpeg engine and settings model,
+progressive-disclosure UI (Normal controls always visible, full technical
+control set tucked behind an Expert section) instead of exposing everything
+at once. See that sibling app's own docstring/README for the shared
+backend's history; this file only diverges where the UI layer does."""
 import shlex
 import sys
+import weakref
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSettings, QProcess
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QTreeWidgetItem, QLabel, QInputDialog, QMessageBox,
+    QApplication, QDialog, QFormLayout, QMainWindow, QTreeWidgetItem, QLabel,
+    QInputDialog, QMessageBox, QVBoxLayout,
 )
 
 import worker
 import formatting
 from constants import (
-    ENCODERS, RC_MODES, RC_MODE_FRIENDLY,
-    encoder_profile_key, QUALITY_RANGES, X265_PRESETS, RESOLUTIONS,
-    AUDIO_BITRATES, BUILTIN_PRESET_NAMES,
+    ENCODERS, RC_MODES, RC_MODE_FRIENDLY, QUALITY_TIERS,
+    encoder_profile_key, QUALITY_RANGES, X265_PRESETS, X265_TUNES, X264_TUNES, RESOLUTIONS,
+    AUDIO_BITRATES, BUILTIN_PRESET_NAMES, BUILTIN_PRESETS,
 )
-from presets import load_presets, save_presets
+from presets import load_presets, save_presets, migrate_missing_builtins
 from worker import TranscodeQueue, BITRATE_RC_MODES
 from queue_widget import (
-    FILE_COL, VIDEO_COL, DURATION_COL, AUDIO_COL, SIZE_COL,
+    VIDEO_COL, DURATION_COL, SIZE_COL,
     RESULT_COL, STATUS_COL, QUEUE_COLUMN_HEADERS,
 )
 from theming import (
@@ -31,13 +38,45 @@ from theming import (
 from ui_builder import _UiBuilderMixin
 from queue_controller import _QueueControllerMixin
 
+# preset_combo's placeholder entry for "the app's own consumer default, not
+# actually any specific saved preset" -- see __init__'s startup-default
+# block and _on_preset_selected below. Never collides with a built-in
+# preset name (those are all technical, e.g. "720p CPU Balanced (Software
+# / x265)") -- but a *user-saved* preset could otherwise be given this
+# exact name by hand, so _save_preset_as explicitly reserves it alongside
+# BUILTIN_PRESET_NAMES rather than relying on this string just happening
+# not to collide.
+CURRENT_SETTINGS_LABEL = "Current Settings"
+
+
 class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("TITAN-i Transcoder")
+        self.setWindowTitle("TITAN Video")
         self.resize(1240, 820)
+        # Left panel is a fixed 470px inspector now (ui_builder.py's
+        # _build_ui), not a resizable pane -- narrowing the window has
+        # nowhere left to take width from except Videos, and a saved
+        # window_geometry from before this change (or just a user dragging
+        # the window edge) could otherwise crush it well past usable.
+        # 960 = 470 (settings) + ~490 (enough for the queue's Video/
+        # Duration/Size/Status columns plus Save-to/Change/Open without
+        # feeling cramped) -- the normal 1240 default still has plenty of
+        # room above this floor.
+        self.setMinimumWidth(960)
 
         self.presets: list[dict] = load_presets()
+        # An already-installed presets.json predates a newly-added
+        # built-in (e.g. libx264's own trio) and would otherwise never
+        # pick it up -- load_presets() only ever seeds from builtins when
+        # the file is missing/corrupt, not on a normal successful load.
+        # Persisted back to disk only when migration actually changed
+        # something (save_presets on every launch regardless would be
+        # harmless too, just pointless I/O the common case doesn't need).
+        migrated_presets = migrate_missing_builtins(self.presets, BUILTIN_PRESETS)
+        if migrated_presets != self.presets:
+            self.presets = migrated_presets
+            save_presets(self.presets)
         self._res_label = {(r["width"], r["height"]): r["label"] for r in RESOLUTIONS}
         self._preview_audio_cache: dict[tuple, str | None] = {}
         self._preview_audio_channels_cache: dict[tuple, int | None] = {}
@@ -46,14 +85,58 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._loaded_preset_settings: dict | None = None
         self._running_items: list[QTreeWidgetItem] = []
         self._current_running_item: QTreeWidgetItem | None = None
+        # Whole-run totals, reset in _begin_conversion -- nothing tracked
+        # these in aggregate before this pass; _append_result_size only
+        # ever computed per-job byte counts and discarded them. Read by
+        # _on_all_finished (via formatting.format_run_summary) to decide
+        # whether a finished-run summary has anything real to show.
+        self._run_total_input_bytes = 0
+        self._run_total_output_bytes = 0
+        self._run_completed_count = 0
+        # Also reset in _begin_conversion, also read by _on_all_finished --
+        # distinguishes "everything succeeded" from "some failed" from "the
+        # user cancelled partway through", all of which _run_completed_count
+        # alone can't tell apart (it's just a count of real successes).
+        # "Conversion Complete" implying a fully successful run when it was
+        # actually cancelled after 2 of 4 -- confirmed a real, misleading
+        # gap this pass otherwise left behind.
+        self._run_failed_count = 0
+        self._run_cancelled = False
         self._syncing_controls_from_selection = False
         self._queue_editable = True
+        # True between "Pause after this file" taking effect (_on_paused)
+        # and either Resume or Stop -- lets start_btn's one click handler
+        # (_start) tell "fresh run" and "continue a paused one" apart
+        # without needing a second button.
+        self._queue_paused = False
+        # The status_label text before _set_status (queue_controller.py)
+        # applies "Stop After Current Video"'s own suffix, if that's
+        # currently checked -- see _set_status's own comment.
+        self._base_status_text = "Idle"
+        # True from the moment Convert is clicked while files are still
+        # being analyzed until conversion actually begins -- lets
+        # _maybe_begin_ready_conversion (queue_controller.py) start the
+        # real run automatically the instant the last outstanding probe
+        # lands, instead of making the user click Convert a second time.
+        # See _start()'s own comment for why this matters.
+        self._start_when_ready = False
         # Counts remaining outstanding probes (interlace detection + source
         # probe, starts at 2) for a file added while a run is already in
         # progress -- see add_files/_maybe_submit_mid_run_job in
         # queue_controller.py. Only ever populated for a genuinely mid-run
         # add; an item added while idle is never in here.
         self._pending_mid_run_items: dict[QTreeWidgetItem, int] = {}
+        # Same shape and same "starts at 2, counts down as each probe's
+        # own callback finishes applying its result" mechanics as
+        # _pending_mid_run_items above, but populated for every added
+        # file regardless of run state -- purely for the "Preparing --
+        # analyzing N video(s)…" message (_start/_maybe_begin_ready_
+        # conversion in queue_controller.py) to count actual videos, not
+        # raw QProcess objects. len(_detection_processes) counts two
+        # processes per video (interlace + source probe), so it reported
+        # "analyzing 2 file(s)" for a single added video -- confirmed a
+        # real, reported bug, not just imprecise wording.
+        self._pending_analysis_items: dict[QTreeWidgetItem, int] = {}
         # Queue-structure undo/redo (add/remove/clear/reorder) -- see
         # _push_undo_snapshot/_undo/_redo in queue_controller.py. Each
         # entry is a full snapshot (list of job dicts), not a diff.
@@ -61,14 +144,44 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._redo_stack: list[list[dict]] = []
         self._detection_processes: list[QProcess] = []  # keep references alive; Qt won't
         self.output_dir = Path.home() / "Videos" / "transcoded"
-        self._qsettings = QSettings("TITAN-i", "Transcoder")
+        # Deliberately a different (org, app) pair than the sibling
+        # TITAN-i Transcoder app ("TITAN-i", "Transcoder") -- QSettings
+        # resolves its backing file purely from this pair, so sharing it
+        # would mean the two apps clobbered each other's window geometry,
+        # theme, and expanded-section state every time either one closed.
+        self._qsettings = QSettings("TITAN", "TitanVideo")
 
-        self._theme_choice = _validate_theme_choice(self._qsettings.value("theme_choice", "dark"))
+        # "system" (not "dark") -- this fork's whole premise is following
+        # OS/Mac-style conventions by default rather than an app-specific
+        # choice; a first-time user should see whatever their desktop's
+        # own light/dark preference already is, not this app's opinion.
+        self._theme_choice = _validate_theme_choice(self._qsettings.value("theme_choice", "system"))
         _load_stylesheet(QApplication.instance(), _resolve_theme(self._theme_choice))
         # "System" needs to react live, not just at launch -- confirmed this
         # signal actually exists and fires on this Qt/PySide6 version before
-        # relying on it (see the git history for the real check).
-        QApplication.instance().styleHints().colorSchemeChanged.connect(self._on_system_theme_changed)
+        # relying on it (see the git history for the real check). Connected
+        # via a weak reference, not self._on_system_theme_changed directly --
+        # QStyleHints is owned by QApplication and outlives every MainWindow,
+        # so a direct bound-method connection would keep each MainWindow (and
+        # its entire widget tree) alive for the rest of the process even
+        # after the window closes: nothing else ever disconnects it, and nothing
+        # about closing a window makes Qt/PySide walk a persistent object's
+        # connection list looking for dead receivers. Invisible in real use
+        # (one MainWindow for the process's whole lifetime), but confirmed
+        # directly as a real leak -- a plain loop constructing and dropping
+        # MainWindow() with the direct connection showed construction time
+        # and RSS both growing without bound (20s and 225MB by the 28th
+        # instance, each previous instance still fully alive) purely from
+        # _load_stylesheet's app.setStyleSheet() having to re-polish every
+        # accumulated leaked widget on every subsequent call.
+        weak_on_theme_changed = weakref.WeakMethod(self._on_system_theme_changed)
+
+        def _relay_theme_changed(scheme, _ref=weak_on_theme_changed):
+            method = _ref()
+            if method is not None:
+                method(scheme)
+
+        QApplication.instance().styleHints().colorSchemeChanged.connect(_relay_theme_changed)
 
         self.queue = TranscodeQueue()
         self.queue.job_started.connect(self._on_job_started)
@@ -78,6 +191,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self.queue.job_finished.connect(self._on_job_finished)
         self.queue.job_failed.connect(self._on_job_failed)
         self.queue.all_finished.connect(self._on_all_finished)
+        self.queue.paused.connect(self._on_paused)
 
         self._build_ui()
         # Ctrl+Z/Ctrl+Shift+Z -- default Qt.WindowShortcut context, fires
@@ -120,13 +234,74 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # geometry/theme/etc.), so this runs on every single startup, not
         # just a first install.
         self._refresh_preset_combo(select="720p CPU Balanced (Software / x265)")
+        # Overrides just the two fields that preset -- like every built-in
+        # -- fixes to a value that's a poor default for this fork
+        # specifically: Resolution (already changed in ui_builder.py, but
+        # a belt-and-suspenders override here too in case a future preset
+        # rename ever changes which name gets selected above) and
+        # Processing, which the baseline preset hardcodes to CPU. Automatic
+        # is the same one-shot resolution _on_processing_choice always
+        # does, just run once at startup instead of waiting for a click.
+        self.res_combo.setCurrentIndex(0)  # Keep Original
+        self._on_processing_choice("automatic")
+        # This app's own safe consumer default, not really "720p CPU
+        # Balanced" with two fields quietly changed underneath it -- left
+        # as that preset, the modified-indicator (_update_preset_modified_
+        # indicator) would show "modified" the instant the window opens,
+        # before the user has touched anything.
+        #
+        # A snapshot of the resolved state itself, not None -- None was
+        # tried first and broke the indicator entirely (confirmed via a
+        # real test failure: changing quality_slider away from this
+        # baseline and back no longer showed modified/unmodified at all,
+        # since _update_preset_modified_indicator's own guard treats None
+        # as "nothing to compare against, never modified"). Capturing the
+        # actual current settings keeps that comparison meaningful --
+        # starts unmodified, correctly flips true the moment anything
+        # changes -- while still not being tied to a *named* preset (see
+        # the CURRENT_SETTINGS_LABEL sentinel below).
+        self._loaded_preset_settings = self._current_settings()
+        self._update_preset_modified_indicator()
+        # Otherwise preset_combo itself still visibly showed "720p CPU
+        # Balanced (Software / x265)" as the selected item -- correctly
+        # not flagged "modified" (the fix above), but still telling the
+        # user a specific technical preset was active when it deliberately
+        # isn't. blockSignals: _on_preset_selected would otherwise try to
+        # look up this sentinel as a real preset (finds none, harmlessly
+        # no-ops) and stomp the tooltip set below right back to the
+        # sentinel text via its own setToolTip(name) call.
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.insertItem(0, CURRENT_SETTINGS_LABEL)
+        self.preset_combo.setCurrentIndex(0)
+        self.preset_combo.blockSignals(False)
+        self.preset_combo.setToolTip(CURRENT_SETTINGS_LABEL)
         self._restore_window_state()
+        # Establishes correct starting visibility (progress_bar/eta_label/
+        # stats_label/stop_btn/open_folder_btn hidden while idle) -- one
+        # call through the same function every later phase transition uses,
+        # rather than hand-setting setVisible(False) per-widget in
+        # ui_builder.py at construction time.
+        self._apply_run_phase_visuals("idle")
+        self._maybe_note_no_hardware()
+
+    def _maybe_note_no_hardware(self):
+        # Silent when hardware acceleration is available -- Automatic
+        # Processing already just works, nobody needs ambient reassurance
+        # a render node exists (the old persistent footer said so
+        # regardless, reported as the most generic-utility-feeling part
+        # of the window). Only speaks up in the one case that actually
+        # matters to the user: no hardware found at all, so Processing
+        # will always resolve to CPU regardless of which engine button is
+        # picked -- worth knowing once, not worth a permanent status line.
+        engine, _vendor = worker.best_available_engine()
+        if engine != "hevc_vaapi":
+            self._set_status("No hardware acceleration detected — using CPU")
 
     def closeEvent(self, event):
         self._qsettings.setValue("window_geometry", self.saveGeometry())
-        self._qsettings.setValue("splitter_state", self._splitter.saveState())
-        self._qsettings.setValue("command_expanded", self._command_group.isChecked())
-        self._qsettings.setValue("log_expanded", self._log_group.isChecked())
+        self._qsettings.setValue("video_expert_expanded", self.video_expert_group.isChecked())
+        self._qsettings.setValue("audio_expert_expanded", self.audio_expert_group.isChecked())
+        self._qsettings.setValue("preset_group_expanded", self.preset_group.isChecked())
         super().closeEvent(event)
 
     def _restore_window_state(self):
@@ -136,15 +311,19 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # QSettings round-trips bool through its backing store as the string
         # "true"/"false" on some platforms -- str(...) != "false" rather than
         # a bare truthiness check, so a stored False doesn't come back truthy.
-        command_expanded = self._qsettings.value("command_expanded")
-        if command_expanded is not None:
-            self._command_group.setChecked(str(command_expanded) != "false")
-        log_expanded = self._qsettings.value("log_expanded")
-        if log_expanded is not None:
-            self._log_group.setChecked(str(log_expanded) != "false")
-        splitter_state = self._qsettings.value("splitter_state")
-        if splitter_state is not None:
-            self._splitter.restoreState(splitter_state)
+        # No command_expanded/log_expanded here anymore -- neither
+        # Effective Command nor Log sits in the main layout to have a
+        # collapsed state at all now (see ui_builder.py's
+        # _build_command_preview/_build_right_panel own comments).
+        video_expert_expanded = self._qsettings.value("video_expert_expanded")
+        if video_expert_expanded is not None:
+            self.video_expert_group.setChecked(str(video_expert_expanded) != "false")
+        audio_expert_expanded = self._qsettings.value("audio_expert_expanded")
+        if audio_expert_expanded is not None:
+            self.audio_expert_group.setChecked(str(audio_expert_expanded) != "false")
+        preset_group_expanded = self._qsettings.value("preset_group_expanded")
+        if preset_group_expanded is not None:
+            self.preset_group.setChecked(str(preset_group_expanded) != "false")
 
     def _apply_theme(self, choice: str):
         self._theme_choice = choice
@@ -152,6 +331,50 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         _load_stylesheet(QApplication.instance(), _resolve_theme(choice))
         self._refresh_themed_icons()
         self._refresh_fuzzy_caption_style()
+
+    def _open_settings_dialog(self):
+        # Lazily built once, reused on every subsequent open -- same
+        # pattern as _show_log_window below. This used to build a fresh,
+        # uncached QDialog on every call and reparent self.theme_combo
+        # (ui_builder.py's _build_status_bar -- still that method name, no
+        # longer builds an actual status bar) into it each time. That let
+        # a live crash through: "RuntimeError: libshiboken: Internal C++
+        # object (QComboBox) already deleted" on the addRow call, because
+        # theme_combo is built with no parent at construction time
+        # (ui_builder.py) and only ever gets a real C++ parent from
+        # whichever dialog most recently reparented it in -- a fresh,
+        # uncached dialog on every open meant that parent's own lifetime
+        # was never tracked, and repeated reproduction attempts couldn't
+        # pin down the exact GC timing that deleted it, so this removes
+        # the pattern outright rather than chasing the trigger further.
+        # Caching the dialog means theme_combo is reparented exactly once.
+        if not hasattr(self, "_settings_dialog") or self._settings_dialog is None:
+            self._settings_dialog = QDialog(self)
+            self._settings_dialog.setWindowTitle("Settings")
+            form = QFormLayout(self._settings_dialog)
+            form.addRow("Appearance:", self.theme_combo)
+        self._settings_dialog.exec()
+
+    def _show_log_window(self):
+        # Lazily built once, reused on every subsequent open (unlike
+        # Settings above) -- this hosts self.log_view itself, reparented
+        # in on first use, so the running conversion's own log output
+        # (already streaming into log_view regardless of whether this
+        # window has ever been opened) shows up immediately rather than
+        # this dialog needing its own separate copy kept in sync.
+        if not hasattr(self, "_log_window") or self._log_window is None:
+            self._log_window = QDialog(self)
+            self._log_window.setWindowTitle("Conversion Log")
+            self._log_window.resize(700, 400)
+            # Non-modal (not exec()) -- this stays open and updating
+            # while the user keeps working in the main window, closer to
+            # a diagnostics panel than a blocking dialog.
+            layout = QVBoxLayout(self._log_window)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addWidget(self.log_view)
+        self._log_window.show()
+        self._log_window.raise_()
+        self._log_window.activateWindow()
 
     def _on_system_theme_changed(self, _scheme):
         if self._theme_choice == "system":
@@ -203,7 +426,18 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
 
     # --- cascading settings behavior ---
     def _current_encoder_id(self) -> str:
-        return ENCODERS[self.encoder_combo.currentIndex()][0]
+        # Resolves ENCODERS' engine choice and CODECS' codec choice into
+        # the one real ffmpeg encoder id the rest of the app (RC_MODES,
+        # build_args, ...) actually keys off of. Hardware ignores
+        # codec_combo entirely -- there's no h264_vaapi wired up, VAAPI
+        # is HEVC-only here (codec_combo is disabled + forced to H.265
+        # whenever a hardware engine is selected, see _on_encoder_changed,
+        # but this reads the engine directly rather than trusting that
+        # the combo's disabled state was actually respected).
+        engine = ENCODERS[self.encoder_combo.currentIndex()][0]
+        if engine == "hevc_vaapi":
+            return engine
+        return self.codec_combo.currentData()
 
     def _current_gpu_vendor(self) -> str | None:
         return ENCODERS[self.encoder_combo.currentIndex()][1]
@@ -215,9 +449,27 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         return encoder_profile_key(self._current_encoder_id(), self._current_gpu_vendor())
 
     def _on_encoder_changed(self):
+        # Also wired to codec_combo.currentIndexChanged (ui_builder.py),
+        # not just encoder_combo's -- the resolved encoder id depends on
+        # both (see _current_encoder_id()), so either one changing needs
+        # the same full cascade below.
         encoder = self._current_encoder_id()
         encoder_key = self._current_encoder_key()
         is_vaapi = encoder == "hevc_vaapi"
+
+        # Codec (H.265/H.264) only means anything for the CPU engine --
+        # no h264_vaapi wired up, hardware is HEVC-only here. Forced to
+        # H.265 and disabled (not hidden -- "H.265 (HEVC)" is still the
+        # real, correct answer, just not a choice anymore) whenever a
+        # hardware engine is selected, matching what hevc_vaapi actually
+        # runs. blockSignals: setCurrentIndex would otherwise recurse
+        # back into this same method for a change it made itself, not a
+        # real user action.
+        self.codec_combo.setEnabled(not is_vaapi)
+        if is_vaapi:
+            self.codec_combo.blockSignals(True)
+            self.codec_combo.setCurrentIndex(0)  # H.265 (HEVC)
+            self.codec_combo.blockSignals(False)
 
         self.rc_mode_combo.blockSignals(True)
         self.rc_mode_combo.clear()
@@ -253,6 +505,33 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         else:
             self._on_speed_x265_slider_changed()
         self.video_form.setRowVisible(self.tune_combo, not is_vaapi)
+
+        # x264 and x265 don't accept identical -tune values (x264 also
+        # takes "film"/"stillimage", both confirmed rejected outright by
+        # this build's libx265 -- see X264_TUNES/X265_TUNES in
+        # constants.py) -- repopulated per encoder, same
+        # blockSignals/clear/re-add pattern rc_mode_combo above uses, for
+        # the same reason (clearing+adding one at a time would otherwise
+        # fire currentIndexChanged repeatedly on a half-built list). Only
+        # for a real software encoder -- skipped for VAAPI (build_args
+        # ignores this value there anyway, and the row's hidden the line
+        # above) rather than repopulating with a list that wouldn't mean
+        # anything for whichever encoder is actually selected.
+        #
+        # Preserves the current selection by text when the new list still
+        # has it (e.g. switching x265 -> x264 keeps "grain" selected);
+        # falls back to "None" -- never silently to some other tune
+        # picked by whatever index happened to land there -- when it
+        # doesn't (e.g. x264 -> x265 with "film" selected, which x265
+        # doesn't offer at all).
+        if not is_vaapi:
+            current_tune = self.tune_combo.currentText()
+            new_tunes = X265_TUNES if encoder == "libx265" else X264_TUNES
+            self.tune_combo.blockSignals(True)
+            self.tune_combo.clear()
+            self.tune_combo.addItems(new_tunes)
+            self.tune_combo.setCurrentText(current_tune if current_tune in new_tunes else "None")
+            self.tune_combo.blockSignals(False)
 
         # Repopulating above ran with signals blocked (clearing/adding items
         # one at a time would otherwise fire currentIndexChanged repeatedly
@@ -411,6 +690,138 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         against that itself)."""
         self._update_command_preview()
         self._sync_settings_to_selected_queue_items()
+        self._sync_normal_video_controls()
+        self._sync_normal_audio_controls()
+
+    def _sync_normal_video_controls(self):
+        """Keeps the Normal-mode Processing/Quality/Compatibility buttons
+        correct no matter what actually changed the underlying state --
+        an Expert control, a preset, a queue-selection load, or one of
+        this same row's own buttons -- same reasoning as
+        _sync_rc_buttons_to_combo above, which this runs alongside (both
+        reached via _on_control_changed, itself reachable from every path
+        that can change encoder/rc_mode/quality_value)."""
+        engine, vendor = self._current_encoder_id(), self._current_gpu_vendor()
+        if engine == "hevc_vaapi" and vendor == "intel":
+            self.processing_intel_btn.setChecked(True)
+        elif engine == "hevc_vaapi" and vendor == "amd":
+            self.processing_amd_btn.setChecked(True)
+        else:
+            self.processing_cpu_btn.setChecked(True)
+
+        self.compat_compatible_btn.setChecked(engine == "libx264")
+        if engine != "libx264":
+            self.compat_modern_btn.setChecked(True)
+
+        key = self._current_encoder_key()
+        rc_mode = self.rc_mode_combo.currentData()
+        matched_tier = None
+        if rc_mode == RC_MODE_FRIENDLY[key]["quality"]:
+            value = self.quality_slider.value()
+            matched_tier = next(
+                (tier for tier, tier_value in QUALITY_TIERS[key].items() if tier_value == value), None
+            )
+        tier_buttons = {
+            "smaller": self.quality_smaller_btn,
+            "balanced": self.quality_balanced_btn,
+            "better": self.quality_better_btn,
+        }
+        if matched_tier is not None:
+            tier_buttons[matched_tier].setChecked(True)
+        else:
+            # No exact match (e.g. the Expert quality slider was dragged
+            # to some in-between value) -- none of the three should read
+            # as selected. QButtonGroup's own exclusivity won't let a
+            # single setChecked(False) leave the group with nothing
+            # checked, so exclusivity is dropped just long enough to
+            # clear all three.
+            self.quality_tier_button_group.setExclusive(False)
+            for btn in tier_buttons.values():
+                btn.setChecked(False)
+            self.quality_tier_button_group.setExclusive(True)
+
+    def _sync_normal_audio_controls(self):
+        if self.audio_downmix_check.isChecked():
+            self.audio_stereo_btn.setChecked(True)
+        else:
+            self.audio_automatic_btn.setChecked(True)
+
+    def _on_processing_choice(self, choice: str):
+        if choice == "automatic":
+            engine, vendor = worker.best_available_engine()
+        elif choice == "cpu":
+            # Whatever Codec (H.265/H.264) already holds -- switching
+            # engine back to CPU shouldn't silently change codec too.
+            engine, vendor = self.codec_combo.currentData(), None
+        elif choice == "intel":
+            engine, vendor = "hevc_vaapi", "intel"
+        else:
+            engine, vendor = "hevc_vaapi", "amd"
+        settings = self._current_settings()
+        old_key = self._current_encoder_key()
+        was_vaapi = settings["encoder"] == "hevc_vaapi"
+        now_vaapi = engine == "hevc_vaapi"
+        settings["encoder"] = engine
+        settings["gpu_vendor"] = vendor
+        if now_vaapi != was_vaapi:
+            # Crossing the software/hardware boundary changes what
+            # "speed" even means -- VAAPI stores it as a compression_level
+            # string ("1".."7"), x264/x265 as a preset name ("medium" etc).
+            # Same real crash already fixed once for _current_settings()/
+            # _apply_settings_to_controls() themselves (mismatched speed
+            # representation between the two families); hit again here
+            # because this delta can cross that boundary in a single step,
+            # which neither of those two ever does on its own. Reset to
+            # each family's own middle-of-the-road default (AMD Balanced's
+            # own "4" reasoning in constants.py) rather than attempting
+            # some numeric translation between two unrelated scales.
+            settings["speed"] = "4" if now_vaapi else "medium"
+
+        new_key = encoder_profile_key(engine, vendor)
+        if old_key != new_key and settings["rc_mode"] == RC_MODE_FRIENDLY[old_key]["quality"]:
+            # Same problem one level down: a quality-family value only
+            # means something within one engine's own scale (CRF 23 and
+            # ICQ 23 aren't remotely the same quality) -- carrying the raw
+            # number across a Processing switch left it matching none of
+            # QUALITY_TIERS' three named tiers (confirmed live: switching
+            # CPU's default CRF 23 to Intel left Quality showing no
+            # selection at all). Carries the *tier* across instead, when
+            # the old value matched one; falls back to "balanced" when it
+            # didn't (e.g. after an Expert-mode slider drag). Bitrate-
+            # family selections (File Size) are left untouched above --
+            # a target output size doesn't need this kind of translation.
+            old_tier = next(
+                (tier for tier, value in QUALITY_TIERS.get(old_key, {}).items()
+                 if value == settings["quality_value"]), "balanced"
+            )
+            settings["rc_mode"] = RC_MODE_FRIENDLY[new_key]["quality"]
+            settings["quality_value"] = QUALITY_TIERS[new_key][old_tier]
+        self._apply_settings_to_controls(settings)
+
+    def _on_quality_tier_clicked(self, tier: str):
+        key = self._current_encoder_key()
+        settings = self._current_settings()
+        settings["rc_mode"] = RC_MODE_FRIENDLY[key]["quality"]
+        settings["quality_value"] = QUALITY_TIERS[key][tier]
+        self._apply_settings_to_controls(settings)
+
+    def _on_compatibility_clicked(self, choice: str):
+        settings = self._current_settings()
+        if choice == "compatible":
+            # H.264 -- hardware here can't produce it (no h264_vaapi
+            # wired up), so this always forces the engine to CPU too.
+            settings["encoder"] = "libx264"
+            settings["gpu_vendor"] = None
+        elif settings["encoder"] != "hevc_vaapi":
+            # Hardware is already forced to H.265 (_on_encoder_changed) --
+            # only a software engine actually needs this to do anything.
+            settings["encoder"] = "libx265"
+        self._apply_settings_to_controls(settings)
+
+    def _on_audio_choice(self, choice: str):
+        settings = self._current_settings()
+        settings["audio_downmix_stereo"] = choice == "stereo"
+        self._apply_settings_to_controls(settings)
 
     def _sync_settings_to_selected_queue_items(self):
         # Selecting a queue item to inspect its settings (see
@@ -518,7 +929,15 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             current.append(arg)
         if current:
             lines.append(" ".join(current))
-        return "\n".join(lines)
+        text = "\n".join(lines)
+        # command_preview now wraps in place (ui_builder.py) instead of
+        # scrolling horizontally. The -vf filter chain is one long
+        # comma/colon-separated value with no spaces at all, so Qt's own
+        # word-wrap has nowhere to break but mid-word without help. A
+        # zero-width space is an invisible, legal wrap point -- inserted
+        # after every comma, which is already how this value's own logical
+        # stages (format=..., hwupload, scale_vaapi=...) are separated.
+        return text.replace(",", ",​")
 
     def _preview_audio_codec(self, path: Path, track_index: int) -> str | None:
         key = (path, track_index)
@@ -602,7 +1021,14 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             "gpu_vendor": self._current_gpu_vendor(),
             "rc_mode": rc_mode,
             "quality_value": self.size_spin.value() if is_bitrate else self.quality_slider.value(),
-            "speed": X265_PRESETS[self.speed_x265_slider.value()] if encoder == "libx265" else str(self.speed_slider.value()),
+            # != "hevc_vaapi", not == "libx265" -- libx264 also drives
+            # speed_x265_slider (same ultrafast..placebo preset names,
+            # confirmed shared in worker.py's build_args docstring),
+            # not the VAAPI compression_level slider. Reading the wrong
+            # one for libx264 was a real bug: it fell through to
+            # speed_slider (str(int), an out-of-range compression_level
+            # value the encoder never uses) instead.
+            "speed": X265_PRESETS[self.speed_x265_slider.value()] if encoder != "hevc_vaapi" else str(self.speed_slider.value()),
             "bit_depth": self.bitdepth_combo.currentData(),
             "width": res["width"],
             "height": res["height"],
@@ -619,12 +1045,29 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # .get("gpu_vendor", "intel"): presets/queue jobs saved before this
         # key existed only ever meant the Intel path (it was the only VAAPI
         # option then), so that's the correct default for anything missing it.
-        wanted_vendor = settings.get("gpu_vendor", "intel") if settings["encoder"] == "hevc_vaapi" else None
-        encoder_index = next(
-            (i for i, (enc, vendor, _) in enumerate(ENCODERS)
-             if enc == settings["encoder"] and vendor == wanted_vendor), 0
+        is_vaapi_settings = settings["encoder"] == "hevc_vaapi"
+        wanted_vendor = settings.get("gpu_vendor", "intel") if is_vaapi_settings else None
+        # Matched by vendor alone, not enc == settings["encoder"] -- the
+        # CPU row's own id in ENCODERS is just a placeholder now (see its
+        # own comment in constants.py), not necessarily what
+        # settings["encoder"] actually is (could be "libx264"), so an
+        # exact-string match would never find the CPU row for an x264
+        # preset/job. vendor is None only for the single CPU row, so
+        # that's what actually identifies "the CPU engine" now.
+        engine_index = next(
+            (i for i, (_, vendor, _label) in enumerate(ENCODERS)
+             if vendor == wanted_vendor), 0
         )
-        self.encoder_combo.setCurrentIndex(encoder_index)  # cascades rc_mode/speed/tune rebuild
+        self.encoder_combo.setCurrentIndex(engine_index)  # cascades rc_mode/speed/tune rebuild
+        if not is_vaapi_settings:
+            # codec_combo's own change also cascades the same rebuild
+            # (ui_builder.py wires it to the same _on_encoder_changed) --
+            # findData, not assuming an exact index, since CODECS' own
+            # order isn't guaranteed to match settings["encoder"]'s value
+            # positionally.
+            codec_index = self.codec_combo.findData(settings["encoder"])
+            if codec_index >= 0:
+                self.codec_combo.setCurrentIndex(codec_index)
 
         rc_index = next(
             (i for i in range(self.rc_mode_combo.count())
@@ -637,7 +1080,13 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         else:
             self.quality_slider.setValue(settings["quality_value"])
 
-        if settings["encoder"] == "libx265":
+        if settings["encoder"] != "hevc_vaapi":
+            # != "hevc_vaapi", not == "libx265" -- same real bug, same fix
+            # as _current_settings() above: libx264 also uses
+            # speed_x265_slider, not the VAAPI one. Applying a libx264
+            # preset used to fall through to int(settings["speed"]) here,
+            # which crashes outright ("medium" isn't an int).
+            #
             # Defensive fallback, same reasoning as audio_bitrate above --
             # X265_PRESETS is a fixed list in this app, but a hand-edited
             # presets.json could still carry a value that's not in it.
@@ -694,6 +1143,13 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self.preset_combo.setToolTip(name)
         settings = next((p for p in self._all_presets() if p["name"] == name), None)
         if settings:
+            # A real preset was explicitly chosen -- the startup sentinel
+            # (see __init__) no longer describes the current state, and
+            # leaving it sitting unselected in the list would be a stale,
+            # meaningless entry from here on.
+            sentinel_index = self.preset_combo.findText(CURRENT_SETTINGS_LABEL)
+            if sentinel_index >= 0:
+                self.preset_combo.removeItem(sentinel_index)
             # Set before applying: _apply_settings_to_controls cascades through
             # several _update_command_preview() calls as it sets each control,
             # and each of those checks the modified indicator against this.
@@ -707,6 +1163,17 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             return
         if name in BUILTIN_PRESET_NAMES:
             QMessageBox.warning(self, "Reserved name", "That name is a built-in preset. Choose a different name.")
+            return
+        if name == CURRENT_SETTINGS_LABEL:
+            # Otherwise a preset saved under this exact name would sit in
+            # the combo indistinguishable from the startup sentinel (see
+            # CURRENT_SETTINGS_LABEL's own comment) -- confirmed a real
+            # collision, not just a theoretical one: nothing else guarded
+            # this name before now.
+            QMessageBox.warning(
+                self, "Reserved name",
+                f'"{CURRENT_SETTINGS_LABEL}" is reserved. Choose a different name.'
+            )
             return
         existing = next((p for p in self.presets if p["name"] == name), None)
         if existing and QMessageBox.question(

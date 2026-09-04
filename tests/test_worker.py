@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 import worker  # noqa: E402
 
-from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEventLoop, QProcess, QTimer  # noqa: E402
 
 # TranscodeQueue tests drive a real QProcess, which needs a running Qt event
 # loop -- QCoreApplication (no GUI needed here, unlike main.py's tests).
@@ -83,6 +83,13 @@ def vaapi_settings(**overrides):
 
 def x265_settings(**overrides):
     settings = {**BASE_SETTINGS, "encoder": "libx265", "rc_mode": "CRF",
+                "quality_value": 23, "speed": "medium", "bit_depth": 10}
+    settings.update(overrides)
+    return settings
+
+
+def x264_settings(**overrides):
+    settings = {**BASE_SETTINGS, "encoder": "libx264", "rc_mode": "CRF",
                 "quality_value": 23, "speed": "medium", "bit_depth": 10}
     settings.update(overrides)
     return settings
@@ -234,6 +241,82 @@ class TestBuildArgsX265(ClipTestCase):
         # behavior change for a path that was never broken.
         args = worker.build_args(x265_settings(), self.clip, self.out_path)
         self.assertNotIn("-noautoscale", args)
+
+
+class TestBuildArgsX264(ClipTestCase):
+    """libx264 is a second software (non-VAAPI) path alongside libx265 --
+    same rc_mode/pix_fmt/preset handling (confirmed structurally identical
+    in build_args), but its own -c:v value and, critically, none of
+    libx265's own -x265-params psycho-visual tuning (meaningless to
+    libx264 -- would fail the job outright if it were ever sent there)."""
+
+    def test_uses_libx264_not_libx265(self):
+        args = worker.build_args(x264_settings(), self.clip, self.out_path)
+        self.assertEqual(args[args.index("-c:v") + 1], "libx264")
+
+    def test_no_x265_params(self):
+        # The one thing that's actually different from the x265 path
+        # structurally, not just a different flag value -- see the
+        # comment on this exact branch in worker.py's build_args.
+        args = worker.build_args(x264_settings(), self.clip, self.out_path)
+        self.assertNotIn("-x265-params", args)
+
+    def test_crf_uses_crf_flag(self):
+        args = worker.build_args(x264_settings(rc_mode="CRF", quality_value=20), self.clip, self.out_path)
+        self.assertIn("-crf", args)
+        self.assertEqual(args[args.index("-crf") + 1], "20")
+        self.assertNotIn("-b:v", args)
+
+    def test_bitrate_mode_uses_bv_not_crf(self):
+        args = worker.build_args(
+            x264_settings(rc_mode="bitrate", quality_value=100),
+            self.clip, self.out_path, duration_seconds=80,
+        )
+        self.assertIn("-b:v", args)
+        self.assertEqual(args[args.index("-b:v") + 1], "10080k")
+        self.assertNotIn("-crf", args)
+
+    def test_10bit_uses_yuv420p10le(self):
+        args = worker.build_args(x264_settings(bit_depth=10), self.clip, self.out_path)
+        self.assertEqual(args[args.index("-pix_fmt") + 1], "yuv420p10le")
+
+    def test_8bit_uses_yuv420p(self):
+        args = worker.build_args(x264_settings(bit_depth=8), self.clip, self.out_path)
+        self.assertEqual(args[args.index("-pix_fmt") + 1], "yuv420p")
+
+    def test_speed_maps_to_preset_flag(self):
+        # Same ultrafast..placebo preset names as libx265 -- confirmed
+        # against this exact ffmpeg build, not assumed.
+        args = worker.build_args(x264_settings(speed="veryslow"), self.clip, self.out_path)
+        self.assertEqual(args[args.index("-preset") + 1], "veryslow")
+
+    def test_x264_only_tune_value_passes_through(self):
+        # "film" is real for x264 but rejected outright by this exact
+        # libx265 build (see TestTune.test_film_is_deliberately_not_offered)
+        # -- build_args itself doesn't validate tune values against either
+        # list, it just passes through whatever string it's given, so this
+        # confirms the plumbing carries an x264-only value correctly.
+        args = worker.build_args(x264_settings(tune="film"), self.clip, self.out_path)
+        self.assertEqual(args[args.index("-tune") + 1], "film")
+
+    def test_no_vaapi_device_for_cpu_encoder(self):
+        args = worker.build_args(x264_settings(), self.clip, self.out_path)
+        self.assertNotIn("-vaapi_device", args)
+
+    def test_real_encode_produces_h264_output(self):
+        # End-to-end with a real running ffmpeg, not just argv inspection
+        # -- confirms libx264 is actually a valid -c:v value in this
+        # build and the whole pipeline (scale/pix_fmt/preset/crf) is
+        # genuinely accepted together, not just individually plausible.
+        args = worker.build_args(x264_settings(), self.clip, self.out_path)
+        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(self.out_path)],
+            capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(probe.stdout.strip(), "h264")
 
 
 class TestSizeToBitrate(unittest.TestCase):
@@ -650,6 +733,41 @@ class TestSourceProbeHelpers(unittest.TestCase):
         })
         info = worker.parse_probe_output(stdout)
         self.assertEqual(info["frame_rate"], 0.0)
+
+
+class TestEmitStats(unittest.TestCase):
+    """_emit_stats reads plain instance state (_stats_buffer, _duration),
+    not a live QProcess -- directly testable in isolation without a real
+    encode running, unlike most of TranscodeQueue's own behavior."""
+
+    def _emit(self, stats_buffer: dict, duration: float) -> dict:
+        queue = worker.TranscodeQueue()
+        queue._stats_buffer = stats_buffer
+        queue._duration = duration
+        received = []
+        queue.job_stats.connect(received.append)
+        queue._emit_stats()
+        return received[0]
+
+    def test_speed_multiplier_is_a_real_float_not_the_raw_string(self):
+        stats = self._emit({"speed": "2.3x"}, duration=100.0)
+        self.assertEqual(stats["speed_multiplier"], 2.3)
+        self.assertEqual(stats["speed"], "2.3x")  # untouched, still available for display
+
+    def test_missing_speed_gives_none_multiplier_not_a_crash(self):
+        stats = self._emit({}, duration=100.0)
+        self.assertIsNone(stats["speed_multiplier"])
+
+    def test_zero_speed_gives_none_multiplier(self):
+        # ffmpeg does briefly report "0x" right at a job's start -- must not
+        # be treated as a usable rate (queue_controller.py's queue-wide ETA
+        # divides by this).
+        stats = self._emit({"speed": "0x"}, duration=100.0)
+        self.assertIsNone(stats["speed_multiplier"])
+
+    def test_unparseable_speed_gives_none_multiplier_not_a_crash(self):
+        stats = self._emit({"speed": "N/A"}, duration=100.0)
+        self.assertIsNone(stats["speed_multiplier"])
 
 
 class TestNonMatchingAspectRatio(unittest.TestCase):
@@ -1131,6 +1249,241 @@ class TestStopRaceFix(unittest.TestCase):
             self.assertFalse(temp_output.exists(), "a genuinely-stopped job's partial temp file must be removed")
             self.assertFalse(final_output.exists(), "must never have been created at all")
             self.assertEqual([e[0] for e in events], ["failed"])
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+class TestPauseResume(unittest.TestCase):
+    """request_pause() lets the *current* job run to completion untouched
+    (unlike stop(), nothing is terminated) and halts the run right after
+    -- _on_finished/_on_process_error route through _advance_or_pause()
+    instead of a plain _run_next() for exactly this reason. Exercised
+    directly against _on_finished with synthetic temp files, same
+    approach TestStopRaceFix above already uses -- no real subprocess
+    needed to test this mechanics."""
+
+    def _finish_a_job(self, queue, tmpdir, name="done"):
+        temp_output = tmpdir / f".{name}.transcoding.mp4"
+        final_output = tmpdir / f"{name}.mp4"
+        temp_output.write_bytes(b"pretend this is a completed encode")
+        queue._on_finished(Path(f"{name}.mkv"), temp_output, final_output, 0, None)
+
+    def test_pause_request_halts_after_the_current_job_finishes(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            queue = worker.TranscodeQueue()
+            # _index = 0, not 1 -- _run_next() dispatches self._jobs[self._index]
+            # and only increments _index *after*, so "next.mkv would run next if
+            # not paused" means it's sitting at _jobs[_index] itself, still
+            # un-dispatched (an _index of 1 against a single-element list would
+            # mean this job had already been dispatched, the opposite of pending
+            # -- caught by _advance_or_pause's own added len(_jobs) check below
+            # this test, which (correctly) no longer treats that state as "more
+            # jobs exist").
+            queue._jobs = [{"path": Path("next.mkv")}]  # would run next if not paused
+            queue._index = 0
+            queue.request_pause()
+            paused_events = []
+            started_events = []
+            queue.paused.connect(lambda: paused_events.append(True))
+            queue.job_started.connect(lambda *a: started_events.append(a))
+
+            self._finish_a_job(queue, tmpdir)
+
+            self.assertEqual(paused_events, [True])
+            self.assertEqual(started_events, [], "the next job must not have started")
+            self.assertTrue(queue._paused)
+            self.assertFalse(queue._pause_requested, "one-shot -- consumed once it takes effect")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_pause_requested_on_the_last_job_finishes_instead_of_pausing(self):
+        # Real, reported-live bug: "Stop After Current Video" checked
+        # during the *final* job in the queue paused anyway -- "Paused --
+        # 0 file(s) remaining" with a Resume button that has nothing left
+        # to resume, because _advance_or_pause only checked
+        # _pause_requested, not whether a next job actually existed. The
+        # run is genuinely finished at that point; it must behave exactly
+        # like the no-pause-requested case below (all_finished, not
+        # paused) once there's nothing left in the queue, regardless of
+        # whether a pause happened to be armed.
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            queue = worker.TranscodeQueue()
+            queue._jobs = []  # nothing left -- this was the last job
+            queue.request_pause()
+            paused_events = []
+            all_finished_events = []
+            queue.paused.connect(lambda: paused_events.append(True))
+            queue.all_finished.connect(lambda: all_finished_events.append(True))
+
+            self._finish_a_job(queue, tmpdir)
+
+            self.assertEqual(paused_events, [], "nothing left to resume -- must not pause")
+            self.assertEqual(all_finished_events, [True])
+            self.assertFalse(queue._paused)
+            self.assertFalse(
+                queue._pause_requested, "one-shot -- consumed even when it didn't take effect"
+            )
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_no_pause_requested_continues_normally(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            queue = worker.TranscodeQueue()
+            queue._jobs = []  # nothing left -- confirms the normal all_finished path still fires
+            all_finished_events = []
+            queue.all_finished.connect(lambda: all_finished_events.append(True))
+
+            self._finish_a_job(queue, tmpdir)
+
+            self.assertEqual(all_finished_events, [True])
+            self.assertFalse(queue._paused)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_cancel_pause_request_before_it_takes_effect(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            queue = worker.TranscodeQueue()
+            queue._jobs = []
+            queue.request_pause()
+            queue.cancel_pause_request()  # e.g. user unchecked the box before this job finished
+            paused_events = []
+            all_finished_events = []
+            queue.paused.connect(lambda: paused_events.append(True))
+            queue.all_finished.connect(lambda: all_finished_events.append(True))
+
+            self._finish_a_job(queue, tmpdir)
+
+            self.assertEqual(paused_events, [])
+            self.assertEqual(all_finished_events, [True])
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_resume_continues_from_the_same_index_not_a_fresh_run(self):
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            queue = worker.TranscodeQueue()
+            queue._jobs = [{"path": Path("a.mkv")}, {"path": Path("b.mkv")}, {"path": Path("c.mkv")}]
+            queue._index = 2  # a.mkv and b.mkv already ran
+            queue._paused = True
+            queue._output_dir = tmpdir
+            failed_events = []
+            queue.job_failed.connect(lambda *a: failed_events.append(a))
+
+            queue.resume()
+
+            # c.mkv doesn't exist on disk, so probing it fails -- confirms
+            # resume() actually picked up index 2 (c.mkv), not a fresh
+            # run restarting from index 0 (which would have tried a.mkv
+            # first instead).
+            self.assertEqual(len(failed_events), 1)
+            self.assertIn("c.mkv", failed_events[0][0])
+            self.assertFalse(queue._paused)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_stop_while_paused_emits_all_finished_immediately(self):
+        # No live _process to terminate while genuinely paused between
+        # jobs -- nothing would otherwise ever call _run_next() again to
+        # notice _stopped and emit all_finished on its own (that only
+        # happens from _advance_or_pause, already returned out of for
+        # good once a pause takes effect), so stop() has to do it directly.
+        queue = worker.TranscodeQueue()
+        queue._jobs = [{"path": Path("a.mkv")}]
+        queue._index = 1
+        queue._paused = True
+        all_finished_events = []
+        queue.all_finished.connect(lambda: all_finished_events.append(True))
+
+        queue.stop()
+
+        self.assertEqual(all_finished_events, [True])
+        self.assertFalse(queue._paused)
+        self.assertTrue(queue._stopped)
+
+    def test_stop_while_genuinely_running_does_not_emit_all_finished_synchronously(self):
+        # Contrast case -- a live process still needs its own async
+        # finished/errorOccurred signal to arrive before all_finished is
+        # appropriate; stop() must not short-circuit that by emitting it
+        # immediately just because _paused happens to be False here too.
+        queue = worker.TranscodeQueue()
+        queue._process = QProcess()
+        queue._process.setProgram("sleep")
+        queue._process.setArguments(["5"])
+        queue._process.start()
+        self.assertTrue(queue._process.waitForStarted(3000))
+        all_finished_events = []
+        queue.all_finished.connect(lambda: all_finished_events.append(True))
+
+        queue.stop()
+
+        self.assertEqual(all_finished_events, [])
+        queue._process.waitForFinished(3000)
+
+    def test_real_two_job_run_pauses_between_them_and_resumes(self):
+        # End-to-end with two real, genuinely-running encodes -- the
+        # tests above cover the mechanics directly against synthetic
+        # _on_finished calls; this confirms the same behavior actually
+        # holds with a real ffmpeg process in between.
+        tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        try:
+            clip_a = tmpdir / "a.mkv"
+            clip_b = tmpdir / "b.mkv"
+            _make_clip(clip_a)
+            _make_clip(clip_b)
+            jobs = [{"path": clip_a, **x265_settings()}, {"path": clip_b, **x265_settings()}]
+
+            queue = worker.TranscodeQueue()
+            events = []
+            loop = QEventLoop()
+            queue.job_finished.connect(lambda *a: events.append(("job_finished", a)))
+
+            # request_pause() only after the run has genuinely started --
+            # matches real usage (the GUI checkbox stays disabled until
+            # then) and, separately, start() itself resets
+            # _pause_requested to False, so requesting it any earlier
+            # would just get wiped out before _run_next ever saw it. A
+            # named slot, not a lambda, so it can be disconnected before
+            # phase 2 below -- otherwise it would also arm a pause for
+            # the second (resumed) job, which isn't what this is testing.
+            def request_pause_on_start(*a):
+                events.append(("job_started", a))
+                queue.request_pause()
+
+            queue.job_started.connect(request_pause_on_start)
+            queue.paused.connect(lambda: events.append(("paused", ())))
+            queue.paused.connect(loop.quit)
+            timer = QTimer()
+            timer.setSingleShot(True)
+            timer.timeout.connect(loop.quit)
+            timer.start(15000)
+
+            queue.start(jobs, tmpdir)
+            loop.exec()
+            queue.job_started.disconnect(request_pause_on_start)
+
+            self.assertEqual([e[0] for e in events], ["job_started", "job_finished", "paused"])
+            self.assertTrue((tmpdir / "a.mp4").exists())
+            self.assertFalse((tmpdir / "b.mp4").exists(), "b.mkv must not have started yet")
+
+            # Resume -- b.mkv should now actually run to completion.
+            events.clear()
+            queue.job_started.connect(lambda *a: events.append(("job_started", a)))
+            loop2 = QEventLoop()
+            queue.all_finished.connect(loop2.quit)
+            timer2 = QTimer()
+            timer2.setSingleShot(True)
+            timer2.timeout.connect(loop2.quit)
+            timer2.start(15000)
+
+            queue.resume()
+            loop2.exec()
+
+            self.assertEqual([e[0] for e in events], ["job_started", "job_finished"])
+            self.assertTrue((tmpdir / "b.mp4").exists())
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 

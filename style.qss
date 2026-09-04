@@ -23,7 +23,7 @@
    button-adjacent empty space all sitting in a visibly mismatched grey
    box -- confirmed by screenshot, not assumed, and confirmed latent since
    before Light theme existed. Every widget that DOES need an opaque
-   background of its own (QMainWindow/QSplitter below, QGroupBox,
+   background of its own (QMainWindow below, QGroupBox,
    QPushButton, the form fields, QTreeWidget, ...) already has its own
    more-specific rule, which still wins regardless of this default. */
 QWidget {
@@ -32,8 +32,16 @@ QWidget {
     font-size: 10pt;
 }
 
-QMainWindow, QSplitter {
+QMainWindow, QDialog {
     background-color: $BG_WINDOW;
+}
+
+/* Left panel is a fixed-width settings inspector now, not a resizable
+   sidebar (ui_builder.py's _build_ui has the full reasoning) -- this
+   border-right is the whole visual divider, replacing a draggable
+   QSplitter::handle that used to sit here. */
+QWidget#leftPanel {
+    border-right: 1px solid $SPLITTER;
 }
 
 /* margin-top used to be 14px, just about exactly the title text's own
@@ -47,26 +55,32 @@ QGroupBox {
     background-color: $BG_PANEL;
     border: 1px solid $BORDER;
     border-radius: 8px;
-    margin-top: 22px;
-    padding-top: 14px;
+    /* No margin-top -- the border enclosed the title (title reserved
+       space in the margin, *above* the border) is exactly the "header
+       floats outside the box" look reported live, most visible on a
+       collapsed section: the header text and the thin collapsed strip
+       read as two separate elements instead of one. padding-top instead
+       reserves the same room for the title *inside* the border. */
+    padding-top: 30px;
     font-weight: 600;
 }
 
 QGroupBox::title {
-    subcontrol-origin: margin;
+    /* padding, not margin -- positions the title relative to the box
+       just inside the border instead of in reserved space above it. */
+    subcontrol-origin: padding;
     subcontrol-position: top left;
-    /* left: 0, not 12px -- 12px plus this padding's own 6px left a ~18px
-       gap before the title text actually started, well past what the
-       6px padding everything else in this app uses would suggest.
-       top: 0, not a negative offset -- a negative top was tried to nudge
-       the title further up within the margin area, but it pushed the
-       text above the QGroupBox's own bounding box entirely, clipping it
-       (confirmed by screenshot) rather than just tightening the gap to
-       the border below. margin-top above already reserves enough room
-       that no offset is needed at all. */
-    left: 0px;
+    left: 6px;
+    top: 6px;
     padding: 0 6px;
-    color: $ACCENT;
+    /* Neutral, not accent -- blue is reserved for selected controls/
+       active progress/focus/Convert now, not section chrome. This one
+       rule drives every heading (Quality/Format/Audio and the checkable
+       Presets/Expert titles too, confirmed no separate override exists),
+       so this single change re-neutralizes all of them at once. The bold
+       weight on the enclosing QGroupBox already gives it enough presence
+       without color doing that job too. */
+    color: $TEXT_PRIMARY;
 }
 
 /* Effective Command / Log -- an ordinary checkable QGroupBox otherwise
@@ -85,13 +99,56 @@ QGroupBox#collapsibleGroup::indicator {
 }
 
 QTabWidget::pane {
+    /* Fully invisible now -- no border, no radius, no fill. Every corner
+       defect chased this session (broken/double line, missing-pixel gap,
+       a hard square corner with no curve attempted at all, all confirmed
+       by pixel-level RGB scans, none reproducible in an offscreen/1x
+       test) was in *this specific subcontrol's* own native border
+       painting. QTabWidget::pane is special Qt/Fusion C++ code, not a
+       plain CSS box -- and dropping the fill too (an earlier attempt at
+       "just lose the stroke, keep the fill") cost the pane's whole
+       visible ownership cue, reported live as losing the outline
+       entirely, since $BG_PANEL and $BG_WINDOW are too close in value on
+       their own (see this file's top comment) to read as a container
+       without either a border or real contrast.
+       The actual fix: stop asking this subcontrol to draw anything at
+       all, and give the *tab page widgets themselves* (ui_builder.py,
+       _build_video_tab/_build_audio_tab, objectName tabPageCard) the
+       exact border+radius+fill this rule used to have. A plain QWidget's
+       border-radius is the same rendering path QGroupBox already uses
+       everywhere else in this file (Presets/Quality/Format/Expert) --
+       never once broken all session -- because it's ordinary CSS box
+       painting, not this subcontrol's own special-cased one. Same visible
+       card, same border, same radius on all four corners now (no more
+       squaring one off to dodge a native override that doesn't exist for
+       a plain QWidget); see style.qss's QWidget#tabPageCard rule and
+       QTabBar::tab:selected below for how the tab still visually merges
+       into it. */
+    border: none;
+    background: transparent;
+    top: -1px;
+}
+
+QTabWidget::tab-bar {
+    /* Purely cosmetic now, unlike the earlier attempt at this same
+       property (this rule's own git history) -- that version was trying
+       to use the inset to *fix* a corner-rendering defect on
+       QTabWidget::pane, which didn't work because the defect was in
+       pane's own native painting regardless of where the tab bar sat.
+       Now that the card border lives on tabPageCard (a plain QWidget,
+       unaffected by tab-bar position), this is safe: just clears the
+       first tab off the card's rounded top-left corner underneath it so
+       the tab doesn't visually sit on top of the curve. */
+    left: 10px;
+}
+
+QWidget#tabPageCard {
     border: 1px solid $BORDER;
     border-radius: 8px;
-    top: -1px;
     background: $BG_PANEL;
 }
 
-/* Four iterations to get here. A plain underline (no fill, no border)
+/* Six iterations to get here now. A plain underline (no fill, no border)
    read as floating clickable text, not an actual tab shape. A filled
    $BG_PANEL selected-tab plus a full $BORDER box read as too heavy a
    highlight next to unselected tabs' plain outline. Uniform $BG_WINDOW
@@ -101,15 +158,33 @@ QTabWidget::pane {
    selected tab colored like the window instead of its own content still
    didn't visually belong to what it was selecting. $BG_PANEL fill with
    the border color *also* set to $BG_PANEL (next attempt) went a step
-   too far -- border-bottom: none below is what actually produces the
+   too far -- border-bottom: none was what actually produced the
    seamless-with-content look on the one edge that should have it; setting
    border-color killed the color on all four sides, not just the bottom
    one that needed it, leaving the selected tab with no visible outline of
-   its own at all. Landed on: border-bottom stays none (seamless into the
-   pane), but the remaining three sides keep a real, visible color --
-   $ACCENT for the selected tab specifically, marking it "active" the same
-   way this app already uses accent color elsewhere, $BORDER for
-   unselected so the tab shape reads even before it's selected. */
+   its own at all. Landed (for a while) on: border-bottom stays none on
+   *every* tab (seamless into the pane), remaining three sides $ACCENT for
+   selected, $BORDER for unselected -- the accent outline was the fifth
+   thing to go, for the same reason the section-heading color and the
+   outer tab-pane border both did in this pass -- blue reserved for
+   controls/progress/focus/Convert, not chrome.
+   border-bottom: none on the base rule (every tab, not just selected) was
+   the sixth thing to go, and for a real reason rather than more polish:
+   it meant an *unselected* tab (Audio) had no bottom border either, so it
+   read as just as "connected" to the pane as the selected one -- reported
+   live as weakening the selected/unselected distinction. Unselected tabs
+   get a real, fully-outlined border on all four sides like any other
+   control; only the selected tab erases its own bottom edge, and it does
+   that by color-matching (border-bottom-color: $BG_PANEL) plus nudging
+   itself down into the pane (margin-bottom: -1px) rather than by
+   removing the border outright.
+   A seventh version dropped the border entirely, on every tab -- a plain
+   filled shape (unselected transparent, selected filled $BG_PANEL, no
+   border at all) instead of a stroked-and-radiused one, trying to
+   sidestep the stroke-rasterization risk that kept causing the rendering
+   defect documented on QTabWidget::pane above. Reverted back to this
+   bordered version on explicit request ("the imperfect tab bar version")
+   along with the pane -- see that rule's own note. */
 QTabBar::tab {
     background: $BG_WINDOW;
     color: $TEXT_SECONDARY;
@@ -117,7 +192,6 @@ QTabBar::tab {
     margin-right: 2px;
     margin-top: 2px;
     border: 1px solid $BORDER;
-    border-bottom: none;
     border-top-left-radius: 8px;
     border-top-right-radius: 8px;
 }
@@ -125,7 +199,9 @@ QTabBar::tab {
 QTabBar::tab:selected {
     background: $BG_PANEL;
     color: $TEXT_PRIMARY;
-    border-color: $ACCENT;
+    border-color: $BORDER;
+    border-bottom-color: $BG_PANEL;
+    margin-bottom: -1px;
     font-weight: 600;
 }
 
@@ -157,8 +233,49 @@ QPushButton:disabled {
     background-color: $BG_DISABLED;
 }
 
-/* Start/Stop get object names in main.py so they read as the primary and
-   destructive actions instead of blending into every other button. */
+/* The "⋯" queue overflow button (ui_builder.py's queue_menu_btn) --
+   restrained on purpose, unlike QPushButton above: it's a small,
+   icon-like affordance sitting next to Add Videos, not a labeled action
+   of its own weight, so it starts fully transparent (no border, no fill)
+   and only picks up a subtle background on hover/press. Without any rule
+   here at all it fell back to Fusion's plain native QToolButton chrome --
+   the one clearly-new-and-prominent control still looking unstyled next
+   to everything else. */
+QToolButton {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: $TEXT_PRIMARY;
+}
+
+QToolButton:hover {
+    background-color: $BG_CONTROL_HOVER;
+    border-color: $BORDER_STRONG;
+}
+
+QToolButton:pressed {
+    background-color: $BG_CONTROL_PRESSED;
+}
+
+QToolButton:disabled {
+    color: $TEXT_DISABLED;
+}
+
+/* The little dropdown-indicator arrow InstantPopup mode would otherwise
+   draw next to the "⋯" glyph -- redundant on a button whose entire
+   purpose is opening that same menu, and visually competed with the
+   glyph itself in a control this small. */
+QToolButton::menu-indicator {
+    image: none;
+}
+
+/* Convert gets an object name in ui_builder.py so it reads as the primary
+   action instead of blending into every other button. Cancel (stop_btn)
+   deliberately has no object name/rule of its own anymore -- it's a plain
+   secondary action now (the plain QPushButton {} rule above already covers
+   it, same as Change…/Open/Add Videos…), not a destructive one; see
+   ui_builder.py's own comment at stop_btn's construction for why. */
 QPushButton#startButton {
     background-color: $ACCENT;
     border: none;
@@ -169,15 +286,6 @@ QPushButton#startButton {
 QPushButton#startButton:hover { background-color: $ACCENT_HOVER; }
 QPushButton#startButton:pressed { background-color: $ACCENT_PRESSED; }
 QPushButton#startButton:disabled { background-color: $BG_ACCENT_DISABLED; color: $TEXT_ACCENT_DISABLED; }
-
-QPushButton#stopButton:enabled {
-    border-color: $DESTRUCTIVE;
-    color: $DESTRUCTIVE;
-}
-
-QPushButton#stopButton:enabled:hover {
-    background-color: $BG_DESTRUCTIVE_HOVER;
-}
 
 /* Rate Control's Quality / File Size / Advanced row -- three adjacent
    checkable QPushButtons standing in for a segmented control (Qt has no
@@ -239,7 +347,41 @@ QComboBox:hover, QLineEdit:hover, QSpinBox:hover {
     border-color: $BORDER_HOVER;
 }
 
-QComboBox:focus, QLineEdit:focus, QSpinBox:focus, QPlainTextEdit:focus {
+/* Reported live: codec_combo.setEnabled(False) (main.py, forced to H.265
+   whenever a hardware encoder is selected -- no h264_vaapi wired up)
+   worked correctly (confirmed: isEnabled() really was False, clicking
+   really did nothing) but never actually *looked* disabled -- same root
+   cause QPushButton:disabled above already exists to fix for buttons,
+   just never extended to form fields because nothing in this app had
+   disabled one before now. Styling a widget's base appearance (the
+   plain QComboBox/QLineEdit/QSpinBox rule above) suppresses the
+   platform's own automatic enabled/disabled differentiation unless a
+   :disabled rule is added back explicitly -- same class of QSS gap this
+   file has already hit more than once. Same token vocabulary
+   QPushButton:disabled already uses. */
+QComboBox:disabled, QLineEdit:disabled, QSpinBox:disabled {
+    background-color: $BG_DISABLED;
+    border-color: $BORDER;
+    color: $TEXT_DISABLED;
+}
+
+QComboBox::drop-down:disabled {
+    background-color: $BG_DISABLED;
+}
+
+/* [focusVisible="true"], not :focus -- this rule was left behind when
+   QPushButton/QCheckBox/QSlider/QTreeWidget below were migrated off
+   plain :focus (see that block's own comment for the full reasoning).
+   Same bug, same fix: plain :focus matches window reactivation just as
+   much as real Tab navigation (Qt restores focus to whatever widget
+   had it before deactivation, and that still satisfies :focus even
+   though nothing was actually Tab-ed to), so every combo/line-edit/
+   spinbox in the app was showing this accent border on simple
+   alt-tab-back, not only real keyboard use. Reported live on the Audio
+   track combo specifically, but the selector covers every field this
+   rule ever applied to -- the bug wasn't specific to that one control. */
+QComboBox[focusVisible="true"], QLineEdit[focusVisible="true"],
+QSpinBox[focusVisible="true"], QPlainTextEdit[focusVisible="true"] {
     border-color: $ACCENT;
 }
 
@@ -266,7 +408,8 @@ QComboBox:focus, QLineEdit:focus, QSpinBox:focus, QPlainTextEdit:focus {
    real :focus below, unconverted -- a subcontrol isn't its own QObject,
    so it can't carry this dynamic property itself the way a QWidget can. */
 QPushButton[focusVisible="true"], QCheckBox[focusVisible="true"],
-QSlider[focusVisible="true"], QTreeWidget[focusVisible="true"], QTabBar::tab:focus {
+QSlider[focusVisible="true"], QTreeWidget[focusVisible="true"],
+QToolButton[focusVisible="true"], QTabBar::tab:focus {
     outline: 2px solid $ACCENT;
     outline-offset: 1px;
 }
@@ -449,20 +592,34 @@ QLineEdit:read-only {
     color: $TEXT_READONLY;
 }
 
+/* Save-to's path field (ui_builder.py) -- same muted color as the
+   read-only rule above, but keyed to an objectName instead of the
+   :read-only pseudo-state since this field stays fully editable (typing
+   a path directly is real, supported behavior). A visual-only quieting,
+   closer to a location/breadcrumb display than an actively-editable
+   field, for the common case of just glancing at it or clicking Open. */
+QLineEdit#outputPathField {
+    color: $TEXT_READONLY;
+}
+
 QSlider {
     min-height: 26px;
 }
 
-/* Groups a slider row with its fuzzy tier caption directly underneath --
-   Quality+its caption, Speed+its caption (main.py: #fuzzyGroup on the
-   QWidget wrapping each pair). Without this they were just two
-   consecutive, visually independent form rows with nothing showing the
-   caption actually describes the specific slider above it rather than
-   being some unrelated adjacent line. */
-QWidget#fuzzyGroup {
-    border: 1px solid $BORDER;
-    border-radius: 6px;
-}
+/* fuzzyGroup (ui_builder.py: Quality/Speed/Audio Bitrate each wrap their
+   slider + tier caption in a QWidget with this objectName) used to get
+   its own bordered card here -- a second, redundant border nested
+   inside the panel's own QGroupBox border above it. Liquid Glass is
+   explicit about this: hierarchy comes from grouping and spacing, not
+   decoration, and never stack two bordered layers on top of each other.
+   The tight 2px setSpacing between each slider and its caption already
+   communicates "this caption belongs to the slider above it" on its
+   own -- removing the border changes nothing about that relationship,
+   only the redundant decoration. Reported live, confirmed by
+   screenshot: boxes-within-boxes. The objectName itself is left in
+   place in ui_builder.py, unused by any rule here now -- still a real,
+   useful marker documenting the shared pattern for whoever touches this
+   next, and costs nothing to keep. */
 
 QSlider::groove:horizontal {
     height: 4px;
@@ -520,6 +677,17 @@ QTreeWidget::item {
     border-bottom: 1px solid $BORDER;
 }
 
+/* The redundant per-cell focus-rect box reported live (an extra outline
+   on top of the already-:selected row below) is NOT fixable from QSS at
+   all -- confirmed the hard way: neither a blanket
+   `QTreeWidget::item { outline: none; }` nor a more specific
+   `QTreeWidget::item:focus { outline: none; border: none; }` suppressed
+   it (both tried, both confirmed still showing the box in a real
+   screenshot of the actual running app). Fusion's CE_ItemViewItem draws
+   PE_FrameFocusRect as a direct style primitive, never through anything
+   QSS can select. Actually fixed via theming._NoItemFocusRectStyle, a
+   QProxyStyle applied to queue_list alone in main.py. */
+
 QTreeWidget::item:selected {
     background-color: $SELECTION_BG;
     color: $TEXT_PRIMARY;
@@ -531,6 +699,16 @@ QTreeWidget::item:hover:!selected {
 
 QTreeWidget::branch {
     border: none;
+}
+
+/* A valid file drag actively hovering the queue -- set via
+   DropTreeWidget._set_drag_active (queue_widget.py), same dynamic-property
+   + unpolish/polish pattern as focusVisible/modified/segEnd elsewhere in
+   this file. Subtle accent border only, not a background/glow change --
+   this app has exactly one accent color, used only for primary/focus/
+   selection/active-state, and this is an active-state. */
+QTreeWidget[dragActive="true"] {
+    border: 1px solid $ACCENT;
 }
 
 QHeaderView::section {
@@ -571,12 +749,22 @@ QCheckBox::indicator:hover {
     border-color: $ACCENT;
 }
 
-QSplitter::handle {
-    background: $SPLITTER;
+/* Same gap as QComboBox:disabled above, same fix: pause_after_check gets
+   setEnabled(False) whenever no run is active, and without this rule
+   Fusion's native indicator dimming never kicks in because the base
+   ::indicator rule above already opted this control out of it. */
+QCheckBox:disabled {
+    color: $TEXT_DISABLED;
 }
 
-QSplitter::handle:horizontal {
-    width: 3px;
+QCheckBox::indicator:disabled {
+    background: $BG_DISABLED;
+    border-color: $BG_CONTROL;
+}
+
+QCheckBox::indicator:checked:disabled {
+    background: $BG_ACCENT_DISABLED;
+    border-color: $BG_ACCENT_DISABLED;
 }
 
 QScrollBar:vertical {

@@ -25,6 +25,30 @@
       "audio_downmix_stereo": false
     },
     {
+      "name": "720p CPU High (Software / x264)",
+      "encoder": "libx264", "rc_mode": "CRF", "quality_value": 18, "speed": "medium",
+      "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
+      "deinterlace": false,
+      "audio_track": 0, "audio_copy_if_compatible": true, "audio_bitrate": "160k",
+      "audio_downmix_stereo": false
+    },
+    {
+      "name": "720p CPU Balanced (Software / x264)",
+      "encoder": "libx264", "rc_mode": "CRF", "quality_value": 23, "speed": "medium",
+      "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
+      "deinterlace": false,
+      "audio_track": 0, "audio_copy_if_compatible": true, "audio_bitrate": "160k",
+      "audio_downmix_stereo": false
+    },
+    {
+      "name": "720p CPU Low (Software / x264)",
+      "encoder": "libx264", "rc_mode": "CRF", "quality_value": 28, "speed": "medium",
+      "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",
+      "deinterlace": false,
+      "audio_track": 0, "audio_copy_if_compatible": true, "audio_bitrate": "160k",
+      "audio_downmix_stereo": false
+    },
+    {
       "name": "720p Intel High (Hardware / VAAPI)",
       "encoder": "hevc_vaapi", "gpu_vendor": "intel", "rc_mode": "ICQ", "quality_value": 16, "speed": "1",
       "bit_depth": 10, "width": 1280, "height": 720, "container": "mp4", "tune": "None",

@@ -94,6 +94,28 @@ def format_eta(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
+def format_eta_human(seconds: float) -> str:
+    """"About 8 minutes remaining" -- the plain-language counterpart to
+    format_eta's clock-style "8:12" above, for the prominent line in the
+    run-control area (queue_controller.py's _on_job_stats); format_eta
+    itself stays exactly as-is for the detailed technical stats line
+    right below it, unchanged.
+    Rounds to the nearest minute (or "less than a minute"/whole hours +
+    minutes) rather than showing seconds -- a live countdown to the exact
+    second reads as more precise than an ffmpeg-derived estimate actually
+    is."""
+    seconds = int(seconds)
+    if seconds < 60:
+        return "Less than a minute remaining"
+    minutes = round(seconds / 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours and minutes:
+        return f"About {hours} hr {minutes} min remaining"
+    if hours:
+        return f"About {hours} hr remaining"
+    return f"About {minutes} min remaining"
+
+
 def format_size(num_bytes: int) -> str:
     size = float(num_bytes)
     for unit in ("B", "KB", "MB", "GB"):
@@ -101,6 +123,32 @@ def format_size(num_bytes: int) -> str:
             return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
         size /= 1024
     return f"{size:.1f}TB"
+
+
+def format_run_summary(
+    completed_count: int, failed_count: int, total_input_bytes: int, total_output_bytes: int
+) -> tuple[str, str]:
+    """Finished-run summary text for the run-control panel's two repurposed
+    labels (queue_controller.py's _apply_run_phase_visuals, phase="finished")
+    -- (count_line, size_line), e.g. ("4 videos converted", "12.4GB → 4.1GB ·
+    67% smaller"), or ("3 videos converted · 1 failed", ...) when failed_count
+    is nonzero. size_line is "" when total_input_bytes <= 0 -- every per-job
+    size stat this run failed (_append_result_size returning None for each
+    one) even though jobs still completed, so there's nothing real to compare
+    rather than a bogus "100% smaller"/divide-by-zero. Which heading
+    ("✓ Conversion Complete"/"Conversion Stopped"/"Completed with Issues")
+    goes above these two lines is _on_all_finished's own decision, not this
+    function's -- failed_count alone doesn't say whether the run was also
+    cancelled, which matters more for picking the heading."""
+    count_line = f"{completed_count} video{'s' if completed_count != 1 else ''} converted"
+    if failed_count > 0:
+        count_line += f" · {failed_count} failed"
+    if total_input_bytes <= 0:
+        return count_line, ""
+    change_pct = 100 * (1 - total_output_bytes / total_input_bytes)
+    direction = "smaller" if change_pct >= 0 else "larger"
+    size_line = f"{format_size(total_input_bytes)} → {format_size(total_output_bytes)} · {abs(change_pct):.0f}% {direction}"
+    return count_line, size_line
 
 
 def settings_summary(job: dict) -> str:
@@ -111,10 +159,20 @@ def settings_summary(job: dict) -> str:
     else."""
     encoder = job.get("encoder")
     gpu_vendor = job.get("gpu_vendor")
-    encoder_label = next(
-        (label for enc, vendor, label in ENCODERS if enc == encoder and vendor == gpu_vendor),
-        encoder or "?",
-    )
+    if encoder == "hevc_vaapi":
+        encoder_label = next(
+            (label for enc, vendor, label in ENCODERS if enc == encoder and vendor == gpu_vendor),
+            encoder or "?",
+        )
+    else:
+        # CPU engine -- ENCODERS' own single CPU row is just a
+        # placeholder id now (constants.py: "libx265", regardless of
+        # which codec is actually chosen), it doesn't distinguish
+        # libx264 from libx265 the way the old combined combo entries
+        # did. Built directly from the real codec id instead -- display
+        # only, not tied to an actual combo entry anymore now that
+        # codec is main.py's own separate Format -- Codec control.
+        encoder_label = "CPU (x264)" if encoder == "libx264" else "CPU (x265)"
 
     rc_mode = job.get("rc_mode")
     if rc_mode in worker.BITRATE_RC_MODES:

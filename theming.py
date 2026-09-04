@@ -1,14 +1,15 @@
 """Theme/QSS engine, split out of main.py: stylesheet loading and token
-substitution, system-accent derivation, the two QSS-gap event filters
-(combo-popup background, focus-visible), and theme-choice resolution.
-Nothing here depends on MainWindow -- everything took an explicit `app`
-(or, for the event filters, whatever QObject the event landed on)
-already, so this was already a self-contained concern before the move."""
+substitution, system-accent derivation, the QSS-gap event filters
+(combo-popup background, focus-visible) and proxy style (queue-item
+focus rect), and theme-choice resolution. Nothing here depends on
+MainWindow -- everything took an explicit `app` (or, for the event
+filters/proxy style, whatever QObject/QWidget it's applied to) already,
+so this was already a self-contained concern before the move."""
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QEvent, QObject
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QComboBox, QWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QProxyStyle, QStyle, QWidget
 
 import themes
 
@@ -160,6 +161,35 @@ def _load_stylesheet(app, theme_name: str = "dark", style_path: Path = Path(__fi
         # Missing/unreadable style.qss shouldn't take the whole app down --
         # fall back to plain Fusion rather than crash at startup over theming.
         print(f"Warning: couldn't load {style_path} ({exc}); using unstyled Fusion.")
+
+
+class _NoItemFocusRectStyle(QProxyStyle):
+    """Suppresses the dotted/solid focus-rect Fusion draws around whichever
+    single CELL (not row -- confirmed by real on-screen screenshot: the
+    box hugs only the current column's text, not the whole selected row)
+    is an item view's current index -- reported live as a redundant
+    "extra box" on top of the row's own :selected background, right after
+    a plain click.
+
+    QSS cannot reach this at all: CE_ItemViewItem draws
+    PE_FrameFocusRect directly as a style primitive, not through any
+    QSS-matchable pseudo-state. Confirmed the hard way, not assumed --
+    both a blanket `QTreeWidget::item { outline: none; }` and a more
+    specific `QTreeWidget::item:focus { outline: none; border: none; }`
+    were tried first and both left the box still visible in a real
+    screenshot of the actual running app (grab()-based offscreen capture
+    hid it too, same unreliability already known from the combo-popup
+    background bug above -- this had to be checked on a real display).
+    A QProxyStyle that no-ops just this one PrimitiveElement is the
+    documented, actually-reliable fix, scoped to queue_list alone
+    (main.py) so nothing else this app's own style still draws
+    (checkboxes, buttons, every other control) is touched.
+    """
+
+    def drawPrimitive(self, element, option, painter, widget=None):
+        if element == QStyle.PrimitiveElement.PE_FrameFocusRect:
+            return
+        super().drawPrimitive(element, option, painter, widget)
 
 
 class _ComboPopupBackgroundFilter(QObject):

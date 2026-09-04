@@ -50,6 +50,27 @@ def find_render_node(vendor_id: str) -> str:
     raise RuntimeError(f"No render node found for PCI vendor {vendor_id}")
 
 
+def best_available_engine() -> tuple[str, str | None]:
+    """Normal-mode's "Processing: Automatic" resolves to this -- prefer
+    Intel iGPU, then AMD GPU, then fall back to CPU. Returns (encoder id,
+    gpu_vendor), matching ENCODERS' own row shape in constants.py, so a
+    caller can feed this straight into the same code path a manual
+    Encoder-dropdown pick already goes through.
+
+    Order matches formatting.hardware_status_text()'s own vendor-probe
+    order, and reuses find_render_node above rather than re-implementing
+    detection -- this is the one place in the app anything auto-picks
+    hardware; everything else has always required an explicit choice.
+    """
+    for vendor in ("intel", "amd"):
+        try:
+            find_render_node(GPU_VENDOR_IDS[vendor])
+            return "hevc_vaapi", vendor
+        except RuntimeError:
+            continue
+    return "libx265", None
+
+
 def probe_duration(path: Path) -> float:
     """Duration in seconds via ffprobe, or 0.0 if it can't be determined."""
     result = subprocess.run(
@@ -215,7 +236,7 @@ def build_args(
 ) -> list[str]:
     """Build the full ffmpeg argv for one job from a resolved settings dict.
 
-    settings keys: encoder ("hevc_vaapi"|"libx265"), gpu_vendor ("intel"|"amd",
+    settings keys: encoder ("hevc_vaapi"|"libx265"|"libx264"), gpu_vendor ("intel"|"amd",
     only meaningful when encoder is hevc_vaapi -- picks which GPU's render
     node opens; defaults to "intel" if absent, for presets saved before this
     key existed), rc_mode, quality_value (quality units for a quality-family
@@ -223,11 +244,15 @@ def build_args(
     mean "hit roughly this file size", not "encode at exactly this bitrate",
     so the number the user sets is size, and the bitrate ffmpeg actually
     gets is derived from it plus this specific file's duration, below),
-    speed (compression_level 1-7 as str, or an x265 preset name -- lower
-    compression_level is slower but more size-efficient at the same quality
-    target, confirmed by timing real encodes at levels 1/4/7, not assumed),
+    speed (compression_level 1-7 as str, or an x264/x265 preset name --
+    lower compression_level is slower but more size-efficient at the same
+    quality target, confirmed by timing real encodes at levels 1/4/7, not
+    assumed; libx264 and libx265 share the exact same ultrafast..placebo
+    preset names, confirmed against this build, not assumed),
     bit_depth (8|10), width, height, container ("mp4"|"mkv", default mp4),
-    tune (an x265 tune name or "None", ignored for hevc_vaapi), deinterlace
+    tune (an x264/x265 tune name or "None", ignored for hevc_vaapi --
+    libx264 and libx265 don't accept identical tune lists, see
+    constants.X264_TUNES/X265_TUNES), deinterlace
     (bool, default False -- container-level progressive/interlaced flags
     are frequently wrong, especially on camcorder-sourced footage; this is
     a manual override, not auto-detected), audio_track,
@@ -335,7 +360,10 @@ def build_args(
             f"force_original_aspect_ratio=decrease:force_divisible_by=2"
         )
         pix_fmt = "yuv420p10le" if bit_depth == 10 else "yuv420p"
-        args += ["-vf", vf, "-pix_fmt", pix_fmt, "-c:v", "libx265", "-preset", settings["speed"]]
+        # encoder itself ("libx265"/"libx264") IS the correct -c:v value --
+        # confirmed directly, this app's own internal encoder id string is
+        # already ffmpeg's own codec name for both, not just x265's.
+        args += ["-vf", vf, "-pix_fmt", pix_fmt, "-c:v", encoder, "-preset", settings["speed"]]
         if rc_mode == "CRF":
             args += ["-crf", str(quality_value)]
         elif rc_mode == "bitrate":
@@ -343,7 +371,17 @@ def build_args(
         tune = settings.get("tune", "None")
         if tune and tune != "None":
             args += ["-tune", tune]
-        args += ["-x265-params", "strong-intra-smoothing=0:aq-mode=3:psy-rdoq=1.0"]
+        if encoder == "libx265":
+            # x265-specific psycho-visual tuning (this app's own choice,
+            # not a default ffmpeg/libx265 ships with) -- -x265-params is
+            # meaningless to libx264 and would fail the whole job with an
+            # "Unrecognized option" error if passed to it. No equivalent
+            # added for libx264: unlike x265's historically conservative
+            # defaults, libx264's own upstream defaults are already
+            # well-regarded, and inventing a params string here without
+            # the same kind of real justification x265's own has would
+            # just be unjustified complexity.
+            args += ["-x265-params", "strong-intra-smoothing=0:aq-mode=3:psy-rdoq=1.0"]
 
     # Capital V excludes attached-pic/cover-art streams from the video map,
     # matching ffmpeg's own default auto-selection more closely than 'v'.
@@ -426,11 +464,12 @@ def build_args(
 class TranscodeQueue(QObject):
     job_started = Signal(str, int, int)  # path, index (1-based), total
     job_progress = Signal(float)         # 0.0-1.0
-    job_stats = Signal(dict)             # {"fps", "bitrate", "speed", "eta_seconds"} -- see _emit_stats
+    job_stats = Signal(dict)             # {"fps", "bitrate", "speed", "eta_seconds", "speed_multiplier"} -- see _emit_stats
     job_log = Signal(str)                # one log line
     job_finished = Signal(str, str)      # input_path, output_path
     job_failed = Signal(str, str)        # path, reason
     all_finished = Signal()
+    paused = Signal()                    # a requested pause actually took effect -- see request_pause
 
     def __init__(self):
         super().__init__()
@@ -440,6 +479,17 @@ class TranscodeQueue(QObject):
         self._output_dir: Path | None = None
         self._duration = 0.0
         self._stopped = False
+        # request_pause() only arms this -- the run doesn't actually halt
+        # until the *current* job finishes (deliberately, per the user:
+        # "let this one finish, then stop", not an immediate interrupt
+        # like stop() is). _paused is the separate, already-in-effect
+        # state _advance_or_pause sets once that happens -- resume()/
+        # stop() both need to tell "armed but still running" apart from
+        # "actually halted between jobs" (stop() while genuinely paused
+        # has no live _process to terminate, so it has to notice _paused
+        # instead and emit all_finished itself -- see stop() below).
+        self._pause_requested = False
+        self._paused = False
         self._stats_buffer: dict = {}
         # Every final output path handed out this run, so two jobs that
         # would otherwise both want e.g. shot01.mp4 (different source
@@ -456,6 +506,8 @@ class TranscodeQueue(QObject):
         self._output_dir = output_dir
         self._index = 0
         self._stopped = False
+        self._pause_requested = False
+        self._paused = False
         self._used_output_paths = set()
         self._run_next()
 
@@ -507,6 +559,57 @@ class TranscodeQueue(QObject):
         self._stopped = True
         if self._process is not None:
             self._process.terminate()
+        elif self._paused:
+            # Genuinely paused between jobs -- no live process to
+            # terminate, and nothing will ever call _run_next() again on
+            # its own to notice _stopped and emit all_finished (that only
+            # happens from _advance_or_pause, which a real pause has
+            # already returned out of for good). Emit it directly instead
+            # so the GUI still unlocks the queue the same way a Stop
+            # during an actual run does.
+            self._paused = False
+            self.all_finished.emit()
+
+    def request_pause(self):
+        """Arms a one-shot pause: the *current* job (if any) still runs to
+        completion untouched -- unlike stop(), nothing is terminated --
+        and the run halts right after, instead of advancing to the next
+        job. Harmless if called with nothing running; the request just
+        sits armed until start() resets it, since _advance_or_pause is
+        never called between jobs."""
+        self._pause_requested = True
+
+    def cancel_pause_request(self):
+        """Un-arms a pause requested but not yet in effect -- e.g. the
+        user unchecked "Pause after this file" before the current job
+        actually finished. No-op once the pause has already taken effect
+        (_paused, not _pause_requested, is set by then) -- resume() is
+        what reverses that."""
+        self._pause_requested = False
+
+    def resume(self):
+        """Continues a paused run from exactly where it left off (self._index
+        is untouched by a pause) -- not start(), which would rebuild
+        _jobs/_index from scratch as a fresh run instead."""
+        self._paused = False
+        self._run_next()
+
+    def _advance_or_pause(self):
+        # self._index < len(self._jobs) too, not just _pause_requested --
+        # reported live as "Stop After Current Video" on the *last* video
+        # pausing with 0 files remaining and a Resume button that has
+        # nothing left to resume. The run is genuinely finished at that
+        # point; _run_next() below already knows this exact same
+        # condition means "done, not paused" (it's what decides whether
+        # to emit all_finished), _pause_requested just wasn't checking it
+        # too before honoring the pause.
+        if self._pause_requested and self._index < len(self._jobs):
+            self._pause_requested = False
+            self._paused = True
+            self.paused.emit()
+            return
+        self._pause_requested = False
+        self._run_next()
 
     def _run_next(self):
         if self._stopped or self._index >= len(self._jobs):
@@ -633,14 +736,24 @@ class TranscodeQueue(QObject):
     def _emit_stats(self):
         stats = dict(self._stats_buffer)
         eta_seconds = None
+        speed_multiplier = None
         try:
             speed = float(stats.get("speed", "").rstrip("x"))
+            if speed > 0:
+                speed_multiplier = speed
             out_time = stats.get("out_time_seconds")
             if speed > 0 and out_time is not None and self._duration > 0:
                 eta_seconds = max(self._duration - out_time, 0) / speed
         except ValueError:
             pass
         stats["eta_seconds"] = eta_seconds
+        # The same parsed value "speed" (the raw "2.3x" string) already
+        # carries, just as a real float -- queue_controller.py's
+        # queue-wide ETA estimate needs this too (applied to each
+        # not-yet-started job's own probed duration), and re-parsing the
+        # same string a second time in the UI layer would just be this
+        # exact parsing logic duplicated for no reason.
+        stats["speed_multiplier"] = speed_multiplier
         self.job_stats.emit(stats)
 
     def _read_log(self, proc: QProcess):
@@ -670,7 +783,14 @@ class TranscodeQueue(QObject):
         else:
             self._cleanup_partial(temp_output_path)
             self.job_failed.emit(str(input_path), f"ffmpeg exited {exit_code}")
-        self._run_next()
+        # Not a plain _run_next() -- this is a real job actually finishing
+        # (success or failure both count), exactly the point "pause after
+        # this file" means. The two _run_next() calls inside _run_next()
+        # itself (a preflight skip/failure before any process ever
+        # started) are deliberately left alone -- nothing "finished" there
+        # in the sense the pause checkbox means, and the checkbox is only
+        # enabled while a job is actually running in the first place.
+        self._advance_or_pause()
 
     def _on_process_error(self, input_path: Path, temp_output_path: Path, error):
         if error != QProcess.ProcessError.FailedToStart:
@@ -678,7 +798,7 @@ class TranscodeQueue(QObject):
         self._process = None
         self._cleanup_partial(temp_output_path)
         self.job_failed.emit(str(input_path), "ffmpeg failed to start -- is it installed and on PATH?")
-        self._run_next()
+        self._advance_or_pause()
 
     @staticmethod
     def _cleanup_partial(temp_output_path: Path):

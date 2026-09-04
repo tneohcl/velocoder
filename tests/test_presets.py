@@ -87,9 +87,12 @@ class TestLoadBuiltinPresets(unittest.TestCase):
         # fixture) is actually valid and has the shape the rest of the app
         # expects -- the file every fresh presets.json gets seeded from.
         loaded = presets.load_builtin_presets()
-        self.assertEqual(len(loaded), 9)
+        # x265, x264, Intel VAAPI, AMD VAAPI -- 4 encoder profiles, each
+        # with its own High/Balanced/Low trio.
+        self.assertEqual(len(loaded), 12)
         names = {p["name"] for p in loaded}
         self.assertIn("720p Intel Balanced (Hardware / VAAPI)", names)
+        self.assertIn("720p CPU Balanced (Software / x264)", names)
 
     def test_missing_file_raises_instead_of_silently_returning_empty(self):
         # Deliberately no try/except in load_builtin_presets -- a missing
@@ -97,6 +100,69 @@ class TestLoadBuiltinPresets(unittest.TestCase):
         # state the way a corrupt presets.json is.
         with self.assertRaises(OSError):
             presets.load_builtin_presets(Path(tempfile.mkdtemp()) / "nonexistent.json")
+
+
+class TestMigrateMissingBuiltins(unittest.TestCase):
+    """load_presets() only ever seeds from builtins when presets.json is
+    missing or corrupt -- an already-installed presets.json otherwise
+    stays frozen at whatever built-ins existed when it was first created,
+    permanently missing anything added to builtin_presets.json afterward
+    (a new encoder's own trio, say) unless something else fills the gap.
+    Deliberately not part of load_presets() itself -- see that function's
+    own test_save_overwrites_file_contents, which depends on it returning
+    exactly what was saved, unmigrated."""
+
+    def test_nothing_missing_returns_the_same_list_unchanged(self):
+        builtins = [{"name": "A"}, {"name": "B"}]
+        current = [{"name": "A"}, {"name": "B"}, {"name": "My Preset"}]
+        self.assertEqual(presets.migrate_missing_builtins(current, builtins), current)
+
+    def test_a_missing_builtin_is_inserted(self):
+        builtins = [{"name": "A"}, {"name": "B"}, {"name": "C"}]
+        current = [{"name": "A"}, {"name": "C"}]  # B was added to builtins later
+        result = presets.migrate_missing_builtins(current, builtins)
+        self.assertEqual([p["name"] for p in result], ["A", "B", "C"])
+
+    def test_missing_builtin_lands_at_its_canonical_position_not_appended(self):
+        # B belongs between A and C in builtins' own order -- appending it
+        # at the end instead would be a real, visible ordering bug (the
+        # preset combo would show A, C, ..., B instead of A, B, C).
+        builtins = [{"name": "A"}, {"name": "B"}, {"name": "C"}]
+        current = [{"name": "A"}, {"name": "C"}]
+        result = presets.migrate_missing_builtins(current, builtins)
+        self.assertEqual(result[1]["name"], "B")
+
+    def test_user_presets_stay_after_every_builtin_and_keep_their_order(self):
+        builtins = [{"name": "A"}, {"name": "B"}]
+        current = [{"name": "A"}, {"name": "My First"}, {"name": "My Second"}]
+        result = presets.migrate_missing_builtins(current, builtins)
+        self.assertEqual(
+            [p["name"] for p in result], ["A", "B", "My First", "My Second"]
+        )
+
+    def test_an_already_present_builtin_is_kept_as_loaded_not_overwritten_by_the_seed(self):
+        # Built-ins are read-only in this app (Save As/Delete both refuse
+        # to touch them) so the two should never actually differ in
+        # practice -- but this confirms the merge doesn't *assume* that,
+        # in case something upstream ever changes.
+        builtins = [{"name": "A", "quality_value": 999}]
+        current = [{"name": "A", "quality_value": 23}]
+        result = presets.migrate_missing_builtins(current, builtins)
+        self.assertEqual(result[0]["quality_value"], 23)
+
+    def test_real_migration_adds_the_x264_trio_to_an_old_nine_preset_file(self):
+        # End to end with the real shipped files, not synthetic fixtures
+        # -- an old presets.json (from before libx264 existed) should
+        # come out with all 12 current built-ins, x264's trio included.
+        old_nine = [p for p in presets.load_builtin_presets() if "x264" not in p["name"]]
+        self.assertEqual(len(old_nine), 9)  # sanity: this really is the pre-x264 shape
+        result = presets.migrate_missing_builtins(old_nine, presets.load_builtin_presets())
+        self.assertEqual(len(result), 12)
+        names = [p["name"] for p in result]
+        self.assertIn("720p CPU Balanced (Software / x264)", names)
+        # Still grouped with the rest of the CPU family, not tacked on
+        # at the very end past Intel/AMD.
+        self.assertLess(names.index("720p CPU Balanced (Software / x264)"), names.index("720p Intel High (Hardware / VAAPI)"))
 
 
 if __name__ == "__main__":

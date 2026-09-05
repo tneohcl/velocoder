@@ -1,16 +1,29 @@
 # TITAN Video
 
-A simplified, consumer-facing fork of [TITAN-i Transcoder](/mnt/data/tools/transcoder)
--- same ffmpeg engine, same settings model, same everything below this
-section (shared history, unchanged). The difference is the UI layer:
-Normal-mode controls (Processing/Quality/Compatibility/Audio, in plain
-language) sit always visible above a collapsed-by-default "Expert" section
-holding the sibling app's full technical control set untouched -- no
-capability lost, just deferred behind one click. See that sibling app's own
+A fork of [TITAN-i Transcoder](/mnt/data/tools/transcoder) -- same ffmpeg
+engine, same settings model, same everything below this section (shared
+history, unchanged). The difference is the UI layer: Normal mode surfaces
+every real output/media decision in plain language (Processing, Codec,
+Quality vs. File Size, Resolution, File Format, Color Depth, and every
+Audio setting) above a collapsed-by-default "Expert" section holding the
+remaining encoder-mechanics controls (exact Rate Control mode, precise
+quality value, Encoding Speed, Tune, Force Deinterlace) -- no capability
+lost, just organized around "Normal = intent, Expert = actual encoder
+mechanics" instead of exposing everything flat. See that sibling app's own
 README for anything not specific to this fork.
 
 Minimal ffmpeg front-end replacing HandBrake, whose QSV path is dead on this
 box (see Root cause below). PySide6 GUI queue, one file at a time.
+
+## Screenshots
+
+| Video | Video — Expert |
+|---|---|
+| ![Video tab](screenshots/video_normal.png) | ![Video tab with Expert expanded](screenshots/video_expert.png) |
+
+| Audio |
+|---|
+| ![Audio tab](screenshots/audio.png) |
 
 ## Run
 

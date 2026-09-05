@@ -13,7 +13,7 @@ import formatting
 from constants import VIDEO_FILTER
 from queue_widget import (
     VIDEO_COL, DURATION_COL, SIZE_COL, RESULT_COL,
-    STATUS_COL, VIDEO_SUBTITLE_ROLE, QUEUE_COLUMN_HEADERS,
+    STATUS_COL, VIDEO_SUBTITLE_ROLE, AUDIO_TRACK_COUNT_ROLE, QUEUE_COLUMN_HEADERS,
 )
 
 # Raw pieces _refresh_video_cell composes into the delegate-facing
@@ -405,6 +405,15 @@ class _QueueControllerMixin:
                 audio_label = f"{formatting.audio_codec_label(info['audio_codec'])} {channel_label}{suffix}"
                 item.setData(VIDEO_COL, _RAW_AUDIO_LABEL_ROLE, audio_label)
                 self._refresh_video_cell(item)
+            if info.get("audio_track_count"):
+                item.setData(VIDEO_COL, AUDIO_TRACK_COUNT_ROLE, info["audio_track_count"])
+                # Only worth recomputing Track's own choices if this probe
+                # actually affects what's currently shown -- a background/
+                # mid-run probe for a row the user isn't looking at
+                # shouldn't yank the combo out from under an unrelated
+                # in-progress edit.
+                if item in self.queue_list.selectedItems():
+                    self._refresh_audio_track_choices()
             self._maybe_submit_mid_run_job(item)
         finally:
             self._note_probe_finished(item)

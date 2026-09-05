@@ -15,9 +15,9 @@ plain mixin sidesteps that entirely."""
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QFont, QFontMetrics
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QMenu, QPlainTextEdit, QProgressBar, QPushButton, QSizePolicy,
-    QSlider, QSpinBox, QTabWidget, QToolButton, QVBoxLayout, QWidget,
+    QButtonGroup, QCheckBox, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
+    QLabel, QLineEdit, QMenu, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+    QSizePolicy, QSlider, QSpinBox, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 import formatting
@@ -108,8 +108,22 @@ class _UiBuilderMixin:
         )
 
     def _build_left_panel(self) -> QWidget:
-        left = QWidget()
-        layout = QVBoxLayout(left)
+        # Wrapped in a QScrollArea, not returned as a bare QWidget --
+        # the richer Video tab (Encoding/Quality/Format cards plus an
+        # Expert section that itself holds several fairly tall slider/
+        # caption groups) can genuinely exceed the window's default
+        # 820px height once Expert is expanded. No visible scrollbar
+        # under normal conditions (Expert collapsed, or a taller window)
+        # -- setWidgetResizable(True) lets the inner content size itself
+        # naturally and only grow a vertical scrollbar (ScrollBarAsNeeded,
+        # Qt's own default) once it genuinely can't fit, rather than
+        # letting Expert's bottom rows get compressed/clipped or forcing
+        # the whole window taller just to accommodate its one tallest
+        # possible state. setFixedWidth(470) (in _build_ui) still applies
+        # to this outer scroll area, so the fixed-width contract is
+        # unaffected -- only vertical overflow ever scrolls.
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN)
         layout.setSpacing(PANEL_SPACING)
 
@@ -164,7 +178,21 @@ class _UiBuilderMixin:
         # widget's own now-removed stretch-factor comment, superseded by
         # this simpler shape once it left the visible layout).
         layout.addStretch(1)
-        return left
+
+        scroll = QScrollArea()
+        scroll.setWidget(content)
+        scroll.setWidgetResizable(True)
+        # NoFrame -- QScrollArea's own native frame (Fusion draws a
+        # sunken box border by default) would otherwise sit underneath
+        # #leftPanel's QSS border-right (style.qss), doubling up as two
+        # visibly different border treatments on the same edge.
+        scroll.setFrameShape(QFrame.NoFrame)
+        # Never horizontal -- content already fits the fixed 470px width
+        # by design (every row/card in it is sized for exactly this
+        # panel); only vertical overflow (Expert expanded) is the real
+        # concern here.
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        return scroll
 
     @staticmethod
     def _capped_row(row: QHBoxLayout, max_width: int) -> QWidget:
@@ -278,28 +306,127 @@ class _UiBuilderMixin:
         self.command_preview.setReadOnly(True)
         self.command_preview.setLineWrapMode(QPlainTextEdit.WidgetWidth)
 
-    def _build_video_group(self) -> QGroupBox:
-        """Consumer build: Quality and Resolution share one "Video" card --
-        previously two separate cards (Quality, Format), split when Format
-        also held Processing/Compatibility/File Format; once those were
-        all cut (CONSUMER_FORK_PLAN.md's v1 scope table) Resolution was
-        the only thing left in Format, too thin to keep its own card
-        border for one row, so it moved in with Quality instead (merged
-        on explicit request, along with renaming this card "Video" -- the
-        plainer, more recognizable label once it's the one card covering
-        every video-side decision in the app). The app always runs
-        main.py's _apply_automatic_processing() at startup instead of a
-        visible Processing choice (same worker.best_available_engine()
-        pick the removed "Automatic" button used to trigger on click), and
-        always encodes Modern/HEVC-when-available rather than exposing a
-        Most-Compatible/H.264 fallback as a user decision. Quality itself
-        is a thin remote control over the same settings Expert's raw
-        controls used to drive (main.py's _on_quality_tier_clicked ->
-        _apply_settings_to_controls) -- no parallel state, no new logic
-        beyond QUALITY_TIERS."""
-        group = QGroupBox("Video")
+    def _build_encoding_group(self) -> QGroupBox:
+        """Processing/Codec -- restored from the specialist build (this
+        fork had cut Processing entirely) plus Codec's own promotion from
+        Expert, per the final Normal/Expert control-hierarchy decision:
+        Normal = meaningful output/media decisions, Expert = encoder
+        mechanics and precision overrides. Compatibility (Modern/Most
+        Compatible) stays cut -- now that Codec is a direct, visible
+        H.265/H.264 choice, Compatibility would just be a second control
+        describing substantially the same decision. Each button is a thin
+        remote control over the exact same settings Expert's own (now
+        hidden-but-live) encoder_combo/codec_combo drive -- see main.py's
+        _on_processing_choice, which goes through _apply_settings_to_
+        controls exactly like every other Normal control here."""
+        group = QGroupBox("Encoding")
         form = QFormLayout(group)
         form.setVerticalSpacing(14)
+
+        processing_row = QHBoxLayout()
+        processing_row.setSpacing(6)
+        self.processing_auto_btn = QPushButton("Automatic")
+        self.processing_auto_btn.setToolTip(
+            "Automatically chooses the fastest available method for this\n"
+            "computer. Recommended."
+        )
+        self.processing_auto_btn.clicked.connect(lambda: self._on_processing_choice("automatic"))
+        processing_row.addWidget(self.processing_auto_btn)
+
+        processing_seg_row = QHBoxLayout()
+        processing_seg_row.setSpacing(0)
+        self.processing_button_group = QButtonGroup(self)
+        self.processing_cpu_btn = QPushButton("CPU")
+        self.processing_cpu_btn.setObjectName("segLeft")
+        self.processing_intel_btn = QPushButton("Intel")
+        self.processing_intel_btn.setObjectName("segMid")
+        self.processing_amd_btn = QPushButton("AMD")
+        self.processing_amd_btn.setObjectName("segRight")
+        for btn, choice in (
+            (self.processing_cpu_btn, "cpu"),
+            (self.processing_intel_btn, "intel"),
+            (self.processing_amd_btn, "amd"),
+        ):
+            btn.setCheckable(True)
+            btn.setMinimumWidth(self._segmented_btn_min_width(btn))
+            self.processing_button_group.addButton(btn)
+            processing_seg_row.addWidget(btn, 1)
+            btn.clicked.connect(lambda _checked, c=choice: self._on_processing_choice(c))
+        processing_row.addWidget(self._capped_row(processing_seg_row, 240), 1)
+        form.addRow("Processing:", processing_row)
+
+        # H.265/H.264 -- only meaningful for the CPU engine (no h264_vaapi
+        # wired up, hardware is HEVC-only here), so it's disabled and
+        # forced to H.265 whenever Processing above is set to a hardware
+        # engine -- see main.py's _on_encoder_changed, which this cascades
+        # into exactly like encoder_combo's own (now hidden) change does.
+        self.codec_combo = QComboBox()
+        for value, label in CODECS:
+            self.codec_combo.addItem(label, userData=value)
+        self.codec_combo.setToolTip(
+            "H.265 (HEVC): better compression -- smaller file at the\n"
+            "same quality -- but not universally supported by older\n"
+            "devices/TVs/browsers, or only with extra licensing hassle.\n"
+            "H.264 (AVC): larger files for the same quality. 8-bit H.264\n"
+            "offers the broadest playback compatibility of any option\n"
+            "here; 10-bit H.264 (see Color Depth, below) trades some of\n"
+            "that away again -- it needs compatible software/devices\n"
+            "too, just less broadly required than H.265. Pick H.264 over\n"
+            "H.265 when playback compatibility matters more than file\n"
+            "size, and 8-bit Color Depth when it matters most of all.\n"
+            "Only applies to the CPU engine -- Intel/AMD hardware\n"
+            "encoding here is HEVC-only, so this is disabled and forced\n"
+            "to H.265 whenever Processing above is set to one of those."
+        )
+        self.codec_combo.currentIndexChanged.connect(self._on_codec_changed)
+        self.codec_combo.setMaximumWidth(200)
+        form.addRow("Codec:", self.codec_combo)
+
+        return group
+
+    def _build_quality_group(self) -> QGroupBox:
+        """Mode/Quality/Target Size. Mode (new) is a simplified, Normal-
+        only 2-way front end (Quality vs. File Size) over the exact same
+        rc_mode_combo Expert's own 3-way Rate Control row (Quality/File
+        Size/Advanced) drives -- same "thin remote control over one
+        shared hidden model" pattern this file already uses for Quality
+        tier vs. Expert's exact quality slider. Advanced (CQP) is
+        deliberately not offered here -- it's a precision override with
+        no real "media decision" framing, stays Expert-only. Target Size
+        (size_spin) moved here from Expert entirely, not duplicated --
+        there's no more-precise representation of "how big should the
+        file be" than a plain MB number (the derived kbps value is
+        exactly the raw-bitrate-as-a-control this app deliberately never
+        exposes), so there's nothing left for Expert to show once Normal
+        already has it -- unlike Quality, whose exact numeric CRF/ICQ/CQP
+        form is still meaningfully more precise than the three named
+        tiers, and stays duplicated in Expert for that reason."""
+        group = QGroupBox("Quality")
+        self.quality_form = form = QFormLayout(group)
+        form.setVerticalSpacing(14)
+
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(0)
+        self.mode_button_group = QButtonGroup(self)
+        self.mode_quality_btn = QPushButton("Quality")
+        self.mode_quality_btn.setObjectName("segLeft")
+        self.mode_quality_btn.setToolTip("Aim for a consistent perceptual quality; file size follows.")
+        self.mode_filesize_btn = QPushButton("File Size")
+        self.mode_filesize_btn.setObjectName("segRight")
+        self.mode_filesize_btn.setToolTip("Aim for a target output size; quality follows.")
+        for btn in (self.mode_quality_btn, self.mode_filesize_btn):
+            btn.setCheckable(True)
+            btn.setMinimumWidth(self._segmented_btn_min_width(btn))
+            self.mode_button_group.addButton(btn)
+            mode_row.addWidget(btn, 1)
+        self.mode_quality_btn.clicked.connect(
+            lambda: self._set_rc_mode(RC_MODE_FRIENDLY[self._current_encoder_key()]["quality"])
+        )
+        self.mode_filesize_btn.clicked.connect(
+            lambda: self._set_rc_mode(RC_MODE_FRIENDLY[self._current_encoder_key()]["file_size"])
+        )
+        mode_field = self._capped_row(mode_row, 240)
+        form.addRow("Mode:", mode_field)
 
         quality_tier_row = QHBoxLayout()
         quality_tier_row.setSpacing(0)
@@ -326,7 +453,57 @@ class _UiBuilderMixin:
         # measuring the actual button width against its own sizeHint
         # rather than guessing. 360 clears the tightest button's sizeHint
         # comfortably under equal-thirds division (114 * 3 = 342).
-        form.addRow("Quality:", self._capped_row(quality_tier_row, 360))
+        self._quality_tier_field = self._capped_row(quality_tier_row, 360)
+        form.addRow("Quality:", self._quality_tier_field)
+
+        self.size_spin = QSpinBox()
+        self.size_spin.setRange(10, 20000)
+        self.size_spin.setSingleStep(50)
+        self.size_spin.setSuffix(" MB")
+        self.size_spin.setValue(1000)
+        self.size_spin.setToolTip("Target output size -- the actual bitrate is computed from this file's length.")
+        self.size_spin.valueChanged.connect(self._on_control_changed)
+        self.size_estimate_label = QLabel()
+        self.size_estimate_label.setStyleSheet("font-size: 9pt;")
+        self._target_size_field = target_size_row = QHBoxLayout()
+        target_size_row.addWidget(self.size_spin)
+        target_size_row.addWidget(self.size_estimate_label, 1)
+        form.addRow("Target Size:", target_size_row)
+        # Only one of Quality/Target Size is ever visible at a time
+        # (is_bitrate in main.py's _on_rc_mode_changed, which toggles
+        # both rows via self.quality_form.setRowVisible) -- Mode above
+        # picks which.
+
+        # "Target Size:" starts hidden (Mode defaults to Quality) and is
+        # the widest label in this form -- confirmed directly (not
+        # guessed) that QFormLayout's automatic label-column width, once
+        # computed from only the rows visible at first show(), doesn't
+        # widen correctly when a longer-labeled row is revealed later via
+        # setRowVisible(): the label's own sizeHint() already reports the
+        # right width, but its actual allocated size stays clipped to
+        # whatever the column was sized to while still hidden. Forcing
+        # every label in this form to the true widest sizeHint up front
+        # sidesteps that Qt timing quirk entirely instead of chasing a
+        # relayout call that convinces it to recompute.
+        labels = [form.labelForField(f) for f in (mode_field, self._quality_tier_field, target_size_row)]
+        widest = max(label.sizeHint().width() for label in labels)
+        for label in labels:
+            label.setMinimumWidth(widest)
+
+        return group
+
+    def _build_format_group(self) -> QGroupBox:
+        """Resolution/File Format/Color Depth -- File Format and Color
+        Depth promoted here from Expert (container_combo, bitdepth_combo)
+        per the final control-hierarchy decision: both are real output/
+        media characteristics a professional user reasonably decides
+        about, not encoder mechanics. Compatibility's old container-
+        forcing-to-MP4 behavior is gone along with Compatibility itself --
+        File Format is now directly this dropdown, nothing else touches
+        it."""
+        group = QGroupBox("Format")
+        form = QFormLayout(group)
+        form.setVerticalSpacing(14)
 
         self.res_combo = QComboBox()
         for r in RESOLUTIONS:
@@ -345,6 +522,30 @@ class _UiBuilderMixin:
         self.res_combo.setMaximumWidth(200)
         form.addRow("Resolution:", self.res_combo)
 
+        self.container_combo = QComboBox()
+        self.container_combo.addItems(CONTAINERS)
+        self.container_combo.setToolTip(
+            "MP4: broadest compatibility -- phones, TVs, browsers,\n"
+            "streaming platforms. Includes a \"fast start\" flag so\n"
+            "playback can begin before the whole file has downloaded.\n"
+            "MKV: the more flexible container, common for media-server\n"
+            "and archival libraries (Plex, Jellyfin, ...). No real\n"
+            "downside here otherwise -- this app doesn't carry subtitle\n"
+            "tracks through on either container yet."
+        )
+        self.container_combo.currentIndexChanged.connect(self._on_control_changed)
+        self.container_combo.setMaximumWidth(200)
+        form.addRow("File Format:", self.container_combo)
+
+        # Item text folds the tradeoff directly in, no separate caption
+        # row needed (one less row fighting the others for space, and the
+        # tradeoff is right there the moment the dropdown opens).
+        self.bitdepth_combo = QComboBox()
+        self.bitdepth_combo.addItem("10-bit — smoother gradients", userData=10)
+        self.bitdepth_combo.addItem("8-bit — maximum compatibility", userData=8)
+        self.bitdepth_combo.currentIndexChanged.connect(self._on_control_changed)
+        form.addRow("Color Depth:", self.bitdepth_combo)
+
         return group
 
     def _build_video_tab(self) -> QWidget:
@@ -361,41 +562,27 @@ class _UiBuilderMixin:
         tab.setObjectName("tabPageCard")
         outer = QVBoxLayout(tab)
         outer.setContentsMargins(12, 12, 12, 12)
-        outer.addWidget(self._build_video_group())
-        # Explicit trailing stretch -- the Video card (Quality+Resolution
-        # merged into one) is the only item in this tab's own layout now,
-        # and a lone Preferred-policy widget with nothing else to share
-        # leftover space with gets stretched to fill it rather than
-        # staying at its own sizeHint. Same fix the Audio tab below
-        # already needed for the same one-group-per-tab reason.
-        outer.addStretch()
+        # SECTION_SPACING (card-to-card), not PANEL_SPACING -- Encoding to
+        # Quality to Format to Expert are real section breaks, not just
+        # another row in the same list.
+        outer.setSpacing(SECTION_SPACING)
 
-        # Consumer build: no visible File Format row -- always MP4 (index 0
-        # of CONTAINERS), the broadest-compatibility choice, per
-        # CONSUMER_FORK_PLAN.md's v1 scope table. container_combo stays
-        # constructed (not shown or added to any layout) so
-        # _current_settings()/_apply_settings_to_controls() keep working
-        # unchanged; it just never leaves its default index 0 ("mp4") since
-        # nothing ever changes it now.
-        self.container_combo = QComboBox()
-        self.container_combo.addItems(CONTAINERS)
+        outer.addWidget(self._build_encoding_group())
+        outer.addWidget(self._build_quality_group())
+        outer.addWidget(self._build_format_group())
 
-        # Everything below is the full technical control set the specialist
-        # build always shows, unchanged -- see this file's own comment
-        # further down (where this card used to be wrapped in a
-        # collapsible group) for why it's never shown here.
-        # self._video_expert_content, not a bare local -- a QWidget()
-        # constructed with no C++ parent (never true here before: the old
-        # collapsible-group wrapping gave it one via layout.addWidget)
-        # is owned by Python reference counting alone, and nothing else
-        # keeps a live reference to expert_content itself once this
-        # function returns (only to specific *children* of it, like
-        # self.encoder_combo -- which does not keep their parent alive).
-        # Confirmed as a real crash, not a theoretical one: without this,
-        # expert_content got garbage-collected right after construction,
-        # taking every control inside it down with it -- the exact same
-        # class of bug as the Settings-dialog crash fixed earlier in the
-        # specialist build's own history (a parentless QComboBox there).
+        # Expert: Rate Control/Exact Quality/Encoding Speed/Tune/Force
+        # Deinterlace -- a real collapsible section again (this fork
+        # briefly made it permanently unreachable; the final control-
+        # hierarchy decision restored enough Normal-mode depth --
+        # Processing/Codec/Mode/File Format/Color Depth all promoted
+        # above -- that a genuine Expert escape hatch earns its place
+        # again, same as the specialist build). encoder_combo below keeps
+        # a real, lasting Python reference (self._video_expert_content,
+        # not a bare local) for the same reason as before: a QWidget()
+        # with no C++ parent and no surviving Python reference gets
+        # garbage-collected, taking every control inside it down with it
+        # -- confirmed as a real crash earlier in this fork's history.
         self._video_expert_content = expert_content = QWidget()
         self.video_form = form = QFormLayout(expert_content)
         # Default Fusion spacing reads as cramped once every row has a small
@@ -403,69 +590,45 @@ class _UiBuilderMixin:
         # own description) -- confirmed by screenshot, this is the fix.
         form.setVerticalSpacing(14)
 
-        self.encoder_combo = QComboBox()
+        # encoder_combo, not shown as its own row anymore -- Processing
+        # (Encoding group, above) is now the only user-facing entry point
+        # for this exact same choice, so a second, Expert-only copy of it
+        # would just be a duplicate control. Stays fully live as the real
+        # backing model (_current_encoder_id/_current_gpu_vendor read it
+        # directly) -- same hidden-model-plus-friendly-view pattern
+        # rc_mode_combo just below already uses, just for a different
+        # setting. Constructed with expert_content as its real C++
+        # parent (not added to any layout) for the same reason
+        # rc_mode_combo needs one.
+        self.encoder_combo = QComboBox(expert_content)
+        self.encoder_combo.hide()
         for _, _, label in ENCODERS:
             self.encoder_combo.addItem(label)
         self.encoder_combo.currentIndexChanged.connect(self._on_encoder_changed)
-        self.encoder_combo.setToolTip(
-            "CPU (software): best quality-per-bitrate, but far slower --\n"
-            "minutes to hours depending on length and settings. Choose\n"
-            "H.265 or H.264 separately just below, in Codec.\n"
-            "Intel (iGPU) / AMD (GPU) (hardware, HEVC only): much faster\n"
-            "and barely touches the CPU, but generally trades away some\n"
-            "quality-per-bitrate versus a well-tuned software encode at\n"
-            "the same file size.\n"
-            "Pick hardware for speed or large batches; CPU when quality\n"
-            "matters most, or when you specifically want H.264 (Codec has\n"
-            "no effect on hardware -- it's HEVC-only here). The Quality\n"
-            "section's Processing/Compatibility rows are the friendly\n"
-            "front end for this same choice."
-        )
-        form.addRow("Encoder:", self.encoder_combo)
 
-        # rc_mode_combo stays the source of truth (everything downstream --
-        # _on_rc_mode_changed, _current_settings, presets -- reads it) but
-        # is never shown: the visible control is the two/three buttons
-        # below, which just drive this combo's index. Two ways to reach the
-        # same state would risk them drifting apart; one hidden model plus
-        # a friendlier view over it can't.
+        # rc_mode_combo is the real, directly-visible Expert control now --
+        # previously hidden behind a friendly Quality/File Size/Advanced
+        # 3-button row that just duplicated Normal's own Mode toggle
+        # (mode_quality_btn/mode_filesize_btn, Quality group above) with
+        # different labels. Per the final control-hierarchy decision
+        # ("Normal = intent, Expert = actual encoder mechanics"), Expert
+        # should show the real underlying modes (ICQ/CQP/VBR/CRF/bitrate,
+        # RC_MODES' own technical labels, constants.py) instead of a
+        # second friendly abstraction -- removing duplication, not adding
+        # an option. main.py's _on_rc_mode_changed/_sync_mode_buttons_to_
+        # combo still keep this and Normal's Mode toggle in sync in both
+        # directions.
         self.rc_mode_combo = QComboBox(expert_content)
-        self.rc_mode_combo.hide()
+        self.rc_mode_combo.setToolTip(
+            "The real underlying rate-control mode for the current\n"
+            "encoder -- Normal's Mode toggle picks Quality or File Size;\n"
+            "this shows (and, for a mode with no Normal equivalent like\n"
+            "CQP, is the only way to reach) the exact mode actually\n"
+            "driving the encode."
+        )
         self.rc_mode_combo.currentIndexChanged.connect(self._on_rc_mode_changed)
-        self.rc_mode_combo.currentIndexChanged.connect(self._sync_rc_buttons_to_combo)
-
-        rc_row = QHBoxLayout()
-        rc_row.setSpacing(0)
-        self.rc_button_group = QButtonGroup(self)
-        self.rc_quality_btn = QPushButton("Quality")
-        self.rc_quality_btn.setObjectName("segLeft")
-        self.rc_quality_btn.setToolTip("Aim for a consistent perceptual quality; file size follows.")
-        self.rc_filesize_btn = QPushButton("File Size")
-        self.rc_filesize_btn.setObjectName("segMid")
-        self.rc_filesize_btn.setToolTip("Aim for a target output size; quality follows.")
-        self.rc_advanced_btn = QPushButton("Advanced")
-        self.rc_advanced_btn.setObjectName("segRight")
-        self.rc_advanced_btn.setToolTip(
-            "Fixed quantizer (CQP): the same compression level on every\n"
-            "frame, regardless of content complexity. Rarely needed --\n"
-            "Quality (ICQ) adapts per-frame and usually looks better for\n"
-            "the same average bitrate."
-        )
-        for btn in (self.rc_quality_btn, self.rc_filesize_btn, self.rc_advanced_btn):
-            btn.setCheckable(True)
-            btn.setMinimumWidth(self._segmented_btn_min_width(btn))
-            self.rc_button_group.addButton(btn)
-            rc_row.addWidget(btn, 1)
-        self.rc_quality_btn.clicked.connect(
-            lambda: self._set_rc_mode(RC_MODE_FRIENDLY[self._current_encoder_key()]["quality"])
-        )
-        self.rc_filesize_btn.clicked.connect(
-            lambda: self._set_rc_mode(RC_MODE_FRIENDLY[self._current_encoder_key()]["file_size"])
-        )
-        self.rc_advanced_btn.clicked.connect(
-            lambda: self._set_rc_mode(RC_MODE_FRIENDLY[self._current_encoder_key()]["advanced"])
-        )
-        form.addRow("Rate control:", self._capped_row(rc_row, 280))
+        self.rc_mode_combo.currentIndexChanged.connect(self._sync_mode_buttons_to_combo)
+        form.addRow("Rate Control:", self.rc_mode_combo)
 
         quality_row = QHBoxLayout()
         self.quality_slider = QSlider(Qt.Horizontal)
@@ -475,7 +638,7 @@ class _UiBuilderMixin:
         # better quality), so invertedAppearance/-Controls flips the visual
         # and interaction direction while .value() keeps returning the real
         # number untouched -- Qt handles the remapping, nothing downstream
-        # (settings, presets, build_args) needs to know this happened.
+        # (settings, build_args) needs to know this happened.
         self.quality_slider.setInvertedAppearance(True)
         self.quality_slider.setInvertedControls(True)
         self.quality_slider.setToolTip(
@@ -485,41 +648,25 @@ class _UiBuilderMixin:
         self.quality_slider.valueChanged.connect(self._on_quality_changed)
         self.quality_label = QLabel()
         self.quality_label.setStyleSheet("font-size: 9pt;")
-        self.size_spin = QSpinBox()
-        self.size_spin.setRange(10, 20000)
-        self.size_spin.setSingleStep(50)
-        self.size_spin.setSuffix(" MB")
-        self.size_spin.setValue(1000)
-        self.size_spin.setToolTip("Target output size -- the actual bitrate is computed from this file's length.")
-        self.size_spin.valueChanged.connect(self._on_control_changed)
         quality_row.addWidget(self.quality_slider, 1)
         quality_row.addWidget(self.quality_label)
-        quality_row.addWidget(self.size_spin, 1)
 
-        # Only one of these two is ever visible at a time (is_bitrate in
-        # _on_rc_mode_changed) -- same one-row-two-widgets pattern as
-        # quality_slider/size_spin just above, rather than two separate rows
-        # where one is always an empty gap.
-        # stretch=1 on both (only one is ever visible at a time) so each
-        # claims the row's full width and its own AlignCenter has something
-        # to center within -- otherwise a shrink-wrapped label sits flush
-        # left with nothing to visually tie it to the slider above it.
-        quality_detail_row = QHBoxLayout()
         self.quality_tier_label = QLabel()
         self.quality_tier_label.setAlignment(Qt.AlignCenter)
         self._apply_fuzzy_caption_style(self.quality_tier_label)
-        self.size_estimate_label = QLabel()
-        self.size_estimate_label.setAlignment(Qt.AlignCenter)
-        self.size_estimate_label.setStyleSheet("font-size: 9pt;")
-        quality_detail_row.addWidget(self.quality_tier_label, 1)
-        quality_detail_row.addWidget(self.size_estimate_label, 1)
 
         # The slider and its fuzzy caption underneath share one outlined
         # box (objectName carries the QSS rule -- see style.qss's
         # #fuzzyGroup, shared with Speed's identical box below) instead of
         # being two independent-looking form rows -- the caption explains
         # *that specific slider*, so it reads better visually grouped with
-        # it rather than just sitting in the row underneath.
+        # it rather than just sitting in the row underneath. Target Size
+        # (size_spin/size_estimate_label) used to share this same box,
+        # toggled visible/invisible opposite this slider -- moved out
+        # entirely to the Quality group in Normal mode (see
+        # _build_quality_group's own docstring for why it isn't
+        # duplicated here too), so this box is just the exact-quality
+        # slider and its caption now, same shape as speed_group below.
         quality_group = QWidget()
         quality_group.setObjectName("fuzzyGroup")
         quality_group_layout = QVBoxLayout(quality_group)
@@ -529,8 +676,8 @@ class _UiBuilderMixin:
         # it -- confirmed by screenshot.
         quality_group_layout.setSpacing(2)
         quality_group_layout.addLayout(quality_row)
-        quality_group_layout.addLayout(quality_detail_row)
-        form.addRow("Quality:", quality_group)
+        quality_group_layout.addWidget(self.quality_tier_label)
+        form.addRow("Exact Quality:", quality_group)
 
         speed_row = QHBoxLayout()
         self.speed_faster_label = QLabel("Faster")
@@ -593,17 +740,7 @@ class _UiBuilderMixin:
         speed_group_layout.setSpacing(2)  # see Quality's identical fix above
         speed_group_layout.addLayout(speed_row)
         speed_group_layout.addWidget(self.speed_tier_label)
-        form.addRow("Speed:", speed_group)
-
-        # Bit depth's tradeoff used to live in a separate caption row below
-        # the combo -- folded directly into the item text instead (one less
-        # row fighting Quality/Speed for space, and the tradeoff is right
-        # there the moment the dropdown opens rather than a beat later).
-        self.bitdepth_combo = QComboBox()
-        self.bitdepth_combo.addItem("10-bit -- smoother gradients, larger file", userData=10)
-        self.bitdepth_combo.addItem("8-bit -- smaller, maximum compatibility", userData=8)
-        self.bitdepth_combo.currentIndexChanged.connect(self._on_control_changed)
-        form.addRow("Bit depth:", self.bitdepth_combo)
+        form.addRow("Encoding Speed:", speed_group)
 
         # Initial population matches whichever encoder the app actually
         # starts on (libx265 at construction time -- see main.py's
@@ -628,7 +765,13 @@ class _UiBuilderMixin:
         )
         form.addRow("Tune (software only):", self.tune_combo)
 
-        self.deinterlace_check = QCheckBox("Deinterlace (interlaced or telecined source)")
+        # "Force Deinterlace" -- renamed from "Deinterlace (interlaced or
+        # telecined source)" now that TITAN performs its own frame
+        # analysis and sets this automatically on every new file (see
+        # queue_controller.py's _on_deinterlace_checkbox_changed); this
+        # checkbox is only ever a manual override of that, not the
+        # primary way deinterlacing happens, so its label should say so.
+        self.deinterlace_check = QCheckBox("Force Deinterlace")
         self.deinterlace_check.setToolTip(
             "Container-level progressive/interlaced flags are frequently wrong,\n"
             "especially on camcorder-sourced footage. New files are sampled\n"
@@ -639,41 +782,9 @@ class _UiBuilderMixin:
         self.deinterlace_check.stateChanged.connect(self._on_deinterlace_checkbox_changed)
         form.addRow("", self.deinterlace_check)
 
-        # H.265/H.264 -- only meaningful for the CPU engine (no h264_vaapi
-        # wired up, hardware is HEVC-only here), so it's disabled and
-        # forced to H.265 whenever Encoder above is set to a hardware
-        # engine -- see main.py's _on_encoder_changed, which this cascades
-        # into exactly like encoder_combo's own change does. This whole
-        # form is unshown internal state in this build (see this file's
-        # own comment where Expert used to be wrapped and added) -- always
-        # stays at its DEFAULT_SETTINGS value ("None"/H.265) now that
-        # there's no Compatibility row to drive it.
-        self.codec_combo = QComboBox()
-        for value, label in CODECS:
-            self.codec_combo.addItem(label, userData=value)
-        self.codec_combo.setToolTip(
-            "H.265 (HEVC): better compression -- smaller file at the\n"
-            "same quality -- but not universally supported by older\n"
-            "devices/TVs/browsers, or only with extra licensing hassle.\n"
-            "H.264 (AVC): larger files for the same quality, but plays\n"
-            "back on virtually anything. Pick this over H.265 when\n"
-            "playback compatibility matters more than file size.\n"
-            "Only applies to the CPU encoder -- Intel/AMD hardware\n"
-            "encoding here is HEVC-only, so this is disabled and forced\n"
-            "to H.265 whenever Encoder above is set to one of those.\n"
-            "Same as the Quality section's Compatibility row above."
-        )
-        self.codec_combo.currentIndexChanged.connect(self._on_encoder_changed)
-        form.addRow("Codec:", self.codec_combo)
+        self.video_expert_group = self._make_collapsible_group("Expert", expert_content, expanded=False)
+        outer.addWidget(self.video_expert_group)
 
-        # Consumer build: expert_content (and everything built into it
-        # above -- encoder_combo, rc_mode_combo, codec_combo, bitdepth_combo,
-        # tune_combo, deinterlace_check) is deliberately never wrapped in a
-        # collapsible group or added to outer, unlike the specialist build.
-        # It stays fully constructed and live -- _current_settings()/
-        # _apply_settings_to_controls() still read and drive it exactly as
-        # before, so that plumbing didn't need touching -- it's just never
-        # shown to the user. See CONSUMER_FORK_PLAN.md's v1 scope table.
         return tab
 
     def _build_audio_tab(self) -> QWidget:
@@ -685,84 +796,85 @@ class _UiBuilderMixin:
         outer = QVBoxLayout(tab)
         outer.setContentsMargins(12, 12, 12, 12)
 
+        # No Audio Expert section -- every genuine audio setting the
+        # backend currently supports (Track, Handling, Channels, AAC
+        # Bitrate) is promoted directly into this one Normal group below.
+        # An Expert section with nothing left to put in it (or a
+        # duplicated copy of a Normal control) would be worse than none;
+        # revisit this once the backend gains something genuinely more
+        # advanced (multi-track passthrough, language selection, per-
+        # track mapping, loudness normalization, ...).
         normal_group = QGroupBox("Audio")
         normal_form = QFormLayout(normal_group)
         normal_form.setVerticalSpacing(14)
 
-        audio_choice_row = QHBoxLayout()
-        audio_choice_row.setSpacing(0)
-        self.audio_choice_button_group = QButtonGroup(self)
-        self.audio_automatic_btn = QPushButton("Automatic")
-        self.audio_automatic_btn.setObjectName("segLeft")
-        self.audio_automatic_btn.setToolTip(
+        self.audio_combo = QComboBox()
+        self.audio_combo.addItems(AUDIO_TRACK_LABELS)
+        self.audio_combo.currentIndexChanged.connect(self._on_control_changed)
+        normal_form.addRow("Track:", self.audio_combo)
+
+        # Handling and Channels used to be one combined "Audio: Automatic
+        # / Convert to Stereo" row (_on_audio_choice) -- that bundled two
+        # genuinely independent decisions (copy-vs-transcode, and
+        # channel layout) into one control, and silently never exposed
+        # copy-vs-transcode at all (audio_copy_if_compatible stayed
+        # permanently True, whatever "Automatic" happened to mean).
+        # Split into two real rows now, each a direct replacement for
+        # what used to be a hidden-Expert-only checkbox.
+        handling_row = QHBoxLayout()
+        handling_row.setSpacing(0)
+        self.audio_handling_button_group = QButtonGroup(self)
+        self.audio_handling_automatic_btn = QPushButton("Automatic")
+        self.audio_handling_automatic_btn.setObjectName("segLeft")
+        self.audio_handling_automatic_btn.setToolTip(
             "Keeps the original audio track untouched whenever the\n"
             "source is already AAC/AC-3/E-AC-3 (a fast, lossless stream\n"
             "copy); re-encodes to AAC only when it isn't."
         )
-        self.audio_stereo_btn = QPushButton("Convert to Stereo")
-        self.audio_stereo_btn.setObjectName("segRight")
-        self.audio_stereo_btn.setToolTip(
-            "Mixes 5.1/7.1/etc. sources down to plain stereo, for a\n"
-            "phone, laptop, or anything without a surround setup. No\n"
-            "effect on a source that's already stereo or mono."
+        self.audio_handling_convert_btn = QPushButton("Convert to AAC")
+        self.audio_handling_convert_btn.setObjectName("segRight")
+        self.audio_handling_convert_btn.setToolTip(
+            "Always re-encodes to AAC at the bitrate set below, even if\n"
+            "the source is already a compatible codec -- use this if you\n"
+            "specifically need a fresh AAC stream regardless."
         )
         for btn, choice in (
-            (self.audio_automatic_btn, "automatic"),
-            (self.audio_stereo_btn, "stereo"),
+            (self.audio_handling_automatic_btn, "automatic"),
+            (self.audio_handling_convert_btn, "convert"),
         ):
             btn.setCheckable(True)
             btn.setMinimumWidth(self._segmented_btn_min_width(btn))
-            self.audio_choice_button_group.addButton(btn)
-            audio_choice_row.addWidget(btn, 1)
-            btn.clicked.connect(lambda _checked, c=choice: self._on_audio_choice(c))
-        normal_form.addRow("Audio:", self._capped_row(audio_choice_row, 320))
+            self.audio_handling_button_group.addButton(btn)
+            handling_row.addWidget(btn, 1)
+            btn.clicked.connect(lambda _checked, c=choice: self._on_audio_handling_clicked(c))
+        normal_form.addRow("Handling:", self._capped_row(handling_row, 320))
 
-        outer.addWidget(normal_group)
-        # Explicit trailing stretch -- normal_group is the only item in
-        # this tab's own layout, and a lone Preferred-policy widget with
-        # nothing else to share leftover space with gets stretched to
-        # fill it rather than staying at its own sizeHint (confirmed
-        # live: a large blank gap opened up *inside* the Audio box's own
-        # border). Same fix the Video tab above needs for the same
-        # one-group-per-tab reason.
-        outer.addStretch()
-
-        # Full technical audio control set, same "internal state, never
-        # shown" treatment as the Video tab's Expert section -- see that
-        # section's own comment on self._video_expert_content for why this
-        # needs a real, lasting Python reference (self._audio_expert_
-        # content) rather than a bare local variable: a parentless QWidget
-        # with nothing keeping it alive gets garbage-collected, taking
-        # every control inside it down too, which is a real crash, not a
-        # theoretical one -- confirmed directly when this was first tried
-        # as a bare local (audio_bitrate_slider came back as "Internal
-        # C++ object already deleted" the moment __init__ tried to use it).
-        self._audio_expert_content = expert_content = QWidget()
-        form = QFormLayout(expert_content)
-        # Matches the Video tab's Expert form exactly (see video_form
-        # above) -- Fusion's default (~11px) was never applied here, so
-        # this tab's rows sat visibly tighter than Video's despite both
-        # using the same fuzzy-caption-box row pattern. Reported live.
-        form.setVerticalSpacing(14)
-
-        self.audio_combo = QComboBox()
-        self.audio_combo.addItems(AUDIO_TRACK_LABELS)
-        self.audio_combo.currentIndexChanged.connect(self._on_control_changed)
-        form.addRow("Audio track:", self.audio_combo)
-
-        self.audio_copy_check = QCheckBox("Copy audio if compatible (aac/ac3/eac3)")
-        self.audio_copy_check.setChecked(True)
-        self.audio_copy_check.setToolTip(
-            "When the source audio is already AAC, AC-3, or E-AC-3, this\n"
-            "passes it through untouched (a stream copy) instead of\n"
-            "re-encoding it -- zero quality loss and much faster, since\n"
-            "ffmpeg never has to decode and re-compress that track.\n"
-            "Unchecked, or when the source is some other codec (DTS, PCM,\n"
-            "MP3, ...), audio is always re-encoded to AAC at the bitrate\n"
-            "set below."
+        channels_row = QHBoxLayout()
+        channels_row.setSpacing(0)
+        self.audio_channels_button_group = QButtonGroup(self)
+        self.audio_channels_keep_btn = QPushButton("Keep Original")
+        self.audio_channels_keep_btn.setObjectName("segLeft")
+        self.audio_channels_stereo_btn = QPushButton("Stereo")
+        self.audio_channels_stereo_btn.setObjectName("segRight")
+        self.audio_channels_stereo_btn.setToolTip(
+            "Mixes 5.1/7.1/etc. sources down to plain stereo, for a\n"
+            "phone, laptop, or anything without a surround setup. No\n"
+            "effect on a source that's already stereo or mono. A stream\n"
+            "copy can't remix channels, so on a source that does have\n"
+            "more channels, choosing this transcodes the audio track\n"
+            "even if it would otherwise have been copied through\n"
+            "untouched."
         )
-        self.audio_copy_check.stateChanged.connect(self._on_control_changed)
-        form.addRow("", self.audio_copy_check)
+        for btn, choice in (
+            (self.audio_channels_keep_btn, "keep"),
+            (self.audio_channels_stereo_btn, "stereo"),
+        ):
+            btn.setCheckable(True)
+            btn.setMinimumWidth(self._segmented_btn_min_width(btn))
+            self.audio_channels_button_group.addButton(btn)
+            channels_row.addWidget(btn, 1)
+            btn.clicked.connect(lambda _checked, c=choice: self._on_audio_channels_clicked(c))
+        normal_form.addRow("Channels:", self._capped_row(channels_row, 320))
 
         audio_bitrate_row = QHBoxLayout()
         self.audio_bitrate_slider = QSlider(Qt.Horizontal)
@@ -776,8 +888,10 @@ class _UiBuilderMixin:
         self.audio_bitrate_slider.setToolTip(
             "Left: more compression, smaller file.\n"
             "Right: higher quality, larger file.\n"
-            "Only applies when the source audio is actually being "
-            "transcoded -- see \"Copy audio if compatible\" above."
+            "Only applies when the source audio is actually being\n"
+            "transcoded -- see Handling above. Stays adjustable even on\n"
+            "Automatic: a source the copy path can't handle (DTS, PCM, "
+            "...) still needs transcoding at whatever this is set to."
         )
         self.audio_bitrate_slider.valueChanged.connect(self._on_audio_bitrate_slider_changed)
         audio_bitrate_row.addWidget(self.audio_bitrate_slider, 1)
@@ -800,26 +914,11 @@ class _UiBuilderMixin:
         audio_bitrate_group_layout.setSpacing(2)  # see Quality's identical fix above
         audio_bitrate_group_layout.addLayout(audio_bitrate_row)
         audio_bitrate_group_layout.addWidget(self.audio_bitrate_tier_label)
-        form.addRow("Audio bitrate (if transcoded):", audio_bitrate_group)
+        normal_form.addRow("AAC Bitrate:", audio_bitrate_group)
 
-        self.audio_downmix_check = QCheckBox("Downmix to stereo (if source has more channels)")
-        self.audio_downmix_check.setToolTip(
-            "Mixes 5.1/7.1/etc. sources down to plain stereo -- for\n"
-            "playback on a phone, laptop, or anything without a surround\n"
-            "setup. Has no effect on a source that's already stereo or\n"
-            "mono. A stream copy can't remix channels, so on a source\n"
-            "that does have more channels, checking this transcodes the\n"
-            "audio track even if it would otherwise have been copied\n"
-            "through untouched."
-        )
-        self.audio_downmix_check.stateChanged.connect(self._on_control_changed)
-        form.addRow("", self.audio_downmix_check)
+        outer.addWidget(normal_group)
+        outer.addStretch()
 
-        # Consumer build: expert_content (audio_combo, audio_copy_check,
-        # audio_bitrate_slider, audio_downmix_check) stays fully constructed
-        # and live -- same reasoning as the Video tab's own Expert section
-        # above -- but is never wrapped in a collapsible group or added to
-        # normal_form, so it's never shown. See CONSUMER_FORK_PLAN.md.
         return tab
 
     def _build_right_panel(self) -> QWidget:

@@ -199,6 +199,113 @@ class TestBuildArgsVaapi(ClipTestCase):
         self.assertIn("-noautoscale", args)
 
 
+class TestBuildArgsAudioBitrateReservation(unittest.TestCase):
+    """Real, confirmed bug: reserved_audio_kbps used to always assume the
+    *configured* audio_bitrate for a bitrate-family rc_mode's target-size
+    math, even when Automatic is actually going to *copy* the source
+    audio through untouched. A copy-compatible source at a real bitrate
+    higher than the configured audio_bitrate (a 256k AAC track with
+    audio_bitrate set to 96k, say) meant the target-size math reserved
+    96 but the real output audio consumed far more, letting the total
+    output materially exceed the requested size. build_args now probes
+    the source's real bitrate (probe_audio_bitrate_kbps) whenever it's
+    actually going to be copied, falling back to the configured
+    audio_bitrate only when that probe genuinely can't find one.
+
+    MP4, not MKV -- confirmed directly that ffprobe reports stream=
+    bit_rate as literal "N/A" for this repo's own MKV test fixture (see
+    TestBuildArgsVaapi.test_vbr_uses_bitrate, which keeps its old
+    assertion unchanged for exactly that reason: MKV falling back to the
+    configured bitrate here is the *correct* new behavior, not an
+    oversight), while MP4 reports a real one."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        cls.clip = cls.tmpdir / "clip.mp4"
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error",
+             "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=1",
+             "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+             "-c:v", "libx264", "-c:a", "aac", "-b:a", "256k", "-shortest", str(cls.clip)],
+            check=True, timeout=30,
+        )
+        cls.real_audio_kbps = worker.probe_audio_bitrate_kbps(cls.clip)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmpdir, ignore_errors=True)
+
+    def test_probe_reads_a_real_non_trivial_value(self):
+        # Genuinely encoder-variable (real AAC VBR-ish output for a 1s
+        # clip), not pinned to exactly 256 -- just confirms a real, sane
+        # value came back, not None or something wildly wrong.
+        self.assertIsNotNone(self.real_audio_kbps)
+        self.assertGreater(self.real_audio_kbps, 20)
+        self.assertLess(self.real_audio_kbps, 400)
+
+    def test_probe_returns_none_for_a_track_that_does_not_exist(self):
+        self.assertIsNone(worker.probe_audio_bitrate_kbps(self.clip, track_index=5))
+
+    def test_copied_audio_reserves_the_real_source_bitrate_not_the_configured_one(self):
+        args = worker.build_args(
+            x265_settings(rc_mode="bitrate", quality_value=100, audio_bitrate="96k",
+                          audio_copy_if_compatible=True),
+            self.clip, self.tmpdir / "out.mp4", duration_seconds=80,
+        )
+        expected_video_kbps = worker.target_size_to_bitrate_kbps(100, 80, self.real_audio_kbps)
+        self.assertEqual(args[args.index("-b:v") + 1], f"{expected_video_kbps}k")
+        # Confirms this genuinely differs from the old (buggy) behavior,
+        # not a coincidence where the two numbers happen to match.
+        wrong_kbps_using_configured_bitrate = worker.target_size_to_bitrate_kbps(100, 80, 96)
+        self.assertNotEqual(expected_video_kbps, wrong_kbps_using_configured_bitrate)
+
+    def test_transcoded_audio_still_reserves_the_configured_bitrate(self):
+        # audio_copy_if_compatible=False forces a transcode regardless of
+        # source codec -- the configured audio_bitrate is the correct
+        # (and only knowable ahead of time) number to reserve here, since
+        # that's genuinely what the real output will use.
+        args = worker.build_args(
+            x265_settings(rc_mode="bitrate", quality_value=100, audio_bitrate="96k",
+                          audio_copy_if_compatible=False),
+            self.clip, self.tmpdir / "out.mp4", duration_seconds=80,
+        )
+        expected_video_kbps = worker.target_size_to_bitrate_kbps(100, 80, 96)
+        self.assertEqual(args[args.index("-b:v") + 1], f"{expected_video_kbps}k")
+
+    def test_forced_downmix_still_reserves_the_configured_bitrate(self):
+        # A stream copy can't remix channels -- downmix forces a
+        # transcode the same way audio_copy_if_compatible=False does, so
+        # the configured bitrate is correct here too even though
+        # audio_copy_if_compatible itself is still True. probe_audio=
+        # False + explicit audio_codec/audio_channels here, not the real
+        # clip -- its own sine-wave audio is genuinely mono, and
+        # probe_audio=True would just re-probe and overwrite a caller-
+        # supplied audio_channels with that real (non-6) value.
+        args = worker.build_args(
+            x265_settings(rc_mode="bitrate", quality_value=100, audio_bitrate="96k",
+                          audio_copy_if_compatible=True, audio_downmix_stereo=True),
+            self.clip, self.tmpdir / "out.mp4", duration_seconds=80,
+            probe_audio=False, audio_codec="aac", audio_channels=6,
+        )
+        expected_video_kbps = worker.target_size_to_bitrate_kbps(100, 80, 96)
+        self.assertEqual(args[args.index("-b:v") + 1], f"{expected_video_kbps}k")
+
+    def test_caller_supplied_audio_source_bitrate_skips_the_probe(self):
+        # Same pattern as duration_seconds -- a caller that already knows
+        # the value (a cached preview, say) can skip a redundant ffprobe.
+        with patch.object(worker, "probe_audio_bitrate_kbps") as mock_probe:
+            args = worker.build_args(
+                x265_settings(rc_mode="bitrate", quality_value=100, audio_bitrate="96k",
+                              audio_copy_if_compatible=True),
+                self.clip, self.tmpdir / "out.mp4", duration_seconds=80,
+                audio_source_bitrate_kbps=640,
+            )
+            mock_probe.assert_not_called()
+        expected_video_kbps = worker.target_size_to_bitrate_kbps(100, 80, 640)
+        self.assertEqual(args[args.index("-b:v") + 1], f"{expected_video_kbps}k")
+
+
 class TestBuildArgsX265(ClipTestCase):
     def test_crf_uses_crf_flag(self):
         args = worker.build_args(x265_settings(rc_mode="CRF", quality_value=20), self.clip, self.out_path)

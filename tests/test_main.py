@@ -26,7 +26,7 @@ from PySide6.QtGui import (  # noqa: E402
     QColor, QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QFocusEvent, QFont,
     QFontMetrics, QPainter, QPalette, QPixmap,
 )
-from PySide6.QtWidgets import QApplication, QStyleOptionViewItem, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QScrollArea, QStyleOptionViewItem, QWidget  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
@@ -459,124 +459,82 @@ class TestStartupOrdering(unittest.TestCase):
 
 
 class TestRateControlButtons(unittest.TestCase):
-    """The Quality / File Size / Advanced buttons are a friendlier view over
-    rc_mode_combo (still the actual source of truth) -- see _set_rc_mode /
-    _sync_rc_buttons_to_combo in main.py.
+    """rc_mode_combo is Expert's own real, directly-visible control now --
+    RC_MODES' technical labels (constants.py: "ICQ (quality, hardware)",
+    "CQP (fixed quantizer)", "VBR (target bitrate)", "CRF (quality)",
+    "Target bitrate") shown as-is, not a friendly Quality/File Size/
+    Advanced 3-button row (that row was cut entirely: it just duplicated
+    Normal's own Mode toggle -- mode_quality_btn/mode_filesize_btn, the
+    Quality group -- with different labels, per the final control-
+    hierarchy decision that Expert should show real encoder mechanics,
+    not a second abstraction). setCurrentText()/setCurrentIndex() on a
+    QComboBox are property-style calls, not synthesized click/focus
+    events, so unlike the old buttons' .click(), these tests need no
+    window.show() or Expert-expansion workaround (see TestX264Codec's own
+    docstring for the same reasoning already established there)."""
 
-    Consumer build note: this whole form lives in window._video_expert_
-    content now, which this fork never shows at all (CONSUMER_FORK_PLAN.md)
-    -- .click() still works on an unshown-but-constructed QPushButton (only
-    real user *mouse* interaction needs genuine visibility; a direct
-    .click() call does not), so no window.show() workaround is needed to
-    exercise these. isVisible() checks below use isVisibleTo(window.
-    _video_expert_content) instead of plain isVisible() for the same
-    reason: isVisible() reflects the *whole* ancestor chain, which is
-    permanently False here regardless of the button's own flag -- that
-    would make every isVisible() assertion in this class trivially true
-    or false for the wrong reason, silently no longer testing what
-    _on_encoder_changed actually does to each button's own visibility.
-    isVisibleTo(ancestor) answers "would this be visible if ancestor were
-    shown", which is the real question these tests care about."""
-
-    def _shown_window_with_expert_open(self):
+    def test_selecting_icq_by_text_for_vaapi(self):
         window = main.MainWindow()
-        window.show()
-        return window
-
-    def test_quality_button_selects_icq_for_vaapi(self):
-        window = self._shown_window_with_expert_open()
-        window.rc_filesize_btn.click()  # move off the default first
-        window.rc_quality_btn.click()
-        self.assertEqual(window.rc_mode_combo.currentData(), "ICQ")
-        self.assertTrue(window.rc_quality_btn.isChecked())
-
-    def test_file_size_button_selects_vbr_for_vaapi(self):
-        window = self._shown_window_with_expert_open()
-        window.rc_filesize_btn.click()
-        self.assertEqual(window.rc_mode_combo.currentData(), "VBR")
-        self.assertTrue(window.rc_filesize_btn.isChecked())
-
-    def test_advanced_button_selects_cqp_for_vaapi(self):
-        window = self._shown_window_with_expert_open()
-        window.rc_advanced_btn.click()
-        self.assertEqual(window.rc_mode_combo.currentData(), "CQP")
-        self.assertTrue(window.rc_advanced_btn.isChecked())
-
-    def test_file_size_button_selects_bitrate_for_x265(self):
-        window = self._shown_window_with_expert_open()
-        window.encoder_combo.setCurrentText("CPU")
-        window.rc_filesize_btn.click()
-        self.assertEqual(window.rc_mode_combo.currentData(), "bitrate")
-
-    def test_advanced_button_hidden_for_x265_no_cqp_equivalent(self):
-        window = main.MainWindow()
-        window.encoder_combo.setCurrentText("CPU")
-        self.assertFalse(window.rc_advanced_btn.isVisibleTo(window._video_expert_content))
-
-    def test_advanced_button_visible_again_switching_back_to_vaapi(self):
-        window = main.MainWindow()
-        window.show()
-        window.encoder_combo.setCurrentText("CPU")
         window.encoder_combo.setCurrentText("Intel (iGPU)")
-        self.assertTrue(window.rc_advanced_btn.isVisibleTo(window._video_expert_content))
+        window.rc_mode_combo.setCurrentText("VBR (target bitrate)")  # move off the default first
+        window.rc_mode_combo.setCurrentText("ICQ (quality, hardware)")
+        self.assertEqual(window.rc_mode_combo.currentData(), "ICQ")
+        self.assertTrue(window.mode_quality_btn.isChecked())
 
-    def test_buttons_resync_to_combo_across_an_encoder_switch(self):
-        # Quality on VAAPI (ICQ) should still read as the Quality button
-        # after switching to x265 (CRF) -- the *concept* carries over even
-        # though the underlying rc_mode value is different per encoder.
-        window = self._shown_window_with_expert_open()
-        window.rc_quality_btn.click()
+    def test_selecting_vbr_for_vaapi_checks_normal_file_size_mode(self):
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("Intel (iGPU)")
+        window.rc_mode_combo.setCurrentText("VBR (target bitrate)")
+        self.assertEqual(window.rc_mode_combo.currentData(), "VBR")
+        self.assertTrue(window.mode_filesize_btn.isChecked())
+
+    def test_selecting_cqp_for_vaapi_leaves_normal_mode_unselected(self):
+        # CQP (Advanced) has no Normal-mode equivalent -- neither Mode
+        # button should read as selected, same "no exact match" handling
+        # the Quality tier buttons already use for an in-between Expert
+        # slider value.
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("Intel (iGPU)")
+        window.rc_mode_combo.setCurrentText("CQP (fixed quantizer)")
+        self.assertEqual(window.rc_mode_combo.currentData(), "CQP")
+        self.assertFalse(window.mode_quality_btn.isChecked())
+        self.assertFalse(window.mode_filesize_btn.isChecked())
+
+    def test_selecting_bitrate_for_x265_checks_normal_file_size_mode(self):
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("CPU")
+        window.rc_mode_combo.setCurrentText("Target bitrate")
+        self.assertEqual(window.rc_mode_combo.currentData(), "bitrate")
+        self.assertTrue(window.mode_filesize_btn.isChecked())
+
+    def test_cqp_not_offered_for_x265_no_equivalent(self):
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("CPU")
+        items = [window.rc_mode_combo.itemText(i) for i in range(window.rc_mode_combo.count())]
+        self.assertEqual(items, ["CRF (quality)", "Target bitrate"])
+
+    def test_normal_mode_button_resyncs_combo_across_an_encoder_switch(self):
+        # Quality on VAAPI (ICQ) should still read as Normal's Quality
+        # Mode after switching to x265 (CRF) -- the *concept* carries
+        # over even though the underlying rc_mode value differs per
+        # encoder.
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("Intel (iGPU)")
+        window.mode_quality_btn.click()
         window.encoder_combo.setCurrentText("CPU")
         self.assertEqual(window.rc_mode_combo.currentData(), "CRF")
-        self.assertTrue(window.rc_quality_btn.isChecked())
+        self.assertTrue(window.mode_quality_btn.isChecked())
 
-    def test_switching_off_cqp_to_x265_falls_back_to_a_button_that_exists(self):
+    def test_switching_off_cqp_to_x265_falls_back_to_a_mode_that_exists(self):
         # CQP has no x265 equivalent -- RC_MODES["libx265"] simply doesn't
         # contain it, so switching encoders away from it lands on whatever
-        # index 0 becomes (CRF), which the Quality button should reflect.
-        window = self._shown_window_with_expert_open()
-        window.rc_advanced_btn.click()
+        # index 0 becomes (CRF), which Normal's Quality Mode should reflect.
+        window = main.MainWindow()
+        window.encoder_combo.setCurrentText("Intel (iGPU)")
+        window.rc_mode_combo.setCurrentText("CQP (fixed quantizer)")
         window.encoder_combo.setCurrentText("CPU")
         self.assertEqual(window.rc_mode_combo.currentData(), "CRF")
-        self.assertTrue(window.rc_quality_btn.isChecked())
-
-
-class TestFileSizeButtonEndRounding(unittest.TestCase):
-    """File Size (#segMid in style.qss) is styled as a middle segment --
-    square on both sides -- which is wrong whenever Advanced (#segRight)
-    is hidden (any encoder with no CQP equivalent, e.g. x265): File Size
-    becomes the row's actual last visible button but stayed visually cut
-    off square on the right, since QSS has no selector for "my sibling is
-    hidden". Reported live, confirmed by screenshot. Fixed via a "segEnd"
-    dynamic property set alongside rc_advanced_btn's own visibility in
-    _on_encoder_changed -- these tests check that property directly
-    rather than rendered pixels, matching how the sibling "modified"
-    combo-box indicator is tested elsewhere in this file."""
-
-    def test_file_size_gets_the_end_rounding_when_advanced_is_hidden(self):
-        window = main.MainWindow()
-        window.encoder_combo.setCurrentText("CPU")  # no CQP equivalent
-        self.assertFalse(window.rc_advanced_btn.isVisibleTo(window._video_expert_content))
-        self.assertTrue(window.rc_filesize_btn.property("segEnd"))
-
-    def test_file_size_stays_a_plain_middle_segment_when_advanced_is_shown(self):
-        # isVisibleTo(window._video_expert_content), not isVisible() --
-        # this whole form is never shown at all in this fork (Consumer
-        # build, see class docstring in TestRateControlButtons above), so
-        # plain isVisible() would read False here regardless of
-        # rc_advanced_btn's own flag.
-        window = main.MainWindow()
-        window.show()
-        window.encoder_combo.setCurrentText("Intel (iGPU)")
-        self.assertTrue(window.rc_advanced_btn.isVisibleTo(window._video_expert_content))
-        self.assertFalse(window.rc_filesize_btn.property("segEnd"))
-
-    def test_switching_back_to_vaapi_clears_the_end_rounding(self):
-        window = main.MainWindow()
-        window.encoder_combo.setCurrentText("CPU")
-        self.assertTrue(window.rc_filesize_btn.property("segEnd"))
-        window.encoder_combo.setCurrentText("Intel (iGPU)")
-        self.assertFalse(window.rc_filesize_btn.property("segEnd"))
+        self.assertTrue(window.mode_quality_btn.isChecked())
 
 
 class TestSpeedSliderVisibility(unittest.TestCase):
@@ -624,14 +582,19 @@ class TestTargetSizeSettings(unittest.TestCase):
     def test_size_spin_value_flows_into_current_settings(self):
         window = main.MainWindow()
         window.show()
-        window.rc_filesize_btn.click()
+        window.mode_filesize_btn.click()
         window.size_spin.setValue(750)
         self.assertEqual(window._current_settings()["quality_value"], 750)
 
     def test_apply_settings_to_controls_round_trips_size(self):
-        # isVisibleTo(window._video_expert_content), not isVisible() --
-        # this whole form is never shown at all in this fork (see
-        # TestRateControlButtons' own docstring for the full reasoning).
+        # size_spin lives in the always-shown Quality group now (Normal
+        # mode), not Expert -- plain isVisible() is the right check for
+        # it (window.show() above makes its real ancestor chain visible,
+        # only its own Target Size row's setRowVisible state gates it).
+        # quality_slider stays in Expert, collapsed by default in this
+        # test (video_expert_group never expanded) -- isVisibleTo(window.
+        # _video_expert_content) is still correct for it, same reasoning
+        # as TestRateControlButtons' own docstring.
         window = main.MainWindow()
         window.show()
         settings = window._current_settings()
@@ -639,7 +602,7 @@ class TestTargetSizeSettings(unittest.TestCase):
         settings["quality_value"] = 2500
         window._apply_settings_to_controls(settings)
         self.assertEqual(window.size_spin.value(), 2500)
-        self.assertTrue(window.size_spin.isVisibleTo(window._video_expert_content))
+        self.assertTrue(window.size_spin.isVisible())
         self.assertFalse(window.quality_slider.isVisibleTo(window._video_expert_content))
 
 
@@ -649,12 +612,9 @@ class TestSizeEstimateLabel(unittest.TestCase):
         self.assertFalse(window.size_estimate_label.isVisible())
 
     def test_prompts_for_a_file_when_queue_is_empty(self):
-        # show() + expanding Expert first -- rc_filesize_btn.click()
-        # silently no-ops otherwise, same confirmed gap as
-        # TestRateControlButtons' own tests (see that class's docstring).
         window = main.MainWindow()
         window.show()
-        window.rc_filesize_btn.click()
+        window.mode_filesize_btn.click()
         self.assertIn("Add a file", window.size_estimate_label.text())
 
     def test_shows_a_real_computed_estimate_for_a_queued_file(self):
@@ -665,7 +625,7 @@ class TestSizeEstimateLabel(unittest.TestCase):
             _make_clip(clip, "aac")
             window.add_files([clip])
             _wait_for_detection(window)
-            window.rc_filesize_btn.click()
+            window.mode_filesize_btn.click()
             window.size_spin.setValue(1000)
             text = window.size_estimate_label.text()
         self.assertIn("kbps", text)
@@ -682,7 +642,7 @@ class TestSizeEstimateLabel(unittest.TestCase):
         # on every settings change while File Size mode is active with a
         # file queued, it would raise again on every subsequent keystroke.
         # Patched around add_files() itself, not just the later
-        # rc_filesize_btn.click() -- _update_command_preview eagerly
+        # mode_filesize_btn.click() -- _update_command_preview eagerly
         # probes duration for *any* queued file regardless of rc_mode (it
         # feeds build_args' duration_seconds unconditionally), so
         # add_files() alone already populates _preview_duration_cache;
@@ -696,7 +656,7 @@ class TestSizeEstimateLabel(unittest.TestCase):
             with patch.object(worker, "probe_duration", side_effect=RuntimeError("boom")):
                 window.add_files([clip])
                 _wait_for_detection(window)
-                window.rc_filesize_btn.click()  # must not raise
+                window.mode_filesize_btn.click()  # must not raise
             self.assertIn("estimate unavailable", window.size_estimate_label.text())
 
     def test_target_too_small_shows_a_clear_message_not_a_bogus_number(self):
@@ -717,12 +677,48 @@ class TestSizeEstimateLabel(unittest.TestCase):
             _make_clip(clip, "aac")
             window.add_files([clip])
             _wait_for_detection(window)
-            window.rc_filesize_btn.click()
+            window.mode_filesize_btn.click()
             window._preview_duration_cache[clip] = 7200.0  # simulate a 2-hour file
             window.size_spin.setValue(window.size_spin.minimum())
             text = window.size_estimate_label.text()
         self.assertIn("too small", text)
         self.assertNotIn("kbps", text)
+
+    def test_reserves_the_real_source_bitrate_when_audio_will_be_copied(self):
+        # Same bug/fix as worker.TestBuildArgsAudioBitrateReservation --
+        # this label computes its own estimate independently of
+        # build_args (it has to: build_args needs a real file on disk,
+        # this label also needs to show something before Convert is ever
+        # clicked), so the will_copy_audio fix had to be applied here
+        # too, separately. MP4, not MKV -- ffprobe reports a real per-
+        # stream bit_rate for MP4-muxed AAC but literally "N/A" for this
+        # repo's own MKV test fixture (confirmed directly, see that same
+        # worker.py test class's own docstring).
+        window = main.MainWindow()
+        window.show()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mp4"
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error",
+                 "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=1",
+                 "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                 "-c:v", "libx264", "-c:a", "aac", "-b:a", "256k", "-shortest", str(clip)],
+                check=True, timeout=30,
+            )
+            real_kbps = worker.probe_audio_bitrate_kbps(clip)
+            self.assertIsNotNone(real_kbps, "MP4 should report a real per-stream bit_rate")
+            window.add_files([clip])
+            _wait_for_detection(window)
+            window.mode_filesize_btn.click()
+            window._preview_duration_cache[clip] = 80.0
+            window.size_spin.setValue(100)  # triggers the recompute against the cached duration above
+            text = window.size_estimate_label.text()
+        expected_kbps = worker.target_size_to_bitrate_kbps(100, 80.0, real_kbps)
+        wrong_kbps_using_configured_bitrate = worker.target_size_to_bitrate_kbps(
+            100, 80.0, worker.audio_bitrate_kbps(window._current_settings()["audio_bitrate"])
+        )
+        self.assertIn(f"{expected_kbps:,} kbps", text)
+        self.assertNotEqual(expected_kbps, wrong_kbps_using_configured_bitrate)
 
 
 class TestDiagnosticsRelocation(unittest.TestCase):
@@ -1002,6 +998,116 @@ class TestFormatRunSummary(unittest.TestCase):
         self.assertEqual(count_line, "3 videos converted · 1 failed")
 
 
+class TestAudioTrackChoices(unittest.TestCase):
+    """Track (Normal, promoted from Expert) used to unconditionally offer
+    Track 1-4 regardless of how many audio streams the selected file(s)
+    actually have -- picking a nonexistent one silently produced audio-
+    less output instead of an error (worker.py deliberately skips mapping
+    a track that isn't there rather than failing the whole job). Track
+    count is already probed (worker.parse_probe_output's own
+    audio_track_count, used since before this fix for the "+N more" queue
+    subtitle) -- _refresh_audio_track_choices (main.py) now also narrows
+    audio_combo to it, keyed off queue_widget.AUDIO_TRACK_COUNT_ROLE."""
+
+    def test_default_with_no_selection_offers_all_four(self):
+        window = main.MainWindow()
+        self.assertEqual(window.audio_combo.count(), 4)
+
+    def test_selecting_a_single_track_file_narrows_to_one(self):
+        window = main.MainWindow()
+        window.show()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            _make_clip(clip, "aac")
+            window.add_files([clip])
+            _wait_for_detection(window)
+        item = window.queue_list.topLevelItem(0)
+        item.setSelected(True)
+        window._on_queue_selection_changed()
+        self.assertEqual(window.audio_combo.count(), 1)
+        self.assertEqual(window.audio_combo.itemText(0), "Track 1")
+
+    def test_a_file_with_more_tracks_offers_that_many(self):
+        # Real ffprobe output only ever comes from add_files's own async
+        # probe -- setting AUDIO_TRACK_COUNT_ROLE directly here simulates
+        # what a genuine multi-track source would have produced, the same
+        # way other tests in this file set _preview_duration_cache
+        # directly rather than constructing a real multi-hour clip.
+        window = main.MainWindow()
+        window.show()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            _make_clip(clip, "aac")
+            window.add_files([clip])
+            _wait_for_detection(window)
+        item = window.queue_list.topLevelItem(0)
+        item.setData(queue_widget.VIDEO_COL, queue_widget.AUDIO_TRACK_COUNT_ROLE, 3)
+        item.setSelected(True)
+        window._on_queue_selection_changed()
+        self.assertEqual(window.audio_combo.count(), 3)
+        self.assertEqual(
+            [window.audio_combo.itemText(i) for i in range(3)],
+            ["Track 1", "Track 2", "Track 3"],
+        )
+
+    def test_multiple_selected_files_offer_only_the_shared_intersection(self):
+        # Two files, 1 and 3 tracks -- offering Track 2 or 3 would fail
+        # outright on the 1-track file if a shared Track choice were
+        # applied to both selected rows at once (same reasoning
+        # _sync_settings_to_selected_queue_items already applies to every
+        # other shared setting).
+        window = main.MainWindow()
+        window.show()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip_a = Path(tmp) / "a.mkv"
+            clip_b = Path(tmp) / "b.mkv"
+            _make_clip(clip_a, "aac")
+            _make_clip(clip_b, "aac")
+            window.add_files([clip_a, clip_b])
+            _wait_for_detection(window)
+        item_a = window.queue_list.topLevelItem(0)
+        item_b = window.queue_list.topLevelItem(1)
+        item_a.setData(queue_widget.VIDEO_COL, queue_widget.AUDIO_TRACK_COUNT_ROLE, 1)
+        item_b.setData(queue_widget.VIDEO_COL, queue_widget.AUDIO_TRACK_COUNT_ROLE, 3)
+        item_a.setSelected(True)
+        item_b.setSelected(True)
+        window._on_queue_selection_changed()
+        self.assertEqual(window.audio_combo.count(), 1)
+
+    def test_stored_audio_track_past_the_narrowed_list_is_clamped_not_left_unset(self):
+        window = main.MainWindow()
+        window.show()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            _make_clip(clip, "aac")
+            window.add_files([clip])
+            _wait_for_detection(window)
+        item = window.queue_list.topLevelItem(0)
+        job = item.data(queue_widget.STATUS_COL, Qt.UserRole)
+        job["audio_track"] = 2  # Track 3 -- this file only has one track
+        item.setData(queue_widget.STATUS_COL, Qt.UserRole, job)
+        item.setSelected(True)
+        window._on_queue_selection_changed()
+        self.assertEqual(window.audio_combo.count(), 1)
+        self.assertEqual(window.audio_combo.currentIndex(), 0)
+
+    def test_deselecting_back_to_nothing_restores_all_four(self):
+        window = main.MainWindow()
+        window.show()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            _make_clip(clip, "aac")
+            window.add_files([clip])
+            _wait_for_detection(window)
+        item = window.queue_list.topLevelItem(0)
+        item.setSelected(True)
+        window._on_queue_selection_changed()
+        self.assertEqual(window.audio_combo.count(), 1)
+        item.setSelected(False)
+        window._refresh_audio_track_choices()
+        self.assertEqual(window.audio_combo.count(), 4)
+
+
 class TestAudioBitrateSlider(unittest.TestCase):
     """Converted from a QComboBox to a slider (matching Quality/Speed on
     the Video tab) -- the slider's value is an *index* into AUDIO_BITRATES,
@@ -1146,17 +1252,23 @@ class TestX264Codec(unittest.TestCase):
     libx264: it fell through to the VAAPI branch instead, which several
     of these tests exercise directly.
 
-    Consumer build note: encoder_combo/codec_combo/tune_combo all live in
-    the Video tab's Expert form, which this fork never wraps in a
-    collapsible group or shows at all (CONSUMER_FORK_PLAN.md) -- so unlike
-    the specialist build this was originally written against, there's no
-    checkable-QGroupBox-disables-its-content-tree gotcha to work around
-    here anymore: a plain, never-shown QWidget doesn't disable its
-    children just for not being visible. _shown_window_with_expert_open
-    (TestRateControlButtons, below) no longer needs the
-    video_expert_group.setChecked(True) call its name still references --
-    confirmed directly (isEnabled() on these controls reads True without
-    it) rather than assumed, kept as a thin window+show() wrapper instead
+    Consumer build note: codec_combo was promoted to Normal (the Encoding
+    group, alongside Processing) per the final control-hierarchy decision
+    -- it's a real, always-shown QComboBox now, not gated behind Expert
+    at all, so .setCurrentText() on it here needs no window.show() or
+    Expert-expansion workaround regardless of enabled/visible state.
+    encoder_combo/tune_combo do still live in the Video tab's Expert
+    form (a real collapsible QGroupBox again, window.video_expert_group)
+    -- but .setCurrentText()/.setCurrentIndex() are property-style calls,
+    not synthesized click/focus events, so they still work regardless of
+    Expert's own collapsed state (confirmed directly: isEnabled() and
+    the resulting _current_settings() both read correctly without ever
+    expanding it) -- unlike QPushButton.click(), which TestRateControl
+    Buttons' own docstring documents as a genuine no-op on a collapsed
+    Expert's buttons. _shown_window_with_expert_open (TestRateControl
+    Buttons, below) is a thin window+show() wrapper here purely by
+    convention/naming reuse, not because this class's own tests need
+    Expert expanded -- kept that way instead
     of removing the helper and updating every call site for a rename that
     doesn't change behavior.
 
@@ -1307,22 +1419,80 @@ class TestX264Codec(unittest.TestCase):
         self.assertEqual(args[args.index("-c:v") + 1], "libx264")
         self.assertNotIn("-x265-params", args)
 
+    def test_h265_better_quality_survives_switch_to_h264(self):
+        # Real, reported bug: codec_combo used to wire straight to
+        # _on_encoder_changed, which rebuilds rc_mode_combo from scratch
+        # and resets currentIndex to 0 -- silently abandoning the user's
+        # Quality-tier choice on every codec switch. _on_codec_changed
+        # (main.py) now captures/restores it, same shape as
+        # _on_processing_choice already does for engine switches.
+        window = self._shown_window_with_expert_open()
+        window.encoder_combo.setCurrentText("CPU")
+        window.quality_better_btn.click()
+        window.codec_combo.setCurrentText("H.264 (AVC)")
+        settings = window._current_settings()
+        self.assertEqual(settings["encoder"], "libx264")
+        self.assertEqual(settings["quality_value"], main.QUALITY_TIERS["libx264"]["better"])
+        self.assertTrue(window.quality_better_btn.isChecked())
+
+    def test_h264_better_quality_survives_switch_to_h265(self):
+        window = self._shown_window_with_expert_open()
+        window.encoder_combo.setCurrentText("CPU")
+        window.codec_combo.setCurrentText("H.264 (AVC)")
+        window.quality_better_btn.click()
+        window.codec_combo.setCurrentText("H.265 (HEVC)")
+        settings = window._current_settings()
+        self.assertEqual(settings["encoder"], "libx265")
+        self.assertEqual(settings["quality_value"], main.QUALITY_TIERS["libx265"]["better"])
+        self.assertTrue(window.quality_better_btn.isChecked())
+
+    def test_h265_file_size_800mb_survives_switch_to_h264(self):
+        window = self._shown_window_with_expert_open()
+        window.encoder_combo.setCurrentText("CPU")
+        window.mode_filesize_btn.click()
+        window.size_spin.setValue(800)
+        window.codec_combo.setCurrentText("H.264 (AVC)")
+        settings = window._current_settings()
+        self.assertEqual(settings["encoder"], "libx264")
+        self.assertEqual(settings["rc_mode"], "bitrate")
+        self.assertEqual(settings["quality_value"], 800)
+        self.assertTrue(window.mode_filesize_btn.isChecked())
+
+    def test_h264_file_size_800mb_survives_switch_to_h265(self):
+        window = self._shown_window_with_expert_open()
+        window.encoder_combo.setCurrentText("CPU")
+        window.codec_combo.setCurrentText("H.264 (AVC)")
+        window.mode_filesize_btn.click()
+        window.size_spin.setValue(800)
+        window.codec_combo.setCurrentText("H.265 (HEVC)")
+        settings = window._current_settings()
+        self.assertEqual(settings["encoder"], "libx265")
+        self.assertEqual(settings["rc_mode"], "bitrate")
+        self.assertEqual(settings["quality_value"], 800)
+        self.assertTrue(window.mode_filesize_btn.isChecked())
+
 
 class TestAudioDownmix(unittest.TestCase):
+    """audio_downmix_check (a checkbox, Expert-only) was replaced by the
+    Channels segmented row (Keep Original/Stereo) directly in Normal mode
+    -- see ui_builder.py's _build_audio_tab and main.py's
+    _on_audio_channels_clicked. audio_channels_stereo_btn.isChecked() is
+    the new source of truth _current_settings() reads."""
+
     def test_default_is_off(self):
         window = main.MainWindow()
         self.assertFalse(window._current_settings()["audio_downmix_stereo"])
 
-    def test_checkbox_round_trips_through_current_settings(self):
+    def test_button_round_trips_through_current_settings(self):
         window = main.MainWindow()
-        window.audio_downmix_check.setChecked(True)
+        window.audio_channels_stereo_btn.click()
         self.assertTrue(window._current_settings()["audio_downmix_stereo"])
 
-    def test_apply_settings_sets_the_checkbox(self):
+    def test_apply_settings_sets_the_button(self):
         window = main.MainWindow()
         settings = window._current_settings()
         window._apply_settings_to_controls({**settings, "audio_downmix_stereo": True})
-        self.assertTrue(window.audio_downmix_check.isChecked())
+        self.assertTrue(window.audio_channels_stereo_btn.isChecked())
 
     def test_apply_settings_defaults_to_off_for_an_older_preset_missing_the_key(self):
         # A preset saved before this control existed simply won't have this
@@ -1331,10 +1501,10 @@ class TestAudioDownmix(unittest.TestCase):
         # container/tune/deinterlace fallbacks it sits alongside).
         window = main.MainWindow()
         settings = window._current_settings()
-        window.audio_downmix_check.setChecked(True)
+        window.audio_channels_stereo_btn.click()
         old_settings = {k: v for k, v in settings.items() if k != "audio_downmix_stereo"}
         window._apply_settings_to_controls(old_settings)
-        self.assertFalse(window.audio_downmix_check.isChecked())
+        self.assertTrue(window.audio_channels_keep_btn.isChecked())
 
 
 class TestComboPopupBackgroundFilter(unittest.TestCase):
@@ -3430,6 +3600,68 @@ class TestLeftPanelFixedWidth(unittest.TestCase):
         self.assertEqual(left.width(), 470)
 
 
+class TestLeftPanelScrolling(unittest.TestCase):
+    """The richer Video tab (Encoding/Quality/Format plus a real,
+    reachable Expert section again) can genuinely exceed the window's
+    default 820px height once Expert is expanded -- #leftPanel (still
+    fixed at 470px wide, see TestLeftPanelFixedWidth above) is a
+    QScrollArea now, not a bare QWidget, so that overflow scrolls
+    instead of clipping Expert's bottom rows or forcing the window
+    taller just to fit its one tallest possible state."""
+
+    def test_left_panel_is_a_scroll_area(self):
+        window = main.MainWindow()
+        left = window.findChild(QWidget, "leftPanel")
+        self.assertIsInstance(left, QScrollArea)
+
+    def test_no_scrolling_needed_at_default_size_with_expert_collapsed(self):
+        window = main.MainWindow()
+        window.show()
+        left = window.findChild(QWidget, "leftPanel")
+        self.assertEqual(left.verticalScrollBar().maximum(), 0)
+
+    def test_expanding_expert_can_require_scrolling(self):
+        # CPU processing, not whatever Automatic resolved to -- Expert's
+        # content is taller on a software encoder (Tune's own row is
+        # only shown there, see _on_encoder_changed), so this needs a
+        # deterministic engine rather than depending on this machine's
+        # own hardware.
+        window = main.MainWindow()
+        window.show()
+        window.processing_cpu_btn.click()
+        left = window.findChild(QWidget, "leftPanel")
+        window.video_expert_group.setChecked(True)
+        # QScrollArea's viewport/content geometry recompute is deferred
+        # to the event loop, not synchronous with setChecked() itself --
+        # confirmed directly (the scrollbar's maximum() read back 0
+        # without this, even though the same state visibly scrolled in a
+        # real running app).
+        _app.processEvents()
+        self.assertGreater(left.verticalScrollBar().maximum(), 0)
+
+    def test_collapsing_expert_again_removes_the_need_to_scroll(self):
+        window = main.MainWindow()
+        window.show()
+        window.processing_cpu_btn.click()
+        left = window.findChild(QWidget, "leftPanel")
+        window.video_expert_group.setChecked(True)
+        _app.processEvents()
+        self.assertGreater(left.verticalScrollBar().maximum(), 0)
+        window.video_expert_group.setChecked(False)
+        _app.processEvents()
+        self.assertEqual(left.verticalScrollBar().maximum(), 0)
+
+    def test_horizontal_scrollbar_is_never_shown(self):
+        # Content is sized for exactly this fixed 470px width by design
+        # -- only vertical overflow (Expert expanded) is a real concern.
+        window = main.MainWindow()
+        window.show()
+        window.processing_cpu_btn.click()
+        left = window.findChild(QWidget, "leftPanel")
+        window.video_expert_group.setChecked(True)
+        self.assertEqual(left.horizontalScrollBarPolicy(), Qt.ScrollBarAlwaysOff)
+
+
 class TestSegmentedButtonBoldWidth(unittest.TestCase):
     # Regression guard for a real, reported-live clipping bug: "Better
     # Quality" (the longest label in its row) had its text cut off,
@@ -3442,20 +3674,24 @@ class TestSegmentedButtonBoldWidth(unittest.TestCase):
     # this checks that reservation actually covers the bold text for real
     # buttons in the app, not just that the helper function exists.
     def test_button_width_covers_its_own_bold_text(self):
-        # No processing_cpu_btn/processing_intel_btn/processing_amd_btn/
-        # compat_modern_btn/compat_compatible_btn here -- cut entirely in
-        # this fork (CONSUMER_FORK_PLAN.md), not just hidden, so they don't
-        # exist as attributes to check at all. rc_quality_btn/rc_filesize_
-        # btn/rc_advanced_btn do still exist (Expert form, never shown but
-        # still fully constructed) -- kept in this list since the
-        # underlying width-reservation mechanism is still real for them,
-        # even though nothing ever displays them now.
+        # No compat_modern_btn/compat_compatible_btn here -- Compatibility
+        # is cut entirely (CONSUMER_FORK_PLAN.md's final control-hierarchy
+        # decision, once Codec was promoted to a direct Normal choice), so
+        # it doesn't exist as an attribute to check at all. No rc_quality_
+        # btn/rc_filesize_btn/rc_advanced_btn either -- that friendly
+        # 3-button row was cut from Expert entirely (it just duplicated
+        # Normal's own Mode toggle); Expert shows the real rc_mode_combo
+        # directly now, a QComboBox with no bold-state width concern.
+        # processing_* is back (restored, now Normal-visible) alongside
+        # mode_*/audio_handling_*/audio_channels_* (new Normal rows).
         window = main.MainWindow()
         window.show()
         for btn in (
+            window.processing_cpu_btn, window.processing_intel_btn, window.processing_amd_btn,
+            window.mode_quality_btn, window.mode_filesize_btn,
             window.quality_smaller_btn, window.quality_balanced_btn, window.quality_better_btn,
-            window.rc_quality_btn, window.rc_filesize_btn, window.rc_advanced_btn,
-            window.audio_automatic_btn, window.audio_stereo_btn,
+            window.audio_handling_automatic_btn, window.audio_handling_convert_btn,
+            window.audio_channels_keep_btn, window.audio_channels_stereo_btn,
         ):
             bold_font = QFont(btn.font())
             bold_font.setWeight(QFont.Weight(600))

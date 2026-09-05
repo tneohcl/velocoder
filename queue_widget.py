@@ -44,6 +44,16 @@ STATUS_COL = VIDEO_COL
 # Qt.UserRole stays reserved for STATUS_COL's job dict (unchanged,
 # dozens of existing call sites); the subtitle uses this role instead.
 VIDEO_SUBTITLE_ROLE = Qt.UserRole + 1
+# Source-probed audio track count (int, or None until probed) -- written
+# by queue_controller.py's _on_source_probed, read by main.py's
+# _refresh_audio_track_choices to keep the Track dropdown from ever
+# offering an index the selected file(s) don't actually have (worker.py
+# deliberately skips mapping a nonexistent track rather than failing the
+# job, which used to mean picking one silently produced audio-less
+# output instead of an error). +4, not +2/+3 -- those are
+# queue_controller.py's own _RAW_VIDEO_LABEL_ROLE/_RAW_AUDIO_LABEL_ROLE,
+# private to that file but still claiming this column's role numbering.
+AUDIO_TRACK_COUNT_ROLE = Qt.UserRole + 4
 QUEUE_COLUMN_HEADERS = ["Video", "Duration", "Size", "Status"]
 
 

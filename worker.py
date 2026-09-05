@@ -114,6 +114,36 @@ def probe_audio_channels(path: Path, track_index: int = 0) -> int | None:
         return None
 
 
+def probe_audio_bitrate_kbps(path: Path, track_index: int = 0) -> int | None:
+    """Real bitrate (kbps) of the given audio track, or None if it isn't
+    reported. Only called when a bitrate-family rc_mode (File Size) is
+    actually going to *copy* the audio track through untouched -- that's
+    the one case where the configured AAC bitrate (audio_bitrate_kbps)
+    is the wrong number to reserve: a copy-compatible source (AC-3/EAC-3/
+    AAC) can genuinely be encoded at any bitrate, and Automatic will copy
+    it exactly as-is regardless of what audio_bitrate happens to be set
+    to. Reserving the configured AAC figure for a copied 640kbps AC-3
+    track under-reserves by 480kbps, letting the actual output
+    materially exceed the requested target size -- confirmed as a real
+    correctness gap, not a hypothetical one. Some containers/codecs
+    don't report a per-stream bit_rate at all (this ffprobe field is
+    genuinely absent, not just zero, for some MKV sources) -- None here
+    means exactly that, and the caller falls back to the configured AAC
+    bitrate as the best remaining estimate, same as before this fix
+    existed."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", f"a:{track_index}",
+         "-show_entries", "stream=bit_rate",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, text=True, timeout=30,
+    )
+    try:
+        bits_per_second = int(result.stdout.strip())
+    except ValueError:
+        return None
+    return bits_per_second // 1000 if bits_per_second > 0 else None
+
+
 def build_probe_args(input_path: Path) -> list[str]:
     """ffprobe argv for a single-shot source-metadata query: container
     duration plus every stream's key fields. Header-only (no decoding, unlike
@@ -233,6 +263,7 @@ def build_args(
     audio_codec: str | None = None,
     audio_channels: int | None = None,
     duration_seconds: float | None = None,
+    audio_source_bitrate_kbps: int | None = None,
 ) -> list[str]:
     """Build the full ffmpeg argv for one job from a resolved settings dict.
 
@@ -278,6 +309,21 @@ def build_args(
     quality-family one never touches it, so it's never probed for the
     common case. None means "probe it if a bitrate-family mode needs it".
 
+    audio_source_bitrate_kbps, same shape as duration_seconds -- a
+    caller-supplied value skips the probe. Only used for a bitrate-family
+    rc_mode whose audio will actually be *copied* (audio_copy_if_
+    compatible, not force-downmixed, and already aac/ac3/eac3): that's
+    the one case where the configured audio_bitrate is the wrong number
+    to reserve for the target-size calculation below, since a copied
+    track can genuinely be any bitrate regardless of what audio_bitrate
+    is set to (a copy-compatible 640kbps AC-3 source under-reserved at a
+    160kbps AAC assumption used to let the real output materially exceed
+    the requested size -- a real, confirmed correctness gap, not
+    hypothetical). None means "probe it if this specific case needs it";
+    if the probe itself can't find a bitrate (some containers/codecs
+    genuinely don't report one), this falls back to the configured
+    audio_bitrate, same as before this parameter existed.
+
     Raises ValueError if a bitrate-family rc_mode's derived video bitrate
     would be zero or negative (the requested target size can't fit this
     file's length plus its reserved audio allocation) -- confirmed
@@ -304,11 +350,48 @@ def build_args(
         if audio_codec is not None and audio_downmix_stereo:
             audio_channels = probe_audio_channels(input_path, audio_track)
 
+    # Resolved once, up front, and reused both for the target-size
+    # reservation below and the real -c:a decision further down -- must
+    # stay the exact same condition in both places, or the reservation
+    # and the actual encode could silently disagree about whether audio
+    # is being copied or transcoded.
+    #
+    # Downmix only actually means something when the source has more
+    # channels than the stereo it's being asked to become -- confirmed
+    # this wasn't checked before: a stereo/mono source with the box
+    # checked forced an unnecessary transcode (mono even got upmixed to
+    # two channels, the opposite of what "downmix" means). audio_channels
+    # is None whenever it was never probed (downmix not requested, so
+    # never needed) or genuinely unknown -- either way, "unknown" must
+    # not be treated as "assume it needs downmixing". A stream copy can't
+    # remix channels either way -- an actual downmix forces a transcode
+    # here too, the same way audio_copy_if_compatible=False does, so
+    # checking "downmix to stereo" on a source that genuinely needs it
+    # always actually produces stereo output instead of silently no-
+    # op'ing whenever the source happens to already be copy-compatible.
+    force_downmix = audio_downmix_stereo and audio_channels is not None and audio_channels > 2
+    will_copy_audio = (
+        audio_codec is not None
+        and settings["audio_copy_if_compatible"]
+        and not force_downmix
+        and audio_codec in ("aac", "ac3", "eac3")
+    )
+
     video_kbps = None
     if rc_mode in BITRATE_RC_MODES:
         if duration_seconds is None:
             duration_seconds = probe_duration(input_path)
-        reserved_audio_kbps = audio_bitrate_kbps(settings["audio_bitrate"]) if audio_codec is not None else 0
+        if audio_codec is None:
+            reserved_audio_kbps = 0
+        elif will_copy_audio:
+            if probe_audio and audio_source_bitrate_kbps is None:
+                audio_source_bitrate_kbps = probe_audio_bitrate_kbps(input_path, audio_track)
+            reserved_audio_kbps = (
+                audio_source_bitrate_kbps if audio_source_bitrate_kbps is not None
+                else audio_bitrate_kbps(settings["audio_bitrate"])
+            )
+        else:
+            reserved_audio_kbps = audio_bitrate_kbps(settings["audio_bitrate"])
         video_kbps = target_size_to_bitrate_kbps(quality_value, duration_seconds, reserved_audio_kbps)
         if video_kbps <= 0:
             raise ValueError(
@@ -392,22 +475,11 @@ def build_args(
         # exist on this file, and mapping it anyway would fail the whole job on
         # a stream ffmpeg can't find, instead of just proceeding without audio.
         args += ["-map", f"0:a:{audio_track}"]
-        # Downmix only actually means something when the source has more
-        # channels than the stereo it's being asked to become -- confirmed
-        # this wasn't checked before: a stereo/mono source with the box
-        # checked forced an unnecessary transcode (mono even got upmixed to
-        # two channels, the opposite of what "downmix" means). audio_channels
-        # is None whenever it was never probed (downmix not requested, so
-        # never needed) or genuinely unknown -- either way, "unknown" must
-        # not be treated as "assume it needs downmixing".
-        force_downmix = audio_downmix_stereo and audio_channels is not None and audio_channels > 2
-        # A stream copy can't remix channels -- an actual downmix forces a
-        # transcode here too, the same way audio_copy_if_compatible=False
-        # does just below, so checking "downmix to stereo" on a source that
-        # genuinely needs it always actually produces stereo output instead
-        # of silently no-op'ing whenever the source happens to already be a
-        # copy-compatible codec.
-        if settings["audio_copy_if_compatible"] and not force_downmix and audio_codec in ("aac", "ac3", "eac3"):
+        # force_downmix/will_copy_audio already resolved above (needed
+        # early, for the target-size reservation) -- reused here as the
+        # real -c:a decision itself, not recomputed, so the two can never
+        # disagree about whether audio is being copied or transcoded.
+        if will_copy_audio:
             args += ["-c:a", "copy"]
         else:
             args += ["-c:a", "aac", "-b:a", settings["audio_bitrate"]]

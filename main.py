@@ -22,12 +22,12 @@ import formatting
 from constants import (
     ENCODERS, RC_MODES, RC_MODE_FRIENDLY, QUALITY_TIERS,
     encoder_profile_key, QUALITY_RANGES, X265_PRESETS, X265_TUNES, X264_TUNES, RESOLUTIONS,
-    AUDIO_BITRATES,
+    AUDIO_BITRATES, AUDIO_TRACK_LABELS,
 )
 from worker import TranscodeQueue, BITRATE_RC_MODES
 from queue_widget import (
     VIDEO_COL, DURATION_COL, SIZE_COL,
-    RESULT_COL, STATUS_COL, QUEUE_COLUMN_HEADERS,
+    RESULT_COL, STATUS_COL, AUDIO_TRACK_COUNT_ROLE, QUEUE_COLUMN_HEADERS,
 )
 from theming import (
     _current_theme_palette, _system_accent_tokens, _load_stylesheet,
@@ -84,6 +84,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._res_label = {(r["width"], r["height"]): r["label"] for r in RESOLUTIONS}
         self._preview_audio_cache: dict[tuple, str | None] = {}
         self._preview_audio_channels_cache: dict[tuple, int | None] = {}
+        self._preview_audio_source_bitrate_cache: dict[tuple, int | None] = {}
         self._preview_duration_cache: dict[Path, float] = {}
         self._last_preview_args: list[str] = []
         self._running_items: list[QTreeWidgetItem] = []
@@ -240,11 +241,11 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # suspenders override here too) and encoder/gpu_vendor, which
         # DEFAULT_SETTINGS hardcodes to CPU/libx265 -- this picks whatever
         # worker.best_available_engine() finds on the machine actually
-        # running the app instead, same as the (now-removed) "Automatic"
-        # button used to do on click, just run once at startup instead of
+        # running the app instead, same as clicking Processing's own
+        # Automatic button does, just run once at startup instead of
         # waiting for one.
         self.res_combo.setCurrentIndex(0)  # Keep Original
-        self._apply_automatic_processing()
+        self._on_processing_choice("automatic")
         self._restore_window_state()
         # Establishes correct starting visibility (progress_bar/eta_label/
         # stats_label/stop_btn/open_folder_btn hidden while idle) -- one
@@ -269,18 +270,25 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
 
     def closeEvent(self, event):
         self._qsettings.setValue("window_geometry", self.saveGeometry())
+        self._qsettings.setValue("video_expert_expanded", self.video_expert_group.isChecked())
         super().closeEvent(event)
 
     def _restore_window_state(self):
         geometry = self._qsettings.value("window_geometry")
         if geometry is not None:
             self.restoreGeometry(geometry)
-        # No command_expanded/log_expanded/video_expert_expanded/
-        # audio_expert_expanded/preset_group_expanded here -- Effective
-        # Command, Log, Expert (both tabs), and Presets don't exist as
-        # visible/collapsible sections in this build at all anymore (see
-        # ui_builder.py's own comments), so there's no expanded/collapsed
-        # state left to persist for any of them.
+        # QSettings round-trips bool through its backing store as the string
+        # "true"/"false" on some platforms -- str(...) != "false" rather than
+        # a bare truthiness check, so a stored False doesn't come back truthy.
+        video_expert_expanded = self._qsettings.value("video_expert_expanded")
+        if video_expert_expanded is not None:
+            self.video_expert_group.setChecked(str(video_expert_expanded) != "false")
+        # No command_expanded/log_expanded/audio_expert_expanded/
+        # preset_group_expanded here -- Effective Command, Log, Audio
+        # Expert, and Presets don't exist as visible/collapsible sections
+        # in this build at all (see ui_builder.py's own comments), so
+        # there's no expanded/collapsed state left to persist for any of
+        # them.
 
     def _apply_theme(self, choice: str):
         self._theme_choice = choice
@@ -406,10 +414,11 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         return encoder_profile_key(self._current_encoder_id(), self._current_gpu_vendor())
 
     def _on_encoder_changed(self):
-        # Also wired to codec_combo.currentIndexChanged (ui_builder.py),
-        # not just encoder_combo's -- the resolved encoder id depends on
-        # both (see _current_encoder_id()), so either one changing needs
-        # the same full cascade below.
+        # Also called from _on_codec_changed below (not wired to codec_
+        # combo.currentIndexChanged directly anymore) -- the resolved
+        # encoder id depends on both encoder_combo and codec_combo (see
+        # _current_encoder_id()), so a codec change needs this same full
+        # cascade too, just wrapped with quality-tier preservation first.
         encoder = self._current_encoder_id()
         encoder_key = self._current_encoder_key()
         is_vaapi = encoder == "hevc_vaapi"
@@ -428,28 +437,17 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             self.codec_combo.setCurrentIndex(0)  # H.265 (HEVC)
             self.codec_combo.blockSignals(False)
 
+        # rc_mode_combo is a real, directly visible Expert dropdown now
+        # (ui_builder.py) -- RC_MODES[encoder_key] already only lists the
+        # modes valid for this specific encoder (e.g. AMD has no ICQ),
+        # so repopulating it is the whole story; there's no separate
+        # Advanced-button visibility or segEnd-rounding quirk to manage
+        # anymore now that Rate Control isn't a segmented row.
         self.rc_mode_combo.blockSignals(True)
         self.rc_mode_combo.clear()
         for value, label in RC_MODES[encoder_key]:
             self.rc_mode_combo.addItem(label, userData=value)
         self.rc_mode_combo.blockSignals(False)
-
-        # CQP (the Advanced button) has no libx265 equivalent, and AMD's
-        # driver has no ICQ to demote it in favor of in the first place.
-        advanced_visible = RC_MODE_FRIENDLY[encoder_key]["advanced"] is not None
-        self.rc_advanced_btn.setVisible(advanced_visible)
-        # File Size (#segMid in style.qss) is styled as a middle segment --
-        # square on both sides, the outer two only round their own outer
-        # corner -- which is wrong whenever Advanced (#segRight) is hidden:
-        # File Size becomes the row's actual last visible button but still
-        # renders cut off square on the right, since QSS has no selector
-        # for "my sibling is hidden". Reported live, confirmed by
-        # screenshot. Same setProperty/unpolish/polish pattern the preset
-        # combo's "modified" indicator already uses just below for the
-        # same reason: state a QSS selector alone can't express.
-        self.rc_filesize_btn.setProperty("segEnd", not advanced_visible)
-        self.rc_filesize_btn.style().unpolish(self.rc_filesize_btn)
-        self.rc_filesize_btn.style().polish(self.rc_filesize_btn)
 
         # speed_faster_label/speed_thorough_label/speed_tier_label are
         # shared by both sliders below (same "Faster .. Slower" axis,
@@ -496,7 +494,35 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # both are called explicitly here instead. Order matters: the
         # buttons read rc_mode_combo's now-settled state, they don't drive it.
         self._on_rc_mode_changed()
-        self._sync_rc_buttons_to_combo()
+        self._sync_mode_buttons_to_combo()
+
+    def _on_codec_changed(self):
+        # Real, reported bug: codec_combo used to wire straight to
+        # _on_encoder_changed, which rebuilds rc_mode_combo from scratch
+        # (clear() + re-add) -- that resets currentIndex to 0 regardless
+        # of what was selected before, silently abandoning the user's
+        # Mode/Quality-tier/Target-Size choice on every H.265<->H.264
+        # switch (e.g. File Size 800 MB reverting to Quality Balanced).
+        # Same capture-before/restore-after shape as _on_processing_choice
+        # -- carry the *tier* across when the old value matched one
+        # (libx265/libx264 share identical QUALITY_TIERS/RC_MODE_FRIENDLY
+        # values, so this is normally a same-value round-trip, but the
+        # combo rebuild still needs it re-applied); bitrate-family
+        # selections (File Size's MB target) need no translation at all,
+        # just re-application, since libx265/libx264 share the same
+        # "bitrate" rc_mode and a plain MB number has no per-encoder scale.
+        settings = self._current_settings()
+        old_key = self._current_encoder_key()
+        self._on_encoder_changed()
+        new_key = self._current_encoder_key()
+        if old_key != new_key and settings["rc_mode"] == RC_MODE_FRIENDLY[old_key]["quality"]:
+            old_tier = next(
+                (tier for tier, value in QUALITY_TIERS.get(old_key, {}).items()
+                 if value == settings["quality_value"]), "balanced"
+            )
+            settings["rc_mode"] = RC_MODE_FRIENDLY[new_key]["quality"]
+            settings["quality_value"] = QUALITY_TIERS[new_key][old_tier]
+        self._apply_settings_to_controls(settings)
 
     def _on_rc_mode_changed(self):
         # rc_mode_combo is always populated by this point -- __init__ calls
@@ -507,8 +533,13 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self.quality_slider.setVisible(not is_bitrate)
         self.quality_label.setVisible(not is_bitrate)
         self.quality_tier_label.setVisible(not is_bitrate)
-        self.size_spin.setVisible(is_bitrate)
-        self.size_estimate_label.setVisible(is_bitrate)
+        # Quality tier buttons vs. Target Size -- Normal-mode rows, not
+        # individual widget visibility, since each is its own full
+        # QFormLayout row in the Quality group now (ui_builder.py's
+        # _build_quality_group) rather than two widgets sharing one row
+        # the way quality_slider/size_spin used to in Expert.
+        self.quality_form.setRowVisible(self._quality_tier_field, not is_bitrate)
+        self.quality_form.setRowVisible(self._target_size_field, is_bitrate)
         if not is_bitrate:
             lo, hi, default = QUALITY_RANGES[rc_mode]
             self.quality_slider.blockSignals(True)
@@ -550,19 +581,31 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         if index is not None:
             self.rc_mode_combo.setCurrentIndex(index)
 
-    def _sync_rc_buttons_to_combo(self):
-        # Keeps the visible buttons correct no matter what actually changed
-        # rc_mode_combo underneath -- a button click, an encoder switch
-        # repopulating it, or a preset/queue-selection load -- rather than
-        # scattering a sync call across every one of those call sites.
+    def _sync_mode_buttons_to_combo(self):
+        # Keeps Normal's Mode toggle correct no matter what actually
+        # changed rc_mode_combo underneath -- a Mode click, an Expert
+        # rc_mode_combo pick, an encoder switch repopulating it, or a
+        # queue-selection load -- rather than scattering a sync call
+        # across every one of those call sites. Was _sync_rc_buttons_to_
+        # combo, syncing Expert's own Quality/File Size/Advanced buttons
+        # too -- those are gone (ui_builder.py's Rate Control row now
+        # shows rc_mode_combo directly instead of duplicating this same
+        # Quality/File Size choice, per the final control-hierarchy
+        # decision), so this is Mode-only now.
         value = self.rc_mode_combo.currentData()
         friendly = RC_MODE_FRIENDLY[self._current_encoder_key()]
+        # Advanced (CQP) has no Normal-mode equivalent, so neither button
+        # reads as selected then -- same "no exact match" handling as the
+        # Quality tier buttons below.
         if value == friendly["quality"]:
-            self.rc_quality_btn.setChecked(True)
+            self.mode_quality_btn.setChecked(True)
         elif value == friendly["file_size"]:
-            self.rc_filesize_btn.setChecked(True)
-        elif value == friendly["advanced"]:
-            self.rc_advanced_btn.setChecked(True)
+            self.mode_filesize_btn.setChecked(True)
+        else:
+            self.mode_button_group.setExclusive(False)
+            self.mode_quality_btn.setChecked(False)
+            self.mode_filesize_btn.setChecked(False)
+            self.mode_button_group.setExclusive(True)
 
     def _on_speed_slider_changed(self):
         self.speed_slider.setToolTip(
@@ -619,17 +662,20 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
     # named stops (96k/128k/160k/192k/256k); bucketing 5 discrete values
     # into 3 fuzzy tiers would lump two stops together on one end and
     # leave the other end lopsided for no real reason.
-    # Framed around video content, same as Quality's own captions above
-    # ("Movies & TV", "Documentary / lighter footage") -- this track is a
-    # movie/show's audio, not a standalone music file, so "casual
-    # listening" / "transparent stereo" (a music-encoder's own vocabulary)
-    # described the wrong thing.
+    # Plain size/quality labels, not scenario prescriptions ("Dialogue /
+    # older TV", "Concert film / archival master") -- reviewed directly:
+    # this app's target user already understands bitrate, so telling them
+    # what genre a number is "for" reads as presumptuous rather than
+    # helpful, and "archival master" specifically overstates what 256kbps
+    # AAC actually is. Same plain size <-> quality axis every other
+    # slider caption in this app already uses (Quality's own "Smaller
+    # File"/"Better Quality", Speed's "Faster"/"Slower").
     _AUDIO_BITRATE_DESCRIPTIONS = [
-        "Dialogue / older TV -- smallest file",
-        "Standard TV & streaming",
-        "Movies & TV -- general-purpose target",
-        "Action / music-heavy soundtrack",
-        "Concert film / archival master",
+        "Smallest file",
+        "Compact",
+        "Balanced",
+        "High quality",
+        "Highest quality",
     ]
 
     def _on_audio_bitrate_slider_changed(self):
@@ -648,19 +694,25 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._update_command_preview()
         self._sync_settings_to_selected_queue_items()
         self._sync_normal_video_controls()
-        self._sync_normal_audio_controls()
 
     def _sync_normal_video_controls(self):
-        """Keeps the Normal-mode Quality buttons correct no matter what
-        actually changed the underlying state -- an Expert control, a
-        queue-selection load, or one of this same row's own buttons --
-        same reasoning as _sync_rc_buttons_to_combo above, which this runs
-        alongside (both reached via _on_control_changed, itself reachable
-        from every path that can change encoder/rc_mode/quality_value).
-        Processing/Compatibility button sync was cut along with those
-        buttons themselves -- Processing/Compatibility are no longer a
-        user decision (see _apply_automatic_processing / v1 scope table),
-        so there's nothing left here to keep in sync."""
+        """Keeps the Normal-mode Processing/Quality buttons correct no
+        matter what actually changed the underlying state -- an Expert
+        control, a queue-selection load, or one of this same row's own
+        buttons -- same reasoning as _sync_mode_buttons_to_combo above,
+        which this runs alongside (both reached via _on_control_changed,
+        itself reachable from every path that can change encoder/
+        rc_mode/quality_value). Compatibility button sync stays cut --
+        Compatibility itself is gone (Codec is Normal-visible directly
+        now), so there's nothing left to sync for it."""
+        engine, vendor = self._current_encoder_id(), self._current_gpu_vendor()
+        if engine == "hevc_vaapi" and vendor == "intel":
+            self.processing_intel_btn.setChecked(True)
+        elif engine == "hevc_vaapi" and vendor == "amd":
+            self.processing_amd_btn.setChecked(True)
+        else:
+            self.processing_cpu_btn.setChecked(True)
+
         key = self._current_encoder_key()
         rc_mode = self.rc_mode_combo.currentData()
         matched_tier = None
@@ -688,21 +740,17 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
                 btn.setChecked(False)
             self.quality_tier_button_group.setExclusive(True)
 
-    def _sync_normal_audio_controls(self):
-        if self.audio_downmix_check.isChecked():
-            self.audio_stereo_btn.setChecked(True)
+    def _on_processing_choice(self, choice: str):
+        if choice == "automatic":
+            engine, vendor = worker.best_available_engine()
+        elif choice == "cpu":
+            # Whatever Codec (H.265/H.264) already holds -- switching
+            # engine back to CPU shouldn't silently change codec too.
+            engine, vendor = self.codec_combo.currentData(), None
+        elif choice == "intel":
+            engine, vendor = "hevc_vaapi", "intel"
         else:
-            self.audio_automatic_btn.setChecked(True)
-
-    def _apply_automatic_processing(self):
-        # Was _on_processing_choice(self, choice), one of four branches
-        # ("automatic"/"cpu"/"intel"/"amd") driven by the now-removed
-        # Processing row's buttons. Only "automatic" is reachable now that
-        # Processing/Compatibility are no longer a user decision (v1 scope
-        # table) -- called once, at startup, same as the removed
-        # "Automatic" button used to do on click. Trimmed to just that
-        # branch rather than kept as unreachable dead code.
-        engine, vendor = worker.best_available_engine()
+            engine, vendor = "hevc_vaapi", "amd"
         settings = self._current_settings()
         old_key = self._current_encoder_key()
         was_vaapi = settings["encoder"] == "hevc_vaapi"
@@ -751,7 +799,12 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         settings["quality_value"] = QUALITY_TIERS[key][tier]
         self._apply_settings_to_controls(settings)
 
-    def _on_audio_choice(self, choice: str):
+    def _on_audio_handling_clicked(self, choice: str):
+        settings = self._current_settings()
+        settings["audio_copy_if_compatible"] = choice == "automatic"
+        self._apply_settings_to_controls(settings)
+
+    def _on_audio_channels_clicked(self, choice: str):
         settings = self._current_settings()
         settings["audio_downmix_stereo"] = choice == "stereo"
         self._apply_settings_to_controls(settings)
@@ -779,6 +832,11 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         selected = self.queue_list.selectedItems()
         if not selected:
             return
+        # Before _apply_settings_to_controls below -- Track's own choices
+        # must already reflect the newly-selected file(s) by the time it
+        # sets audio_combo's index, or a stored audio_track pointing past
+        # a narrower list's end would silently fail to select anything.
+        self._refresh_audio_track_choices()
         # Multiple items selected with different settings: show the first
         # one's. Any control change from here applies to all of them --
         # this is the direct-manipulation replacement for the old "Apply
@@ -789,6 +847,41 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             self._apply_settings_to_controls(job)
         finally:
             self._syncing_controls_from_selection = False
+
+    def _refresh_audio_track_choices(self):
+        """Limits Track's choices to what was actually source-probed for
+        the selected queue row(s) -- picking a track index a file doesn't
+        have used to silently produce audio-less output instead of an
+        error (worker.py deliberately skips mapping a nonexistent audio
+        track rather than failing the whole job). That gap mattered less
+        while Track was Expert-only; now that it's a primary Normal
+        control, offering an index that can't possibly work isn't
+        acceptable. No selection, or nothing probed yet for any selected
+        row, falls back to the full, unconstrained AUDIO_TRACK_LABELS --
+        the same default this control has always started on. Multiple
+        selected rows: only offers track indexes valid for *every*
+        selected file (the safe intersection, via min()), not just the
+        first one -- applying a shared Track choice to several files at
+        once (same reasoning as _sync_settings_to_selected_queue_items)
+        must never pick an index that fails on any of them."""
+        selected = self.queue_list.selectedItems()
+        known_counts = [
+            count for item in selected
+            if (count := item.data(VIDEO_COL, AUDIO_TRACK_COUNT_ROLE))
+        ]
+        max_tracks = min(known_counts) if known_counts else len(AUDIO_TRACK_LABELS)
+        max_tracks = max(1, min(max_tracks, len(AUDIO_TRACK_LABELS)))
+        if self.audio_combo.count() == max_tracks:
+            return  # already showing the right list -- don't clobber the current selection for nothing
+        current_index = self.audio_combo.currentIndex()
+        self.audio_combo.blockSignals(True)
+        self.audio_combo.clear()
+        self.audio_combo.addItems(AUDIO_TRACK_LABELS[:max_tracks])
+        # Clamp rather than reset to 0 -- switching selection between two
+        # files that both have at least as many tracks as the current
+        # pick shouldn't silently jump back to Track 1.
+        self.audio_combo.setCurrentIndex(max(0, min(current_index, max_tracks - 1)))
+        self.audio_combo.blockSignals(False)
 
     def _update_command_preview(self):
         if not hasattr(self, "command_preview"):
@@ -883,6 +976,12 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             self._preview_audio_channels_cache[key] = worker.probe_audio_channels(path, track_index)
         return self._preview_audio_channels_cache[key]
 
+    def _preview_audio_source_bitrate(self, path: Path, track_index: int) -> int | None:
+        key = (path, track_index)
+        if key not in self._preview_audio_source_bitrate_cache:
+            self._preview_audio_source_bitrate_cache[key] = worker.probe_audio_bitrate_kbps(path, track_index)
+        return self._preview_audio_source_bitrate_cache[key]
+
     def _preview_duration(self, path: Path) -> float:
         if path not in self._preview_duration_cache:
             self._preview_duration_cache[path] = worker.probe_duration(path)
@@ -911,7 +1010,35 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         if duration <= 0:
             self.size_estimate_label.setText("Couldn't read this file's duration to estimate bitrate")
             return
-        reserved_audio_kbps = worker.audio_bitrate_kbps(settings["audio_bitrate"]) if audio_codec is not None else 0
+        # Same will_copy_audio reasoning as worker.build_args (which this
+        # label doesn't call directly, so the condition has to be
+        # reproduced here) -- Automatic can copy an already-compatible
+        # source through untouched, and that copied track's real bitrate
+        # is the number to reserve, not the configured audio_bitrate;
+        # reserving the configured figure for e.g. a copied 640kbps AC-3
+        # track under-reserved by hundreds of kbps, letting this estimate
+        # (and the real encode -- see build_args' own fix) understate the
+        # actual output size. Only probed when it might actually matter
+        # (audio exists, copy is even being considered) -- most jobs
+        # never need this any more than build_args' own version does.
+        preview_channels = (
+            self._preview_audio_channels(first_path, settings["audio_track"])
+            if settings.get("audio_downmix_stereo") else None
+        )
+        force_downmix = preview_channels is not None and preview_channels > 2
+        will_copy_audio = (
+            audio_codec is not None
+            and settings["audio_copy_if_compatible"]
+            and not force_downmix
+            and audio_codec in ("aac", "ac3", "eac3")
+        )
+        if audio_codec is None:
+            reserved_audio_kbps = 0
+        elif will_copy_audio:
+            source_kbps = self._preview_audio_source_bitrate(first_path, settings["audio_track"])
+            reserved_audio_kbps = source_kbps if source_kbps is not None else worker.audio_bitrate_kbps(settings["audio_bitrate"])
+        else:
+            reserved_audio_kbps = worker.audio_bitrate_kbps(settings["audio_bitrate"])
         video_kbps = worker.target_size_to_bitrate_kbps(settings["quality_value"], duration, reserved_audio_kbps)
         if video_kbps <= 0:
             # Same threshold build_args() itself now refuses to encode
@@ -952,9 +1079,9 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             "tune": self.tune_combo.currentText(),
             "deinterlace": self.deinterlace_check.isChecked(),
             "audio_track": self.audio_combo.currentIndex(),
-            "audio_copy_if_compatible": self.audio_copy_check.isChecked(),
+            "audio_copy_if_compatible": self.audio_handling_automatic_btn.isChecked(),
             "audio_bitrate": AUDIO_BITRATES[self.audio_bitrate_slider.value()],
-            "audio_downmix_stereo": self.audio_downmix_check.isChecked(),
+            "audio_downmix_stereo": self.audio_channels_stereo_btn.isChecked(),
         }
 
     def _apply_settings_to_controls(self, settings: dict):
@@ -1025,8 +1152,17 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self.container_combo.setCurrentText(settings.get("container", "mp4"))
         self.tune_combo.setCurrentText(settings.get("tune", "None"))
         self.deinterlace_check.setChecked(settings.get("deinterlace", False))
-        self.audio_combo.setCurrentIndex(settings["audio_track"])
-        self.audio_copy_check.setChecked(settings["audio_copy_if_compatible"])
+        # Clamped, not a bare index -- audio_combo's own item count can be
+        # narrower than 4 now (_refresh_audio_track_choices), and a job's
+        # stored audio_track could in principle point past that (a queue
+        # selection change elsewhere already calls _refresh_audio_track_
+        # choices first to avoid this in the common path, but this stays
+        # defensive rather than assuming every call site does).
+        self.audio_combo.setCurrentIndex(min(settings["audio_track"], self.audio_combo.count() - 1))
+        if settings["audio_copy_if_compatible"]:
+            self.audio_handling_automatic_btn.setChecked(True)
+        else:
+            self.audio_handling_convert_btn.setChecked(True)
         # Defensive fallback, same reasoning as bit_depth/resolution above --
         # a queue job's settings dict can carry a bitrate string that's no
         # longer (or never was) one of the five real stops, and .index()
@@ -1036,7 +1172,10 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # .get, not a bare index -- predates every other new-field fallback
         # above it, an older saved preset (user or, briefly, a stale
         # built-in during dev) simply won't have this key at all.
-        self.audio_downmix_check.setChecked(settings.get("audio_downmix_stereo", False))
+        if settings.get("audio_downmix_stereo", False):
+            self.audio_channels_stereo_btn.setChecked(True)
+        else:
+            self.audio_channels_keep_btn.setChecked(True)
         self._update_command_preview()
 
 

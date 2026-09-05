@@ -195,7 +195,7 @@ class _UiBuilderMixin:
         return scroll
 
     @staticmethod
-    def _capped_row(row: QHBoxLayout, max_width: int) -> QWidget:
+    def _capped_row(row: QHBoxLayout, max_width: int | None = None) -> QWidget:
         # QLayout has no setMaximumWidth of its own (that's a QWidget
         # method) -- wraps a segmented-button row in a plain container
         # widget just to carry the cap, same reasoning as start_btn's own
@@ -204,6 +204,11 @@ class _UiBuilderMixin:
         # container actually gets evenly, so this only stops the row from
         # stretching to fill an unusually wide left pane -- it doesn't
         # change how the segments share space among themselves.
+        #
+        # max_width=None skips the cap entirely -- still worth wrapping a
+        # row that should stay full width, for the margin fix below and
+        # for consistency with every other row in this panel going
+        # through this same helper.
         container = QWidget()
         # Qt's own default QHBoxLayout margins (~9px top/bottom) would
         # otherwise inflate this wrapper well past the buttons' own 32px
@@ -217,7 +222,8 @@ class _UiBuilderMixin:
         # that goes through _capped_row at once.
         row.setContentsMargins(0, 0, 0, 0)
         container.setLayout(row)
-        container.setMaximumWidth(max_width)
+        if max_width is not None:
+            container.setMaximumWidth(max_width)
         return container
 
     @staticmethod
@@ -424,7 +430,12 @@ class _UiBuilderMixin:
         self.mode_filesize_btn.clicked.connect(
             lambda: self._set_rc_mode(RC_MODE_FRIENDLY[self._current_encoder_key()]["file_size"])
         )
-        mode_field = self._capped_row(mode_row, 240)
+        # Uncapped -- full width, matching Target Size/Format below it now
+        # (reported live that Mode's own 240px cap made it visibly
+        # narrower than everything else in this panel for no reason a
+        # user could tell apart, same issue the Format group's dropdowns
+        # had before their own caps were removed).
+        mode_field = self._capped_row(mode_row)
         form.addRow("Mode:", mode_field)
 
         quality_tier_row = QHBoxLayout()
@@ -446,13 +457,14 @@ class _UiBuilderMixin:
             self.quality_tier_button_group.addButton(btn)
             quality_tier_row.addWidget(btn, 1)
             btn.clicked.connect(lambda _checked, t=tier: self._on_quality_tier_clicked(t))
-        # 340 -- 3 buttons at equal (1,1,1) stretch clipped "Better Quality"
-        # (own sizeHint 114px) since 340/3 lands just under that even
-        # before segment-border adjustments; reported live, confirmed by
-        # measuring the actual button width against its own sizeHint
-        # rather than guessing. 360 clears the tightest button's sizeHint
-        # comfortably under equal-thirds division (114 * 3 = 342).
-        self._quality_tier_field = self._capped_row(quality_tier_row, 360)
+        # Uncapped -- full width, matching Mode/Target Size/Format (each
+        # button's own setMinimumWidth above, from a real clipping bug at
+        # 340px total width -- 3 buttons at equal (1,1,1) stretch clipped
+        # "Better Quality", own sizeHint 114px, since 340/3 lands just
+        # under that even before segment-border adjustments -- already
+        # guards against clipping regardless of how wide this row grows,
+        # so there's nothing left for a maximum-width cap to protect).
+        self._quality_tier_field = self._capped_row(quality_tier_row)
         form.addRow("Quality:", self._quality_tier_field)
 
         self.size_spin = QSpinBox()
@@ -472,7 +484,7 @@ class _UiBuilderMixin:
         # probe-failure branch interpolates nothing unbounded any more,
         # but there's no guarantee some future message stays short.
         self.size_estimate_label.setWordWrap(True)
-        self._target_size_field = target_size_row = QHBoxLayout()
+        target_size_row = QHBoxLayout()
         # Default QHBoxLayout spacing reads too tight here -- size_spin's
         # own spin-arrow buttons sit right up against the caption text
         # (reported live, confirmed by screenshot) -- unlike quality_row's
@@ -481,7 +493,12 @@ class _UiBuilderMixin:
         target_size_row.setSpacing(10)
         target_size_row.addWidget(self.size_spin)
         target_size_row.addWidget(self.size_estimate_label, 1)
-        form.addRow("Target Size:", target_size_row)
+        # _capped_row(row) with no max_width -- wraps this in a QWidget
+        # the same way _quality_tier_field above already is, rather than
+        # handing setRowVisible a bare QHBoxLayout. See _capped_row's own
+        # comment for why.
+        self._target_size_field = self._capped_row(target_size_row)
+        form.addRow("Target Size:", self._target_size_field)
         # Only one of Quality/Target Size is ever visible at a time
         # (is_bitrate in main.py's _on_rc_mode_changed, which toggles
         # both rows via self.quality_form.setRowVisible) -- Mode above
@@ -498,7 +515,7 @@ class _UiBuilderMixin:
         # every label in this form to the true widest sizeHint up front
         # sidesteps that Qt timing quirk entirely instead of chasing a
         # relayout call that convinces it to recompute.
-        labels = [form.labelForField(f) for f in (mode_field, self._quality_tier_field, target_size_row)]
+        labels = [form.labelForField(f) for f in (mode_field, self._quality_tier_field, self._target_size_field)]
         widest = max(label.sizeHint().width() for label in labels)
         for label in labels:
             label.setMinimumWidth(widest)
@@ -857,7 +874,10 @@ class _UiBuilderMixin:
             self.audio_handling_button_group.addButton(btn)
             handling_row.addWidget(btn, 1)
             btn.clicked.connect(lambda _checked, c=choice: self._on_audio_handling_clicked(c))
-        normal_form.addRow("Handling:", self._capped_row(handling_row, 320))
+        # Uncapped -- full width, matching Track above and AAC Bitrate
+        # below (same consistency fix as the Video tab's Mode/Quality/
+        # Format rows).
+        normal_form.addRow("Handling:", self._capped_row(handling_row))
 
         channels_row = QHBoxLayout()
         channels_row.setSpacing(0)
@@ -884,7 +904,7 @@ class _UiBuilderMixin:
             self.audio_channels_button_group.addButton(btn)
             channels_row.addWidget(btn, 1)
             btn.clicked.connect(lambda _checked, c=choice: self._on_audio_channels_clicked(c))
-        normal_form.addRow("Channels:", self._capped_row(channels_row, 320))
+        normal_form.addRow("Channels:", self._capped_row(channels_row))
 
         audio_bitrate_row = QHBoxLayout()
         self.audio_bitrate_slider = QSlider(Qt.Horizontal)

@@ -595,19 +595,28 @@ class TestTargetSizeSettings(unittest.TestCase):
         # test (video_expert_group never expanded) -- isVisibleTo(window.
         # _video_expert_content) is still correct for it, same reasoning
         # as TestRateControlButtons' own docstring.
+        #
+        # rc_mode read from RC_MODE_FRIENDLY for whatever encoder is
+        # *actually* the live default here, not hardcoded to "VBR" --
+        # real, confirmed bug in this test itself (not app code): "VBR"
+        # is specifically VAAPI's bitrate-family rc_mode name, and this
+        # dev box's real Intel iGPU makes hevc_vaapi the Automatic
+        # default (best_available_engine), so "VBR" was silently valid
+        # here by coincidence. A GPU-less machine has no Intel/AMD row in
+        # ENCODERS at all (confirmed directly in an Ubuntu 24.04
+        # container matching CI, no /dev/dri) -- Automatic falls back to
+        # libx265, whose bitrate-family rc_mode is called "bitrate", not
+        # "VBR"; forcing settings["encoder"] = "hevc_vaapi" doesn't help
+        # either, since encoder_combo has no such item to switch to
+        # there. Using the same RC_MODE_FRIENDLY[key]["file_size"] lookup
+        # main.py's own Mode-button handlers use keeps this correct
+        # regardless of which encoder Automatic actually resolves to.
         window = main.MainWindow()
         window.show()
         settings = window._current_settings()
-        settings["rc_mode"] = "VBR"
+        settings["rc_mode"] = main.RC_MODE_FRIENDLY[window._current_encoder_key()]["file_size"]
         settings["quality_value"] = 2500
         window._apply_settings_to_controls(settings)
-        # setRowVisible's effect on isVisible() isn't guaranteed synchronous
-        # across Qt/PySide6 patch versions -- confirmed directly: this
-        # passed reliably on this dev box's PySide6 build but failed on
-        # CI's (a minor version apart) without this pump, the same class
-        # of deferred-update issue as QScrollArea's scrollbar range (see
-        # TestLeftPanelScrolling).
-        _app.processEvents()
         self.assertEqual(window.size_spin.value(), 2500)
         self.assertTrue(window.size_spin.isVisible())
         self.assertFalse(window.quality_slider.isVisibleTo(window._video_expert_content))

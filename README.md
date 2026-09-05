@@ -17,13 +17,9 @@ box (see Root cause below). PySide6 GUI queue, one file at a time.
 
 ## Screenshots
 
-| Video | Video — Expert |
-|---|---|
-| ![Video tab](screenshots/video_normal.png) | ![Video tab with Expert expanded](screenshots/video_expert.png) |
+<img src="screenshots/video_normal.png" alt="Video tab" width="700">
 
-| Audio |
-|---|
-| ![Audio tab](screenshots/audio.png) |
+<img src="screenshots/video_expert.png" alt="Video tab with Expert expanded" width="380"> <img src="screenshots/audio.png" alt="Audio tab" width="380">
 
 ## Run
 

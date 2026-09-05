@@ -1,0 +1,49 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ffmpeg/ffprobe: several tests build tiny synthetic clips and run
+      # real encodes against them rather than mocking build_args() --
+      # apt-get here rather than relying on whatever the runner image
+      # happens to ship, so this doesn't silently break on a future image
+      # update. VAAPI-specific tests already self-skip when no GPU render
+      # node exists (worker.HAS_VAAPI), so a GPU-less runner just runs the
+      # CPU-path tests.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      # PySide6 needs a handful of shared libraries present even for the
+      # offscreen QPA platform (no real display) -- xcb/EGL/xkbcommon are
+      # the ones commonly missing on a bare Ubuntu runner.
+      - name: Install Qt runtime dependencies
+        run: |
+          sudo apt-get install -y \
+            libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      # Run in small batches, each a fresh process -- a single long-lived
+      # process running the whole suite accumulates Qt/PySide6 resources
+      # across the many MainWindow() instances test_main.py constructs.
+      # Confirmed: an unchunked `unittest discover` run was still not done
+      # after 4.5 hours (189 of 387 tests). Chunked, the full suite passes
+      # in ~6 minutes.
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python3 run_tests_chunked.py

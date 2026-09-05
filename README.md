@@ -1,19 +1,26 @@
 # TITAN Video
 
-A fork of [TITAN-i Transcoder](/mnt/data/tools/transcoder) -- same ffmpeg
-engine, same settings model, same everything below this section (shared
-history, unchanged). The difference is the UI layer: Normal mode surfaces
-every real output/media decision in plain language (Processing, Codec,
-Quality vs. File Size, Resolution, File Format, Color Depth, and every
-Audio setting) above a collapsed-by-default "Expert" section holding the
-remaining encoder-mechanics controls (exact Rate Control mode, precise
-quality value, Encoding Speed, Tune, Force Deinterlace) -- no capability
-lost, just organized around "Normal = intent, Expert = actual encoder
-mechanics" instead of exposing everything flat. See that sibling app's own
-README for anything not specific to this fork.
+A focused desktop video transcoder built with PySide6 and ffmpeg --
+originally a minimal front-end replacing HandBrake, whose QSV path is
+dead on this box (see Root cause below). PySide6 GUI queue, one file at
+a time.
 
-Minimal ffmpeg front-end replacing HandBrake, whose QSV path is dead on this
-box (see Root cause below). PySide6 GUI queue, one file at a time.
+- H.265 (HEVC) / H.264 (AVC), CPU / Intel iGPU / AMD GPU processing
+- Quality-first or target-file-size workflows, MP4 / MKV, 8-bit / 10-bit
+- Audio: copy-through when compatible, AAC conversion, stereo downmix
+- Batch queue with automatic interlace detection and live per-file edits
+- An "Expert" section for exact rate-control values, tune, and deinterlace
+  overrides -- Normal mode never needs it; it's there when you do
+
+Forked from a sibling, more exposed-by-default build ("TITAN-i
+Transcoder") -- same ffmpeg engine and settings model, same everything
+below this section (shared history, unchanged). This fork's own
+difference is the UI layer: Normal mode surfaces every real output/media
+decision in plain language above a collapsed-by-default Expert section
+holding the remaining encoder-mechanics controls -- no capability lost,
+just organized around "Normal = intent, Expert = actual encoder
+mechanics" instead of exposing everything flat. See Controls below for
+the current, full breakdown.
 
 ## Screenshots
 
@@ -21,11 +28,26 @@ box (see Root cause below). PySide6 GUI queue, one file at a time.
 
 <img src="screenshots/video_expert.png" alt="Video tab with Expert expanded" width="380"> <img src="screenshots/audio.png" alt="Audio tab" width="380">
 
-## Run
+## Status
+
+Linux-first development build, not yet packaged for distribution --
+`launch.sh` currently assumes a local Python virtualenv with PySide6
+installed and a system `ffmpeg`/`ffprobe` on `PATH`, not a bundled
+runtime. A self-contained build (bundled Python + ffmpeg, real app
+icon, `.desktop` entry) is planned but not done yet.
+
+## Run from source
 
 ```
-./launch.sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python3 main.py
 ```
+
+(`./launch.sh` does the same thing, but currently points at this
+machine's own venv path -- edit it, or use the three commands above
+directly, until that's made portable.)
 
 ## Root cause of the HandBrake QSV failure
 
@@ -107,29 +129,26 @@ into a path that was never broken isn't worth the risk. See
 
 ```
 constants.py         Static config: encoders, rate-control modes,
-                      resolutions. BUILTIN_PRESETS/BUILTIN_PRESET_NAMES
-                      load the 9 seed presets from builtin_presets.json
-                      (see presets.py) — no I/O of their own, no Qt.
-builtin_presets.json  The 9 built-in presets, plain readable/inspectable
-                      JSON, tracked in git — the seed presets.json gets
-                      (re)created from on first run or after corruption.
-presets.py            Preset persistence: presets.json is the one file
-                      the app actually reads/writes (built-ins first,
-                      any user-saved preset appended after them), seeded
-                      from builtin_presets.json.
+                      resolutions, quality tiers, audio bitrates.
+presets.py            Trimmed to just load_builtin_presets() -- this fork
+                      has no Presets feature (removed entirely, see
+                      Controls below); this loader survives only because
+                      builtin_presets.json's entries are convenient,
+                      realistic full-settings-dict fixtures for tests
+                      that need one (TestSettingsSummary et al.), not
+                      because the app itself reads or writes presets.
+builtin_presets.json  Test-fixture data only now (see presets.py above).
 worker.py             The engine: turns a settings dict into an ffmpeg
                       argv (build_args), and TranscodeQueue, which runs
                       jobs one at a time via QProcess. No preset concept
-                      here — by design, this module never looks up a
-                      preset by name, it only ever sees a fully-resolved
-                      settings dict. Presets are a GUI-only convenience
-                      for naming/saving a settings snapshot.
+                      here, by design -- it only ever sees a fully-
+                      resolved settings dict, never a preset name.
 main.py               PySide6 GUI entry point and MainWindow's own core:
-                      settings↔control sync, preset load/save/delete,
-                      theme-choice handlers, module-level main(). The
-                      bulk of MainWindow's behavior lives in the two
-                      mixins below — main.py itself doesn't build any
-                      widgets or drive the queue directly anymore.
+                      settings<->control sync, theme-choice handlers,
+                      module-level main(). The bulk of MainWindow's
+                      behavior lives in the two mixins below -- main.py
+                      itself doesn't build any widgets or drive the
+                      queue directly anymore.
 ui_builder.py         _UiBuilderMixin: every tab's widget construction,
                       the left/right panel shells, the collapsible-group
                       helper, the command preview box.
@@ -155,27 +174,29 @@ assets/               SVG glyphs style.qss paints on top of Fusion's
                       native checkbox/spinbox subcontrols (see Known
                       gaps for why), one set per theme (_dark/_light
                       suffix).
-tests/                unittest suite: test_worker.py, test_presets.py,
-                      and test_main.py — the latter covers the whole
-                      assembled GUI (ui_builder.py/queue_controller.py/
-                      queue_widget.py/theming.py/formatting.py all get
-                      exercised through it, via the one real MainWindow
-                      instance, rather than one test file each).
+tests/                unittest suite: test_worker.py, test_presets.py
+                      (just the fixture loader now, see presets.py
+                      above), and test_main.py — the latter covers the
+                      whole assembled GUI (ui_builder.py/queue_
+                      controller.py/queue_widget.py/theming.py/
+                      formatting.py all get exercised through it, via
+                      the one real MainWindow instance, rather than one
+                      test file each). ~390 tests total.
 ```
 
-The GUI is a fixed-width (470px) settings inspector on the left and a
+The GUI is a fixed-width (470px) settings inspector on the left, wrapped
+in a `QScrollArea` (a vertical scrollbar appears only if Expert's content
+ever exceeds the window height -- none under normal conditions), and a
 flexible workspace on the right, laid out with a plain `QHBoxLayout` (not
 a resizable `QSplitter` — window resizing goes entirely to the right
-pane). Left pane: a **Preset** row (load/Save As/Delete) above a
-`QTabWidget` (**Video** / **Audio**, grouped by what each setting is —
-see Controls below). Right pane: the queue, output folder, run controls,
-progress bar, a live stats line, and the full log. Window geometry is
-remembered across launches via `QSettings("TITAN", "TitanVideo")` (on
-Linux: `~/.config/TITAN/TitanVideo.conf`) — separate from
-`presets.json`, since this is per-viewer window state, not app data.
+pane). Left pane: a `QTabWidget` (**Video** / **Audio** — see Controls
+below for the current Normal/Expert breakdown of each). Right pane: the
+queue, output folder, run controls, progress bar, a live stats line, and
+the full log. Window geometry (and Expert's own expanded/collapsed state)
+is remembered across launches via `QSettings("TITAN", "TitanVideo")` (on
+Linux: `~/.config/TITAN/TitanVideo.conf`).
 
-The settings dict that flows from the GUI into `build_args()` (and that a
-saved preset *is*, plus a `name` key):
+The settings dict that flows from the GUI into `build_args()`:
 
 ```python
 {
@@ -196,380 +217,190 @@ saved preset *is*, plus a `name` key):
 }
 ```
 
-## Presets
-
-12 built-in presets ship in `constants.BUILTIN_PRESETS`: a High/Balanced/
-Low trio per encoder+codec combination — CPU/x265 → CPU/x264 → Intel iGPU
-→ AMD GPU — even though nothing in the Controls themselves lists them
-quite that way any more: Encoder (CPU/Intel iGPU/AMD GPU) and Codec
-(H.265/H.264, Format section, CPU-only) are two separate controls now
-(see Controls below), not one flat per-preset row. That's *display* order
-in this list, anyway, not load order: whichever preset is actually loaded
-on startup is pinned explicitly (`MainWindow.__init__`'s
-`_refresh_preset_combo(select=...)`), independent of where it sits in the
-list, so reordering this list alone can't silently change what a fresh
-launch defaults to. All 12 are protected — `Save As…` refuses to reuse
-their names, `Delete` refuses to remove them — so there's always a
-known-good starting point.
-
-An already-installed `presets.json` predating a newly-added built-in
-(x264's own trio, the first time this happened) doesn't just miss it
-forever: `presets.migrate_missing_builtins`, called once at startup right
-after `load_presets()`, adds any built-in present in
-`constants.BUILTIN_PRESETS` but absent from the loaded file, at that
-built-in's own canonical position (not appended past the user's own
-saved presets), and persists the result back to disk. A no-op, and no
-extra disk write, once nothing's missing — confirmed real: this repo's
-own `presets.json` went from the original 9 to all 12 the first time
-this code ran here, no manual edit.
-
-Each engine's three differ only in `quality_value` (moved to a
-meaningfully different point on that engine's own ~50-value ICQ/CQP/CRF
-scale — the same scale the Quality slider's own 6-tier fuzzy captions
-divide up) and, for CPU, nothing else at all: speed stays whatever that
-engine's Balanced preset already uses, since the tier these three move
-along is quality/size, not effort-vs-time (a separate axis Balanced
-already settled for engine-specific reasons of its own, see below).
-
-**Balanced**, the original three plus x264's later addition, described
-first since they're what the High/Low siblings are relative to:
-
-1. **720p CPU Balanced (Software / x265)** — named to match the other two
-   built-ins ("Balanced", `<category> / <encoder>`); its original name
-   ("Stuff Tuned") was carried over verbatim from the user's own real
-   HandBrake preset of that name during the port and never revisited. Was
-   already pure CPU x265, so this is a clean 1:1 mapping: `-preset medium
-   -crf 23`, plus the original's
-   `-x265-params "strong-intra-smoothing=0:aq-mode=3:psy-rdoq=1.0"` (fixed,
-   not exposed as a control — nobody asked to tune it independently). This
-   is the one that actually loads on startup, regardless of list position
-   (see above) — by request.
-2. **720p CPU Balanced (Software / x264)** — added later, once libx264
-   became a second software encoder alongside libx265 (see Controls'
-   Encoder below). Simply mirrors x265 Balanced's own numbers (`-preset
-   medium -crf 23`) rather than an independently-reasoned value — x264's
-   CRF scale happens to share the same practical range and default as
-   x265's (confirmed directly against this build, not assumed), so
-   there's no equivalent of x265's own community reference points (see
-   High/Low below) to draw a *different* number from. No
-   `-x265-params`-equivalent tuning here: unlike x265's historically
-   conservative defaults, libx264's own upstream defaults are already
-   well-regarded, so there was nothing to override.
-3. **720p Intel Balanced (Hardware / VAAPI)** — named "Intel", not "QSV" (Quick
-   Sync's own technology name), to match "AMD" and "CPU" on either side of it
-   in this same list — both already bare vendor/type words, not a brand or
-   technology name, so QSV was the one actually out of step, not something
-   this app invented fresh. Was `qsv_h265_10bit`, ICQ 26,
-   main10. `-compression_level 1` (the vaapi "speed" value) is an estimate
-   for QSV's "quality" preset, not validated by A/B — see Known gaps.
-4. **720p AMD Balanced (Hardware / VAAPI)** — no HandBrake/QSV legacy to
-   map from, unlike the Intel preset. CQP 26 mirrors the Intel preset's
-   ICQ 26 (AMD's driver has no ICQ — see Controls' Rate control below —
-   so CQP is the closest quality-family equivalent); speed "4" is a
-   genuine middle-of-the-ladder value (the scale runs 1..7), matching what
-   "Balanced" actually means in this app's own speed semantics rather than
-   inheriting Intel's "1" (chosen there for HandBrake-mapping reasons that
-   don't apply here).
-
-**High** and **Low**, added later to give each engine a real tier instead
-of a single fixed point:
-
-- CPU's (x265) CRF 18 (High) and 28 (Low) are real, widely-used x265
-  community reference points ("visually lossless" and "noticeably
-  smaller, still watchable") — not this app's own guess, x265's CRF scale
-  has enough established practice around it to just use those directly.
-- CPU (x264)'s CRF 18/28 simply mirror x265's own — same reasoning as its
-  Balanced preset above: x264 and x265 share the same practical CRF
-  range, and there's no x264-specific community reference point being
-  drawn on independently here.
-- Intel/AMD's ICQ/CQP 16 (High) and 36 (Low) don't have that same body of
-  outside practice to draw on, so they're this app's own estimate by rough
-  analogy to the CPU pair's offset from its own Balanced (23) — not
-  independently validated against remembered output quality any more than
-  Intel's Balanced `-compression_level` estimate above was. Worth A/B'ing
-  for real at some point, same as that one.
-
-Anything saved via **Save As…** is appended to the bottom of
-`presets.json`, after the 12 built-ins (gitignored — once seeded, it's the
-user's own data, not source) and shows up in the same dropdown as the
-built-ins from then on.
-
-Output is MP4 or MKV (see Container below), first video stream
-(attached-pic/cover-art excluded) + one selectable audio track (no
-subtitle/data passthrough yet, even on MKV — see Known gaps). Audio: copied
-through as-is if the selected track is `aac`/`ac3`/`eac3` *and* "copy if
-compatible" is checked, otherwise transcoded to AAC at the chosen bitrate
-(default 160k, matching the real HandBrake preset's `av_aac` @ 160kbps).
-Narrower than HandBrake's own copy mask (also allows
-`dts`/`dtshd`/`truehd`/`flac`) because muxing those into MP4 via ffmpeg
-isn't reliably playable.
-
 ## Controls
 
-**Preset row** (top of the left pane, above the tabs)
-- **Preset** — load a saved settings snapshot into every control below.
-  This is the main lever — it sets everything else at once — so it isn't a
-  tab alongside its own dependents, it sits above them instead.
-  **Save As…** / **Delete** manage `presets.json`.
-- **Modified indicator** — the preset dropdown's own text goes bold,
-  italic, and `$ACCENT`-colored the moment any control drifts from the
-  loaded preset's saved values, and back to normal if you change it back.
-  Originally a separate "(modified)" label next to the dropdown — its
-  appearing/disappearing took and gave back layout space every time,
-  visibly reflowing the whole window on every single control change
-  (confirmed by screenshot). Recoloring the combo's own text needs no
-  space of its own: a dynamic Qt property (`preset_combo.setProperty(
-  "modified", bool)` + `QComboBox[modified="true"]` in `style.qss`,
-  `_update_preset_modified_indicator` in main.py) rather than a widget
-  that comes and goes.
+The left pane is grouped into two tabs, by what kind of setting they are.
+Landed on the current tab-bar look after several iterations (a plain
+underline read as floating clickable text; a heavier filled-plus-outline
+selected state read too heavy; an accent-colored selected border was
+tried and dropped for the same reason section headings and the outer
+tab-pane border are neutral elsewhere in this app — blue is reserved for
+controls/progress/focus/Convert, not chrome): `border-bottom: none` on
+every tab handles the seamless-with-content edge regardless of selected
+state; the other three sides stay `$BORDER` for both states now, with
+the selected tab distinguished by its `$BG_PANEL` fill and bold text
+instead of a color change.
 
-The rest is grouped into two tabs, by what kind of setting they are. Four
-iterations on the tab bar's look, in order: a plain underline (no fill, no
-outline) read as floating clickable text, nothing marking it as an actual
-tab shape; a filled `$BG_PANEL` selected-tab plus a full outline box read
-as too heavy a highlight; uniform `$BG_WINDOW` on both states (outline
-only, no fill at all) fixed *that*, but a selected tab colored like the
-window instead of like its own content didn't visually belong to the pane
-it was selecting either; filling the selected tab with `$BG_PANEL` *and*
-setting its border-color to match (next attempt, to blend it into the
-pane) went a step too far — that killed the border's visibility on all
-four sides at once, when only the bottom edge (the one touching the pane)
-was ever supposed to disappear. Settled on: `border-bottom: none` on the
-base rule handles the seamless-with-content edge on its own, regardless of
-selected state; the other three sides keep a real, visible color the
-whole time — `$ACCENT` for the selected tab (marking it "active" the same
-way this app already uses accent color elsewhere), `$BORDER` for
-unselected. `QTabBar::tab` also carries a small `margin-top` — without it,
-the tab's own top border/corner rendered clipped against the top of its
-allocated space (invisible back when that border was transparent, obvious
-once it had a real color — confirmed by screenshot). One more knock-on
-effect worth knowing about if this is touched again: with the selected
-tab's border invisible on all sides (the "one step too far" version
-above), the content pane's own top-left corner radius rendered as a
-stray straight line with no visible curve at all right where it met the
-tab — not a separate bug, just that corner having nothing of its own
-covering that exact pixel area once the tab stopped drawing one there.
-Fixed as a side effect of restoring the tab's own visible corner, not
-touched separately.
+Both tabs follow the same rule: **Normal mode surfaces every real
+output/media decision**; an **Expert** section (collapsed by default,
+Video tab only — Audio has nothing left to put in one, see below) holds
+the remaining **encoder-mechanics** controls. Nothing in Expert is a
+second copy of a Normal control with a friendlier label — where a
+concept genuinely has both a plain-language and a precise form (Quality,
+notably), the Normal control and its Expert counterpart drive the exact
+same underlying value, never two independently-tracked ones.
 
-**Video tab** (grouped into "Encoding" and "Format")
+**Video tab — Normal**
 
-The controls here deliberately lead with plain English, not ffmpeg's own
-names for things — a "Apple-style" simplification pass over what used to be
-five separate rate-control modes and a raw `-compression_level` readout. The
-underlying settings dict and `worker.build_args` are completely unaffected;
-this is presentation only. See `constants.RC_MODE_FRIENDLY` for the mapping.
+*Encoding card*
+- **Processing** — which *engine* runs the encode: **Automatic**
+  (recommended — picks the fastest available option on this machine,
+  preferring Intel iGPU, then AMD GPU, then CPU) or an explicit **CPU**
+  (software) / **Intel (iGPU)** / **AMD (GPU)** choice (the latter two
+  both `hevc_vaapi`, distinguished by the `gpu_vendor` settings-dict key
+  — this machine has both a real Intel iGPU and an AMD discrete GPU). No
+  NVIDIA option — no such hardware here, and there's no NVENC code in
+  `worker.py` to back one. `constants.ENCODERS` is a list of `(engine
+  id, gpu_vendor, label)` triples in this same CPU/Intel/AMD order,
+  specifically so one ffmpeg codec (`hevc_vaapi`) can back two distinct
+  menu entries; `constants.encoder_profile_key()` turns a resolved
+  `(encoder, gpu_vendor)` pair back into the key `RC_MODES`/
+  `RC_MODE_FRIENDLY` are keyed by (`"hevc_vaapi_intel"`,
+  `"hevc_vaapi_amd"`, `"libx265"`, or `"libx264"`). Switching Processing
+  carries the user's *intent* across the change rather than resetting it
+  — an active Quality tier is translated to the equivalent tier on the
+  new engine's own quality scale (ICQ/CQP/CRF aren't the same numbers),
+  and an active File Size target is left untouched (a plain MB number
+  needs no per-engine translation).
+- **Codec** — H.265 (HEVC, `libx265`) or H.264 (AVC, `libx264`), the CPU
+  engine's own second axis; disabled and forced to H.265 whenever
+  Processing picks a hardware engine (no `h264_vaapi` wired up, hardware
+  here is HEVC-only) — not hidden, since "H.265 (HEVC)" is still the
+  real, correct answer for hardware, just no longer a choice. Switching
+  Codec preserves the active Mode/Quality-tier/Target-Size the same way
+  switching Processing does (`main.py`'s `_on_codec_changed`) — a real,
+  previously-reported bug had this silently reset to the default
+  quality value on every H.265<->H.264 switch. `main.py`'s
+  `_current_encoder_id()` resolves Processing + Codec together into the
+  one real ffmpeg encoder id everything downstream (`RC_MODES`,
+  `build_args`, ...) actually keys off of. libx264 shares almost the
+  entire settings surface libx265 exposes — CRF/bitrate rate control,
+  10-bit, the same `ultrafast`..`placebo` preset names (confirmed
+  against this exact ffmpeg build) — except its own, larger Tune list
+  (see Expert below) and no equivalent of libx265's own `-x265-params`
+  psycho-visual tuning (meaningless to libx264, and unlike x265's
+  historically conservative defaults, libx264's own upstream defaults
+  are already well-regarded).
 
-- **Encoder** — which *engine* runs the encode: "CPU" (software), "Intel
-  (iGPU)", or "AMD (GPU)" (the latter two both `hevc_vaapi`, distinguished
-  by the `gpu_vendor` settings-dict key — this machine has both a real
-  Intel iGPU and an AMD discrete GPU), in that order. No NVIDIA option —
-  no such hardware here, and there's no NVENC code in `worker.py` to back
-  one. `constants.ENCODERS` is a list of `(engine id, gpu_vendor, label)`
-  triples, in this same CPU/Intel/AMD order, specifically so one ffmpeg
-  codec (`hevc_vaapi`) can back two distinct menu entries;
-  `constants.encoder_profile_key()` turns a resolved `(encoder,
-  gpu_vendor)` pair back into the key `RC_MODES`/`RC_MODE_FRIENDLY` are
-  keyed by (`"hevc_vaapi_intel"`, `"hevc_vaapi_amd"`, `"libx265"`, or
-  `"libx264"`). The CPU row's own id here (`"libx265"`) is really just a
-  placeholder/default now, not necessarily what actually runs — see Codec
-  below, a second axis this one doesn't decide alone any more.
-- **Codec** (Format section, alongside Resolution/Container) — H.265
-  (HEVC, `libx265`) or H.264 (AVC, `libx264`), the CPU engine's own
-  second axis. Split out as its own control rather than folded into
-  Encoder as more flat rows (discussed directly): hardware here is
-  HEVC-only (no `h264_vaapi` wired up), so a codec choice that only ever
-  means something for one of Encoder's three rows read better as its own
-  control than as extra combined entries. Disabled and forced to H.265
-  whenever Encoder is set to a hardware engine — not hidden, since
-  "H.265 (HEVC)" is still the real, correct answer for hardware, just no
-  longer a choice. `main.py`'s `_current_encoder_id()` resolves Encoder +
-  Codec together into the one real ffmpeg encoder id everything
-  downstream (`RC_MODES`, `build_args`, ...) actually keys off of.
-  libx264 shares almost the entire settings surface libx265 already
-  exposed here before this existed — CRF/bitrate rate control, 10-bit,
-  the same `ultrafast`..`placebo` preset names (confirmed against this
-  exact ffmpeg build, not assumed) — except its own, larger Tune list
-  (`constants.X264_TUNES`, includes `film`/`stillimage`, both confirmed
-  rejected outright by this exact libx265 build — see Tune below) and no
-  equivalent of libx265's own `-x265-params` psycho-visual tuning
-  (meaningless to libx264, and unlike x265's historically conservative
-  defaults, libx264's own upstream defaults are already well-regarded, so
-  there was nothing to override).
-- **Rate control** — a three-button row, not a dropdown: **Quality** / **File
-  Size** / **Advanced**. Quality and File Size mean the same thing regardless
-  of encoder (mapped to ICQ/VBR for Intel VAAPI, CQP/VBR for AMD VAAPI,
-  CRF/bitrate for x265); Advanced is CQP (fixed quantizer). **AMD's VAAPI
-  driver (Mesa radeonsi) rejects ICQ outright** — confirmed via both a real
-  `vainfo` capability listing and a real failed test encode, not assumed —
-  so on AMD, Quality *is* CQP and the Advanced button has nothing further to
-  offer and hides entirely, same treatment x265 already got for lacking CQP.
-  The three are really just three positions of `rc_mode_combo`, still the
-  actual source of truth for everything downstream — the combo itself stays
-  alive but hidden (`main.py`'s `_set_rc_mode` / `_sync_rc_buttons_to_combo`)
-  rather than being replaced, so there's exactly one place rc_mode can drift
-  out of sync with what the UI shows.
-- **Quality** (the slider, when Rate control is Quality or Advanced) — range
-  follows the specific mode (e.g. ICQ 1–51 vs CRF 0–51 aren't the same
-  scale, so this re-ranges itself on every encoder/rc_mode change). The raw
-  number and mode name (e.g. "26 (ICQ)") show as small secondary text next
-  to the slider, not the primary label. `setInvertedAppearance`/
-  `setInvertedControls` flip the slider so **left is worse/smaller, right is
-  better/larger** — matching every rc_mode's underlying scale direction is
-  the opposite of intuitive otherwise (e.g. ICQ/CRF: a *lower* number means
-  *better* quality). A fuzzy tier label underneath ("Movies & TV — general
-  purpose", etc., centered under the slider) names what the
-  current position is actually good for, and a hover tooltip spells out
-  which end is which, so the raw number was never the only thing to go on
-  (the quality slider's tooltip is static; the speed slider's below
-  updates live with the actual compression_level, since that's meaningful
-  context the quality slider's number already shows on-screen anyway). The
-  handle itself is `$ACCENT`, not `$TEXT_PRIMARY` -- TEXT_PRIMARY reads
-  fine as a near-white dot on Dark but rendered as a heavy black one on
-  Light, with nothing about the accent-blue groove to suggest that's what
-  would happen -- confirmed by screenshot in Light specifically, not
-  assumed from the token values alone. The slider and its fuzzy tier
-  caption underneath share one outlined box (`style.qss`'s
-  `QWidget#fuzzyGroup`, also used by Speed's identical slider+caption pair
-  below) rather than reading as two independent, unrelated form rows —
-  the caption explains *that specific slider*, so grouping it visually
-  with the control it's actually describing reads better than leaving
-  that relationship implicit.
-- **Quality** (the size field, when Rate control is File Size) — a target
-  **output size in MB**, not a literal bitrate. `quality_value` in the
-  settings dict carries this same meaning for VBR/bitrate rc_modes now
-  (previously literal kbps) — the actual `-b:v` value ffmpeg gets is
-  computed from this number and the specific file's real duration inside
-  `build_args` itself (`worker.target_size_to_bitrate_kbps`), using whatever
-  audio bitrate is configured as an estimate of the audio track's share.
-  That's necessarily an estimate: a copied (not transcoded) audio track's
-  real bitrate isn't known without an extra probe this doesn't do, so the
-  output lands close to the target size, not exactly on it. A small caption
-  under the field shows the resulting kbps for whatever file is first in
-  the queue, so the number being computed is never a total black box — "Add
-  a file to estimate the resulting bitrate" if the queue's empty.
-  Setting the *same* target size across a multi-selected batch of
-  differently-long files (see "Selecting a row edits it live" below) is a
-  feature, not a bug: each file independently aims for that size using its
-  own duration, which is what you'd actually want encoding a season of
-  episodes with mixed runtimes to a consistent output size.
-- **Speed** — a slider from "Faster" to "More Thorough" for *either* engine
-  now (`-compression_level` 1–7 for VAAPI, x265's own preset ladder
-  ultrafast…placebo for CPU), whichever encoder applies — two separate
-  sliders (`speed_slider`/`speed_x265_slider`) sharing one row and one set
-  of "Faster"/"More Thorough"/fuzzy-tier-caption labels, only one of each
-  slider pair actually visible at a time. Originally a dropdown for x265
-  specifically (ten named presets is a lot of menu to scan), converted to
-  match VAAPI's slider once VAAPI already had one and the inconsistency
-  became obvious sitting right next to it. Deliberately kept as its own
-  control rather than fused with Quality into a single dial — they're
-  different axes (what quality/size to target, vs. how much effort to
-  spend getting there), and fusing them would mean two controls fighting
-  over the same stored value the moment both were shown at once. If you
-  want one-click "good bundle for this scenario" behavior, that's what
-  Presets are for.
+*Quality card*
+- **Mode** — **Quality** or **File Size**, a plain-language 2-way choice
+  over the same `rc_mode_combo` Expert's own Rate Control drives (below)
+  — picks which of the next two rows is shown.
+- **Quality** (Mode = Quality) — **Smaller File** / **Balanced** /
+  **Better Quality**, three fixed points on the current encoder's own
+  quality scale (`constants.QUALITY_TIERS`). Exact numeric control over
+  the same value lives in Expert's **Exact Quality** (below) — both
+  read/write the identical `quality_value`, never two independently-
+  tracked numbers.
+- **Target Size** (Mode = File Size) — a target **output size in MB**,
+  not a literal bitrate. The real `-b:v` ffmpeg gets is derived from
+  this number and the specific file's actual duration inside
+  `build_args` (`worker.target_size_to_bitrate_kbps`), after reserving
+  an estimate for the audio track's own share. That reservation now
+  correctly uses the *source's real bitrate* when Automatic is actually
+  going to copy an already-compatible track through untouched (a
+  previously-reported bug reserved the *configured* AAC bitrate even
+  then, letting a copied, higher-bitrate track push the real output
+  materially past the requested size — `worker.probe_audio_bitrate_kbps`,
+  falling back to the configured AAC figure only when the source
+  genuinely doesn't report one, e.g. common for MKV, not for MP4). A
+  small caption under the field shows the resulting estimated kbps for
+  whichever file is selected (or first in the queue). Setting the same
+  target size across a multi-selected batch of differently-long files is
+  a feature, not a bug — each file independently aims for that size
+  using its own duration.
 
-  VAAPI's slider uses the same inverted-appearance treatment as Quality
-  above (**Faster** left, **More Thorough** right) — not just a guess at
-  which end feels right: timed real encodes at compression_level 1/4/7
-  confirmed lower values are genuinely both slower *and* more
-  size-efficient at a fixed quality target, so a lower number belongs on
-  the "more effort" side, not the "faster" side a raw ffmpeg option list
-  would suggest. x265's slider needs no inversion at all: `X265_PRESETS`
-  is already ordered fastest-to-slowest (`ultrafast`…`placebo`), so index 0
-  landing on the visual left is already correct without flipping anything
-  — an index into that list, not a value with arithmetic meaning of its
-  own, same reasoning as Audio Bitrate's slider below. A shared fuzzy tier
-  label under whichever slider is showing ("Thorough — best efficiency",
-  etc., same 6 captions either way — expanded from an original 3, same
-  reasoning as Quality's own expansion above — just opposite fraction
-  direction since the two underlying scales run opposite ways) sits in the
-  same `#fuzzyGroup` outlined box as Quality above, and
-  is unconditionally visible now — there's always a real slider to caption
-  regardless of which encoder is selected, so it no longer needs to hide
-  for one of them the way it did back when x265 only had a plain dropdown.
-- **Bit depth** — 8-bit or 10-bit (`main`/`nv12` vs `main10`/`p010le` for
-  VAAPI; `yuv420p` vs `yuv420p10le` for x265). The tradeoff is folded
-  straight into each dropdown item's own text ("10-bit — smoother
-  gradients, larger file" / "8-bit — smaller, maximum compatibility")
-  rather than a separate caption row underneath — one fewer line, and the
-  explanation is attached to the specific option it's about instead of
-  floating below whichever one happens to be selected.
-- **Resolution** — `Source (no scale)` / `1080p` / `720p` / `480p`, fit
-  within the box keeping aspect, never upscales. Both scale filters carry
-  `force_divisible_by=2` — without it, a source whose aspect ratio doesn't
-  exactly match the target box rounds one dimension to odd, which every
-  pixel format this app uses (4:2:0) rejects outright. Verified against a
-  real 2.4:1 "scope"-ratio source, not just reasoned about.
-- **Container** — MP4 or MKV. `-movflags +faststart` is only added for MP4
-  (it's a mov/mp4-muxer-private option — ffmpeg silently ignores it on MKV,
-  but there's no reason to carry a flag that means nothing there).
-- **Tune (software only)** — hidden when Encoder is VAAPI (`hevc_vaapi` has
-  no equivalent option), repopulated whenever Encoder *or* Codec changes
-  (`main.py`'s `_on_encoder_changed`, wired to both). x265
-  (`constants.X265_TUNES`): `animation`, `grain`, `psnr`, `ssim`,
-  `fastdecode`, `zerolatency`, or `None` to omit `-tune` entirely. **`film`
-  is deliberately not offered for x265** — it's a real x265 tune name in
-  general, but this exact libx265 build rejects it outright (`Error
-  setting preset/tune (null)/film.`, confirmed by actually running it,
-  not assumed). x264 (`constants.X264_TUNES`) gets two more on top of
-  that same list — `film` and `stillimage` — both confirmed to actually
-  work against this exact libx264 build, unlike x265's rejection of
-  `film`. Switching Codec while a tune value only the *other* codec
-  offers is selected (e.g. `film` on x264, then switching to x265) resets
-  it to `None` rather than silently carrying over to whatever tune
-  happened to land at that index once the list shrinks.
-- **Deinterlace** — auto-detected the moment a file is added (see
-  "The queue itself" below), and still a manual checkbox on top of that.
-  This exists because a container's progressive/interlaced flag is
-  frequently just wrong: a real user file was tagged
-  `yuv420p(progressive)` in its own metadata, played back with visible
-  combing, and `ffmpeg -vf idet` on the actual pixel data showed 100% of
-  sampled frames as TFF-interlaced — camcorder/broadcast-sourced footage
-  (the `Mainconcept`-encoded file here is exactly that lineage) does this
-  often enough that the flag can't be trusted. When on: VAAPI gets
-  `deinterlace_vaapi=rate=frame` after `hwupload` and before `scale_vaapi`
-  (operates on hardware surfaces, so order matters, and full-resolution
-  fields deinterlace better than already-downscaled ones); x265 gets
-  `bwdif=mode=send_frame` before `scale`. Both explicitly pin single-rate
-  output — bwdif's own default (`send_field`) silently doubles the frame
-  rate, one output frame per field, which isn't what a "just fix the
-  interlacing" checkbox should do. Verified against a real interlaced
-  fixture, not just argument presence: `tests/test_worker.py`'s
-  `TestDeinterlace` builds a genuinely-interlaced synthetic source
-  (`tinterlace=interleave_top`, confirmed 100% TFF via `idet`), encodes it
-  through both paths, and checks the *output* is measured clean by the same
-  detector — including a negative control proving the fix comes from the
-  deinterlace filter and not incidentally from re-encoding.
+*Format card*
+- **Resolution** — Keep Original / 1080p / 720p / 480p, fit within the
+  box keeping aspect, never upscales. Both scale filters carry
+  `force_divisible_by=2` — without it, a source whose aspect ratio
+  doesn't exactly match the target box rounds one dimension to odd,
+  which every pixel format this app uses (4:2:0) rejects outright.
+- **File Format** — MP4 or MKV. `-movflags +faststart` is only added
+  for MP4 (a mov/mp4-muxer-private option, silently ignored elsewhere).
+- **Color Depth** — 8-bit or 10-bit (`main`/`nv12` vs `main10`/`p010le`
+  for VAAPI; `yuv420p` vs `yuv420p10le` for CPU). H.264 specifically:
+  8-bit offers the broadest playback compatibility of any option in
+  this app; 10-bit H.264 needs compatible software/devices too, just
+  less broadly required than H.265 does.
 
-**Audio tab**
-- **Audio track** — `Track 1`–`4`, by stream index (not probed per file —
-  keeps the tool from having to pre-scan the whole queue just to populate a
-  dropdown).
-- **Copy audio if compatible** — uncheck to always transcode, even for a
-  codec that would normally be copied through.
-- **Audio bitrate** — used only when a track gets transcoded. A slider over
-  the 5 real stops (96k/128k/160k/192k/256k), same visual language as
-  Quality/Speed on the Video tab (outlined box, fuzzy caption underneath) —
-  originally a plain dropdown, converted for consistency with those two.
-  An index into the fixed list, not the kbps number itself: the real values
-  aren't evenly spaced (96→128→160→192 are +32 each, 192→256 is +64), which
-  a linear slider can't represent as uniform tick spacing without either
-  lying about the middle stops or leaving the last one oddly cramped.
-- **Downmix to stereo** — mixes 5.1/7.1/etc. sources down to plain stereo,
-  for playback on a phone/laptop/anything without a surround setup. Only
-  actually does anything when the source genuinely has more than 2
-  channels (`worker.probe_audio_channels`, only ever probed when this is
-  checked at all -- most jobs never touch it) — checking it on a source
-  that's already stereo or mono has no effect, matching the control's own
-  label. A stream copy can't remix channels, so on a source that does need
-  it, checking this forces a transcode even when "Copy audio if
-  compatible" would otherwise have applied — the box always means what it
-  says, not "usually, unless copy already claimed the track first." `-ac 2`
-  (libswresample's own remix), not a hand-written `pan` filter with fixed
-  5.1-shaped coefficients — that would mis-handle anything that isn't
-  exactly that layout (7.1, quad, ...), where `-ac 2` remixes correctly
-  from whatever the source's real layout turns out to be.
+**Video tab — Expert** (collapsed by default)
+
+Real encoder-mechanics controls, not a second, friendlier copy of
+anything already in Normal:
+- **Rate Control** — the actual `rc_mode_combo`, shown directly with
+  its own real per-encoder labels (`constants.RC_MODES`): ICQ / CQP /
+  VBR for Intel, CQP / VBR for AMD (**AMD's VAAPI driver, Mesa radeonsi,
+  rejects ICQ outright** — confirmed via both a real `vainfo` capability
+  listing and a real failed test encode), CRF / Target bitrate for
+  CPU. This used to be a second Quality/File Size/Advanced button row
+  here, functionally duplicating Normal's own Mode toggle with
+  different labels — replaced with the real dropdown so Expert
+  genuinely shows encoder mechanics instead of restating Normal.
+- **Exact Quality** — the precise numeric value (same `quality_value`
+  Normal's Quality tier buttons set) via a slider, range following the
+  specific mode (e.g. ICQ 1–51 vs CRF 0–51 aren't the same scale, so
+  this re-ranges on every encoder/rc_mode change). `setInvertedAppearance`/
+  `setInvertedControls` flip the slider so **left is worse/smaller,
+  right is better/larger** — every rc_mode's underlying scale runs the
+  opposite way (a *lower* number means *better* quality) otherwise. A
+  fuzzy tier caption underneath ("Movies & TV — general purpose", etc.)
+  names what the current position is actually good for.
+- **Encoding Speed** — "Faster" to "Slower" for either engine
+  (`-compression_level` 1–7 for VAAPI, x265/x264's own preset ladder
+  `ultrafast`…`placebo` for CPU). VAAPI's own inverted-appearance
+  direction isn't a guess: timed real encodes at compression_level
+  1/4/7 confirmed lower values are genuinely both slower *and* more
+  size-efficient at a fixed quality target.
+- **Tune (software only)** — hidden for a hardware engine (`hevc_vaapi`
+  has no equivalent option). x265 (`constants.X265_TUNES`): `animation`,
+  `grain`, `psnr`, `ssim`, `fastdecode`, `zerolatency`, or `None`.
+  **`film` is deliberately not offered for x265** — this exact libx265
+  build rejects it outright (confirmed by actually running it). x264
+  (`constants.X264_TUNES`) adds `film` and `stillimage` on top of that
+  same list, both confirmed to work against this exact libx264 build.
+- **Force Deinterlace** — new files are sampled and this is set
+  automatically (see Queue pane below); this checkbox is a manual
+  override on top of that, for when detection gets a specific file
+  wrong. When on: VAAPI gets `deinterlace_vaapi=rate=frame` after
+  `hwupload` and before `scale_vaapi`; CPU gets `bwdif=mode=send_frame`
+  before `scale`. Both explicitly pin single-rate output — bwdif's own
+  default (`send_field`) silently doubles the frame rate, which isn't
+  what a "just fix the interlacing" checkbox should do.
+
+**Audio tab — Normal only** (no Audio Expert — every genuine audio
+setting the backend supports is already promoted here; an Expert
+section with nothing left to put in it would be worse than none)
+- **Track** — narrowed to what the selected file(s) actually have
+  (`worker.parse_probe_output`'s own `audio_track_count`, already probed
+  for the queue table's own subtitle text) rather than a fixed Track
+  1–4 regardless of source — picking a track that doesn't exist used to
+  silently produce audio-less output instead of preventing the choice.
+  With multiple files selected, only track indexes valid for *every*
+  selected file are offered (the safe intersection).
+- **Handling** — **Automatic** (copies the track through untouched when
+  it's already `aac`/`ac3`/`eac3`, otherwise transcodes to AAC) or
+  **Convert to AAC** (always transcodes, even from a compatible codec).
+  Split out from a previously-bundled "Automatic/Convert to Stereo"
+  toggle that never actually exposed copy-vs-transcode as its own real
+  choice — copy-vs-transcode and channel layout are independent
+  decisions.
+- **Channels** — **Keep Original** or **Stereo**, split out the same
+  way. Only actually does anything when the source genuinely has more
+  than 2 channels (`worker.probe_audio_channels`, only probed when this
+  is set at all) — checking it on an already-stereo/mono source has no
+  effect. A stream copy can't remix channels, so on a source that does
+  need it, this forces a transcode even when Handling would otherwise
+  have copied — `-ac 2` (libswresample's own remix), not a hand-written
+  `pan` filter, so it remixes correctly from whatever the source's real
+  layout turns out to be.
+- **AAC Bitrate** — used whenever the track is actually transcoded
+  (stays adjustable even under Automatic Handling, since a source the
+  copy path can't handle — DTS, PCM, ... — still needs transcoding at
+  whatever this is set to). A slider over the 5 real stops (96k/128k/
+  160k/192k/256k, captioned Smallest file → Highest quality) — an index
+  into the fixed list, not the kbps number itself, since the real values
+  aren't evenly spaced.
 
 **Below the tabs, left side** *(TITAN Video specifically — see this fork's
 own note at the top of this file. The sibling TITAN-i Transcoder app still
@@ -743,7 +574,7 @@ picked (`_maybe_note_no_hardware`, main.py).
   (queue focused) and the right-click context menu still reach Remove
   directly either way. Clear Queue still asks for confirmation first
   (skipped entirely if the queue is already empty) — it can discard real
-  per-file setup, so it gets the same treatment Delete Preset already had.
+  per-file setup, so a destructive action like this always confirms first.
 - **Save to** (labelled **Output folder** in the sibling TITAN-i Transcoder
   app) — deliberately *not* the first thing in the window; it's a per-run
   detail, so it sits below the queue, near where it's used, not up with
@@ -981,13 +812,23 @@ QWidget)` check, a case the offscreen test suite's synthetic
 ## Testing
 
 ```
-python3 -m unittest discover -s tests -v
+python3 run_tests_chunked.py
 ```
 
-Plain stdlib `unittest`, no extra install (main.py's tests need
+Plain stdlib `unittest` underneath, no extra install — but run through
+`run_tests_chunked.py` rather than `python3 -m unittest discover -s tests -v`
+directly, because a single long-lived process running the whole suite
+accumulates Qt/PySide6 resources across the many `MainWindow()` instances
+`test_main.py` constructs: an unchunked full run was confirmed to still not
+be done after 4.5 hours (189 of 387 tests, RSS climbing throughout).
+`run_tests_chunked.py` tears the process down every 20 tests instead, and
+the same 387 tests pass in about 6 minutes. CI (`.github/workflows/tests.yml`)
+uses it too. For running a single file, class, or test during development,
+plain `unittest` is still fine and doesn't hit this — e.g.
+`python3 -m unittest tests.test_worker.TestTune -v` (main.py's tests need
 `QT_QPA_PLATFORM=offscreen` to run headless, but they set that themselves
-before importing Qt, so the plain command above works with or without a
-real display). Most `test_worker.py` tests check the argv `build_args()`
+before importing Qt, so it works with or without a real display). Most
+`test_worker.py` tests check the argv `build_args()`
 produces; several actually run ffmpeg against tiny synthetic clips (real
 hardware encode included, skipped automatically if `/dev/dri/by-path`
 doesn't exist) or drive a real `TranscodeQueue` end to end through a Qt
@@ -999,8 +840,9 @@ responsibility: startup ordering, the command preview's error handling,
 audio accuracy and line grouping, the queue being locked during a run
 (except Add Videos, which stays live), live mid-run queue append, Clear
 Queue's confirmation, per-row status icons/result-size text, the queue
-table's source-metadata probe, theming, and the preset-modified indicator.
-One gotcha if you're adding to it:
+table's source-metadata probe, theming, and the Normal/Expert control
+hierarchy (codec-switch state preservation, the Audio Track constraint,
+Expert's collapse/expand behavior). One gotcha if you're adding to it:
 `QWidget.isVisible()` reflects the whole ancestor chain, not just a
 widget's own `setVisible()` calls — it's always `False` until the
 top-level window has been `.show()`n at least once, even under the
@@ -1051,15 +893,6 @@ the strength of the report alone:
   instead, which the two real callers (the queue, the live command
   preview) already had exception handling for; the size-estimate label
   shows the same message before the user ever gets that far.
-- **The "modified" preset indicator misfired on all three CPU presets.**
-  `_current_settings()` always includes `gpu_vendor` (`None` for a
-  non-VAAPI encoder), but the CPU presets in `constants.py` never define
-  that key at all -- confirmed directly that a plain `!=` comparison
-  treats a dict missing a key as different from one where it's explicitly
-  `None`, so selecting any CPU preset showed "modified" immediately with
-  nothing actually changed. Fixed with a key-by-key comparison that treats
-  "absent" and "explicitly `None`" as equivalent, robust against any future
-  settings key with the same shape, not just this one field.
 - **An auto-detected deinterlace race, in both directions.** Adding a file
   and clicking Start immediately could begin encoding before the ~20s
   interlace sample landed, using whichever deinterlace value the file
@@ -1097,12 +930,6 @@ the strength of the report alone:
 
 ## Known gaps
 
-- The File Size rate-control mode's kbps estimate (both the caption under
-  the size field and the real `-b:v` value `build_args` computes) reserves
-  whatever the Audio bitrate setting says for the audio track's share, even
-  when that track is actually being *copied*, not transcoded -- the real
-  copied bitrate isn't known without an extra ffprobe this doesn't do. Close
-  enough for "land near this file size," not exact.
 - A checkable `QGroupBox` used as a collapse toggle (`_make_collapsible_group`
   -- both Effective Command and Log use it) needs its size *policy*, not just
   its content's visibility, toggled on collapse: a hidden child alone still
@@ -1117,9 +944,9 @@ the strength of the report alone:
   that assert a control *is* visible need `window.show()` first (tests
   asserting it's hidden don't strictly need it, but the whole suite's
   existing convention is to call it anyway rather than have some tests rely
-  on the distinction). Already flagged once in `test_main.py` itself
-  (`TestPresetModifiedIndicator`); recorded here too since it bit three new
-  tests in the same sitting that added the Rate Control buttons.
+  on the distinction). Has bitten real tests more than once in this
+  file's own history -- recorded here so the next one doesn't have to
+  re-discover it.
 - `QSettings` round-trips a Python `bool` through its on-disk store as the
   literal string `"true"`/`"false"` (confirmed on this Linux/INI backend) --
   a plain `if value:` truthiness check on a restored value is a bug, since
@@ -1333,9 +1160,10 @@ the strength of the report alone:
 - `-compression_level 1` not A/B'd against remembered QSV output quality —
   try the range (1–7, lower = slower/better) if output doesn't match
   expectations.
-- Intel/AMD's High/Low preset ICQ/CQP values (16/36) are this app's own
-  estimate by analogy to CPU's real x265 community reference points, not
-  independently A/B'd against real output either — see Presets above.
+- Intel/AMD's Smaller/Better Quality-tier ICQ/CQP values (16/36,
+  `constants.QUALITY_TIERS`) are this app's own estimate by analogy to
+  CPU's real x265 community reference points, not independently A/B'd
+  against real output either.
 - No subtitle passthrough (explicitly `-sn`'d — originally to avoid an
   MP4-incompatible subtitle codec failing the mux; MKV output removes that
   specific risk but nothing maps subtitle streams on either container yet)

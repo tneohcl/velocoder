@@ -1,8 +1,9 @@
-# TITAN Video — Consumer Fork Plan
+# VeloCoder — Consumer Fork Plan
 
 Status: **v1 scope revised and built.** This folder is a fork of
-`titan-video` (cloned 2026-09-05, pushed to its own repo,
-`tneohcl/titan-video-consumer`, private). The original v1 pass
+`titan-video` (cloned 2026-09-05, pushed to its own repo, originally
+`tneohcl/titan-video-consumer`, renamed to `tneohcl/velocoder` once the
+app itself was renamed -- private). The original v1 pass
 subtracted down to a near-minimal control set (Quality tier + Resolution
 + Audio choice, everything else cut); after using it, the positioning
 itself was revisited -- see "v1 positioning" and "v1 scope" below for
@@ -14,10 +15,9 @@ change this early and expensive to change after distribution.
 
 ## v1 positioning (revised)
 
-- **Name:** keep "TITAN Video" for now. A studio-brand name on a
-  consumer app is a real mismatch long-term, but inventing a new brand
-  isn't a v1-blocking decision -- renaming a fork before its first real
-  release costs nothing.
+- **Name:** renamed to "VeloCoder" (from "TITAN Video"). A studio-brand
+  name on a consumer app was a real mismatch long-term, and renaming a
+  fork before its first real release costs nothing.
 - **Price:** free for v1. No payment infrastructure to build, no App
   Store review economics to plan around yet. Revisit once there's an
   actual user asking for a paid tier's specific feature.
@@ -43,7 +43,7 @@ change this early and expensive to change after distribution.
 
 ## Why fork instead of adding a "simple mode" toggle
 
-TITAN Video, as it stands, was independently assessed as landing around
+VeloCoder, as it stands, was independently assessed as landing around
 **"professional specialist desktop application"** — not amateurish, but
 also not a mass-market consumer app, on purpose: explicit CPU/Intel/AMD
 processing choice, an Expert section exposing codec/CRF/bit depth/tuning,
@@ -146,9 +146,12 @@ upstream UI changes won't merge cleanly either direction, and the two
 products may end up branded separately per the naming question above.
 `origin` was removed right after cloning (it defaulted to the local
 `titan-video` path, not a real remote); a real one now exists --
-`https://github.com/tneohcl/titan-video-consumer` (private), created and
-pushed the same way `titan-video` itself was (`gh repo create
-titan-video-consumer --private --source=. --remote=origin --push`).
+originally `https://github.com/tneohcl/titan-video-consumer` (private,
+created and pushed the same way `titan-video` itself was via `gh repo
+create titan-video-consumer --private --source=. --remote=origin
+--push`), renamed to `https://github.com/tneohcl/velocoder` once the app
+itself was renamed (`gh repo rename velocoder` -- GitHub redirects the
+old URL, and `origin` was updated automatically).
 
 ## Packaging (the other reviewer's core point: this matters more than more UI polish)
 

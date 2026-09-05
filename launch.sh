@@ -4,6 +4,6 @@
 source /mnt/data/tools/venv/transcoder/bin/activate
 cd /mnt/data/tools/titan-video-consumer
 
-LOG=/tmp/titan_video_consumer_debug.log
+LOG=/tmp/velocoder_debug.log
 echo "===== launch $(date '+%Y-%m-%d %H:%M:%S') =====" >> "$LOG"
 python3 main.py >> "$LOG" 2>&1

@@ -2,10 +2,26 @@
 already @staticmethod (no `self` dependency at all), so this is a
 straightforward move: plain functions here, directly unit-testable without
 building a QApplication/MainWindow, which they now are."""
+from pathlib import Path
+
 from PySide6.QtWidgets import QSlider
 
 import worker
 from constants import ENCODERS, RESOLUTIONS
+
+
+def display_path(path: Path) -> str:
+    """Collapse a path under the user's home directory to a "~/..." form
+    for display -- friendlier than the fully resolved absolute path (e.g.
+    Save to:) without changing what's actually used for file operations,
+    which stays a plain resolved Path throughout."""
+    home = Path.home()
+    if path == home:
+        return "~"
+    try:
+        return f"~/{path.relative_to(home)}"
+    except ValueError:
+        return str(path)
 
 _VIDEO_CODEC_LABELS = {
     "h264": "H.264", "hevc": "HEVC", "vp9": "VP9", "av1": "AV1",

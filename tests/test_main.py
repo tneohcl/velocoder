@@ -44,7 +44,7 @@ import worker  # noqa: E402
 def _empty_qsettings():
     """Patches QSettings.value at the class level to simulate a fresh
     config store with nothing persisted yet. A bare MainWindow() otherwise
-    reads whatever this machine's real ~/.config/TITAN/TitanVideo.conf
+    reads whatever this machine's real ~/.config/VeloCoder/VeloCoder.conf
     happens to have -- real ambient state (e.g. the user actually expanded
     Effective Command, or picked a theme, while using the real app) that
     has nothing to do with what a test asserting a *default* means."""
@@ -315,7 +315,7 @@ class TestResolveTheme(unittest.TestCase):
 
 class TestThemeIntegration(unittest.TestCase):
     def test_default_theme_choice_is_system(self):
-        # TITAN Video (unlike the sibling TITAN-i Transcoder, which keeps
+        # VeloCoder (unlike the sibling TITAN-i Transcoder, which keeps
         # "dark") defaults to following the OS's own light/dark preference
         # -- this fork's whole premise is Mac-style conventions over an
         # app-specific opinion.
@@ -615,7 +615,7 @@ class TestSizeEstimateLabel(unittest.TestCase):
         window = main.MainWindow()
         window.show()
         window.mode_filesize_btn.click()
-        self.assertIn("Add a file", window.size_estimate_label.text())
+        self.assertIn("Add a video", window.size_estimate_label.text())
 
     def test_shows_a_real_computed_estimate_for_a_queued_file(self):
         window = main.MainWindow()
@@ -629,7 +629,7 @@ class TestSizeEstimateLabel(unittest.TestCase):
             window.size_spin.setValue(1000)
             text = window.size_estimate_label.text()
         self.assertIn("kbps", text)
-        self.assertNotIn("Add a file", text)
+        self.assertNotIn("Add a video", text)
         self.assertNotIn("Couldn't read", text)
 
     def test_a_probe_failure_degrades_to_a_message_instead_of_raising(self):
@@ -2119,6 +2119,28 @@ class TestProbeProcessesFailedToStart(unittest.TestCase):
             shutil.rmtree(fakebin, ignore_errors=True)
 
 
+class TestDisplayPath(unittest.TestCase):
+    """formatting.display_path() -- the Save-to field's display form.
+    Collapses a path under the real home directory to "~/..." so the
+    field reads as a normal user would expect, rather than spelling out
+    the full resolved absolute path (which is still what's actually used
+    for file operations -- see output_dir, unaffected by this)."""
+
+    def test_path_under_home_collapses_to_tilde(self):
+        self.assertEqual(
+            formatting.display_path(Path.home() / "Videos" / "transcoded"),
+            "~/Videos/transcoded",
+        )
+
+    def test_home_itself_collapses_to_bare_tilde(self):
+        self.assertEqual(formatting.display_path(Path.home()), "~")
+
+    def test_path_outside_home_is_shown_in_full(self):
+        self.assertEqual(
+            formatting.display_path(Path("/mnt/other/output")), "/mnt/other/output"
+        )
+
+
 class TestOutputEditNormalization(unittest.TestCase):
     """A manually-typed output path skipped normalization entirely --
     unlike Browse (_pick_output_dir), which only ever hands back a clean
@@ -2141,7 +2163,7 @@ class TestOutputEditNormalization(unittest.TestCase):
         window = main.MainWindow()
         window.output_edit.setText("~/some_transcoder_test_subdir")
         window._on_output_edit_changed()
-        self.assertEqual(window.output_edit.text(), str(window.output_dir))
+        self.assertEqual(window.output_edit.text(), "~/some_transcoder_test_subdir")
 
     def test_dash_prefixed_relative_path_resolves_to_a_safe_absolute_one(self):
         window = main.MainWindow()

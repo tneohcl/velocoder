@@ -465,7 +465,21 @@ class _UiBuilderMixin:
         self.size_spin.valueChanged.connect(self._on_control_changed)
         self.size_estimate_label = QLabel()
         self.size_estimate_label.setStyleSheet("font-size: 9pt;")
+        # Unlike the fuzzy-caption labels above (which sit on their own
+        # line, full box width), this one shares a row with size_spin --
+        # noticeably less horizontal room. Shortened every message this
+        # can show (see _update_size_estimate_label) to fit one line at
+        # that width, but word wrap stays on as a safety net -- the
+        # probe-failure branch interpolates nothing unbounded any more,
+        # but there's no guarantee some future message stays short.
+        self.size_estimate_label.setWordWrap(True)
         self._target_size_field = target_size_row = QHBoxLayout()
+        # Default QHBoxLayout spacing reads too tight here -- size_spin's
+        # own spin-arrow buttons sit right up against the caption text
+        # (reported live, confirmed by screenshot) -- unlike quality_row's
+        # slider+label above, which has enough visual breathing room from
+        # the slider's own end padding without needing this.
+        target_size_row.setSpacing(10)
         target_size_row.addWidget(self.size_spin)
         target_size_row.addWidget(self.size_estimate_label, 1)
         form.addRow("Target Size:", target_size_row)
@@ -1059,7 +1073,7 @@ class _UiBuilderMixin:
         # still, trailing status/progress/ETA/stats -- see run_row's own
         # comment further down for why).
         out_row = QHBoxLayout()
-        self.output_edit = QLineEdit(str(self.output_dir))
+        self.output_edit = QLineEdit(formatting.display_path(self.output_dir))
         # Typing a path directly, not just Change...'s browse dialog -- the
         # dialog only ever hands back a real, already-existing directory,
         # so unlike there, a typed path isn't checked to exist here either;

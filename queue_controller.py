@@ -429,7 +429,7 @@ class _QueueControllerMixin:
         d = QFileDialog.getExistingDirectory(self, "Output folder", str(self.output_dir))
         if d:
             self.output_dir = Path(d)
-            self.output_edit.setText(d)
+            self.output_edit.setText(formatting.display_path(self.output_dir))
 
     def _on_output_edit_changed(self):
         text = self.output_edit.text().strip()
@@ -446,7 +446,7 @@ class _QueueControllerMixin:
             # Reflected back into the field, matching what Browse
             # (_pick_output_dir above) already does after a selection.
             self.output_dir = Path(text).expanduser().resolve()
-            self.output_edit.setText(str(self.output_dir))
+            self.output_edit.setText(formatting.display_path(self.output_dir))
 
     def _open_output_dir(self):
         self.output_dir.mkdir(parents=True, exist_ok=True)

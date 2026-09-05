@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TITAN Video: simplified, consumer-facing fork of TITAN-i Transcoder
+"""VeloCoder: simplified, consumer-facing fork of TITAN-i Transcoder
 (/mnt/data/tools/transcoder) -- same ffmpeg engine and settings model,
 progressive-disclosure UI (Normal controls always visible, full technical
 control set tucked behind an Expert section) instead of exposing everything
@@ -68,7 +68,7 @@ DEFAULT_SETTINGS = {
 class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("TITAN Video")
+        self.setWindowTitle("VeloCoder")
         self.resize(1240, 820)
         # Left panel is a fixed 470px inspector now (ui_builder.py's
         # _build_ui), not a resizable pane -- narrowing the window has
@@ -153,7 +153,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # resolves its backing file purely from this pair, so sharing it
         # would mean the two apps clobbered each other's window geometry,
         # theme, and expanded-section state every time either one closed.
-        self._qsettings = QSettings("TITAN", "TitanVideo")
+        self._qsettings = QSettings("VeloCoder", "VeloCoder")
 
         # "system" (not "dark") -- this fork's whole premise is following
         # OS/Mac-style conventions by default rather than an app-specific
@@ -991,7 +991,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         if not hasattr(self, "size_estimate_label") or settings["rc_mode"] not in BITRATE_RC_MODES:
             return
         if self.queue_list.topLevelItemCount() == 0:
-            self.size_estimate_label.setText("Add a file to estimate the resulting bitrate")
+            self.size_estimate_label.setText("Add a video to estimate bitrate")
             return
         first_path = self.queue_list.topLevelItem(0).data(STATUS_COL, Qt.UserRole)["path"]
         try:
@@ -1004,11 +1004,11 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             # would then hit the same uncaught exception again.
             duration = self._preview_duration(first_path)
             audio_codec = self._preview_audio_codec(first_path, settings["audio_track"])
-        except Exception as exc:
-            self.size_estimate_label.setText(f"(estimate unavailable: {exc})")
+        except Exception:
+            self.size_estimate_label.setText("(estimate unavailable)")
             return
         if duration <= 0:
-            self.size_estimate_label.setText("Couldn't read this file's duration to estimate bitrate")
+            self.size_estimate_label.setText("Couldn't read this video's duration")
             return
         # Same will_copy_audio reasoning as worker.build_args (which this
         # label doesn't call directly, so the condition has to be
@@ -1047,11 +1047,9 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             # own default CRF instead of erroring) -- this label should
             # say so before the user ever gets that far, not just describe
             # a number that Start would then refuse to act on anyway.
-            self.size_estimate_label.setText(
-                "Target size is too small for this file's length and audio settings"
-            )
+            self.size_estimate_label.setText("Target size too small for this video")
             return
-        self.size_estimate_label.setText(f"≈ {video_kbps:,} kbps video for this file's length (estimate)")
+        self.size_estimate_label.setText(f"≈ {video_kbps:,} kbps video (estimate)")
 
     # --- settings <-> controls ---
     def _current_settings(self) -> dict:

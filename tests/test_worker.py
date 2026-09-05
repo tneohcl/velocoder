@@ -111,6 +111,22 @@ def _make_clip(path: Path, tracks=(("aac", 440),)):
     subprocess.run(args, check=True, timeout=30)
 
 
+class _MockedRenderNodeMixin:
+    """For classes that only check the argv build_args() produces, not that
+    any device it names is real -- these use vaapi_settings() as a generic
+    "some encoder" fixture, not because the test is actually about VAAPI, so
+    a real render node (this dev box's Intel iGPU, absent on a CI runner
+    with no GPU at all) is not required. Mirrors the per-test
+    patch.object(worker, "find_render_node") pattern TestGpuVendorSelection
+    already uses below, just applied once per class instead of per test."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch.object(worker, "find_render_node", return_value="/dev/dri/renderD128")
+        self.addCleanup(patcher.stop)
+        patcher.start()
+
+
 class ClipTestCase(unittest.TestCase):
     """Base class providing a real tiny video file, built once per class."""
 
@@ -131,7 +147,7 @@ class ClipTestCase(unittest.TestCase):
         return self.tmpdir / "out.mp4"
 
 
-class TestBuildArgsVaapi(ClipTestCase):
+class TestBuildArgsVaapi(_MockedRenderNodeMixin, ClipTestCase):
     def test_icq_uses_global_quality(self):
         args = worker.build_args(vaapi_settings(rc_mode="ICQ", quality_value=30), self.clip, self.out_path)
         self.assertIn("-global_quality", args)
@@ -488,7 +504,7 @@ class TestTargetSizeTooSmallRejected(unittest.TestCase):
         self.assertIn("-b:v", args)
 
 
-class TestBuildArgsCommon(ClipTestCase):
+class TestBuildArgsCommon(_MockedRenderNodeMixin, ClipTestCase):
     def test_resolution_clamps_to_source_no_upscale(self):
         args = worker.build_args(vaapi_settings(width=99999, height=99999), self.clip, self.out_path)
         vf = args[args.index("-vf") + 1]
@@ -523,7 +539,7 @@ class TestBuildArgsCommon(ClipTestCase):
         self.assertNotIn("-movflags", args)
 
 
-class TestTune(ClipTestCase):
+class TestTune(_MockedRenderNodeMixin, ClipTestCase):
     def test_none_omits_tune_flag(self):
         args = worker.build_args(x265_settings(tune="None"), self.clip, self.out_path)
         self.assertNotIn("-tune", args)
@@ -548,7 +564,7 @@ class TestTune(ClipTestCase):
         self.assertNotIn("film", X265_TUNES)
 
 
-class TestAudioSelection(ClipTestCase):
+class TestAudioSelection(_MockedRenderNodeMixin, ClipTestCase):
     tracks = (("aac", 440), ("ac3", 880))
 
     def test_copies_compatible_codec(self):
@@ -578,7 +594,7 @@ class TestAudioSelection(ClipTestCase):
     # rather than duplicated here with a fixture this class can't produce.
 
 
-class TestAudioDownmix(unittest.TestCase):
+class TestAudioDownmix(_MockedRenderNodeMixin, unittest.TestCase):
     """audio_downmix_stereo -- probe_audio=False throughout except the one
     real-encode check at the bottom, same split as TestCommandPreview vs.
     the ClipTestCase-based classes above: these don't need a real file to
@@ -697,7 +713,7 @@ class TestAudioDownmix(unittest.TestCase):
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-class TestCommandPreview(unittest.TestCase):
+class TestCommandPreview(_MockedRenderNodeMixin, unittest.TestCase):
     """build_args(probe_audio=False) -- the GUI's live command preview path.
 
     No real file needed: this mode exists specifically to avoid touching

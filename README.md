@@ -1,4 +1,4 @@
-# TITAN Video
+# VeloCoder
 
 A focused desktop video transcoder built with PySide6 and ffmpeg --
 originally a minimal front-end replacing HandBrake, whose QSV path is
@@ -193,8 +193,8 @@ pane). Left pane: a `QTabWidget` (**Video** / **Audio** — see Controls
 below for the current Normal/Expert breakdown of each). Right pane: the
 queue, output folder, run controls, progress bar, a live stats line, and
 the full log. Window geometry (and Expert's own expanded/collapsed state)
-is remembered across launches via `QSettings("TITAN", "TitanVideo")` (on
-Linux: `~/.config/TITAN/TitanVideo.conf`).
+is remembered across launches via `QSettings("VeloCoder", "VeloCoder")` (on
+Linux: `~/.config/VeloCoder/VeloCoder.conf`).
 
 The settings dict that flows from the GUI into `build_args()`:
 
@@ -402,7 +402,7 @@ section with nothing left to put in it would be worse than none)
   into the fixed list, not the kbps number itself, since the real values
   aren't evenly spaced.
 
-**Below the tabs, left side** *(TITAN Video specifically — see this fork's
+**Below the tabs, left side** *(VeloCoder specifically — see this fork's
 own note at the top of this file. The sibling TITAN-i Transcoder app still
 keeps Effective Command inline exactly as described in its own copy of
 this section.)*
@@ -578,12 +578,17 @@ picked (`_maybe_note_no_hardware`, main.py).
 - **Save to** (labelled **Output folder** in the sibling TITAN-i Transcoder
   app) — deliberately *not* the first thing in the window; it's a per-run
   detail, so it sits below the queue, near where it's used, not up with
-  Quality/Format. The field is directly editable, not just settable via
-  **Change…**'s browse dialog — typing a path doesn't check it exists
-  (`editingFinished` just updates `self.output_dir`), the same as a
-  browsed-to path already didn't; both get created on demand
-  (`mkdir(parents=True, exist_ok=True)`) right before they're actually
-  needed, at Convert or Open.
+  Quality/Format. Displayed as `~/Videos/transcoded` rather than the fully
+  resolved absolute path (`formatting.display_path`) whenever it's under
+  the home directory — friendlier to read, and avoids spelling out the
+  real username on a shared screen/screenshot; `self.output_dir` itself
+  is still the plain resolved `Path` everywhere it's actually used. The
+  field is directly editable, not just settable via **Change…**'s browse
+  dialog — typing a path doesn't check it exists (`editingFinished` just
+  updates `self.output_dir`), the same as a browsed-to path already
+  didn't; both get created on demand (`mkdir(parents=True,
+  exist_ok=True)`) right before they're actually needed, at Convert or
+  Open.
 - **Open** — opens the current output folder in the desktop file manager.
 - **Run status, phase-dependent** — `status_label` reads "Converting N of M
   — filename" while running (was "[N/M] Encoding filename"); underneath it,

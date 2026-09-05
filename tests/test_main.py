@@ -601,6 +601,13 @@ class TestTargetSizeSettings(unittest.TestCase):
         settings["rc_mode"] = "VBR"
         settings["quality_value"] = 2500
         window._apply_settings_to_controls(settings)
+        # setRowVisible's effect on isVisible() isn't guaranteed synchronous
+        # across Qt/PySide6 patch versions -- confirmed directly: this
+        # passed reliably on this dev box's PySide6 build but failed on
+        # CI's (a minor version apart) without this pump, the same class
+        # of deferred-update issue as QScrollArea's scrollbar range (see
+        # TestLeftPanelScrolling).
+        _app.processEvents()
         self.assertEqual(window.size_spin.value(), 2500)
         self.assertTrue(window.size_spin.isVisible())
         self.assertFalse(window.quality_slider.isVisibleTo(window._video_expert_content))

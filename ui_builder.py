@@ -379,7 +379,6 @@ class _UiBuilderMixin:
             "to H.265 whenever Processing above is set to one of those."
         )
         self.codec_combo.currentIndexChanged.connect(self._on_codec_changed)
-        self.codec_combo.setMaximumWidth(200)
         form.addRow("Codec:", self.codec_combo)
 
         return group
@@ -528,12 +527,10 @@ class _UiBuilderMixin:
         # default for an app whose whole premise is "just make it work".
         self.res_combo.setCurrentIndex(0)  # Keep Original
         self.res_combo.currentIndexChanged.connect(self._on_control_changed)
-        # Capped, not left to stretch -- same reasoning as start_btn's own
-        # ceiling above: content here ("Keep Original", "1080p", ...) never
-        # needs anywhere near this much width, so letting it fill an
-        # unusually wide left pane just reads as an oversized web-form
-        # field, not a deliberately sized control.
-        self.res_combo.setMaximumWidth(200)
+        # Left to stretch full width, matching Color Depth below and the
+        # Mode buttons above -- reported live that a 200px cap here (while
+        # Color Depth had none) read as visibly inconsistent, dropdowns of
+        # different widths for no reason a user could tell.
         form.addRow("Resolution:", self.res_combo)
 
         self.container_combo = QComboBox()
@@ -548,7 +545,6 @@ class _UiBuilderMixin:
             "tracks through on either container yet."
         )
         self.container_combo.currentIndexChanged.connect(self._on_control_changed)
-        self.container_combo.setMaximumWidth(200)
         form.addRow("File Format:", self.container_combo)
 
         # Item text folds the tradeoff directly in, no separate caption

@@ -1,12 +1,7 @@
 """Static configuration: encoders, rate-control modes, resolutions, and the
-built-in seed presets. The seed presets themselves live in
-builtin_presets.json (see presets.py) -- BUILTIN_PRESETS/
-BUILTIN_PRESET_NAMES below just load and expose them, they're not
-user-editable at runtime; the app's real runtime preset list (built-ins
-plus anything the user has saved) lives in presets.py / presets.json.
+Quality tier values. This fork has no Presets feature -- QUALITY_TIERS
+below is the only place quality numbers live now, not a preset list.
 """
-
-from presets import load_builtin_presets
 
 VIDEO_FILTER = "Video files (*.mkv *.mp4 *.avi *.mov *.m4v *.ts *.wmv);;All files (*)"
 AUDIO_TRACK_LABELS = ["Track 1", "Track 2", "Track 3", "Track 4"]
@@ -145,50 +140,25 @@ X265_TUNES = ["None", "animation", "grain", "psnr", "ssim", "fastdecode", "zerol
 X264_TUNES = ["None", "film", "animation", "grain", "stillimage", "psnr", "ssim", "fastdecode", "zerolatency"]
 
 # Normal-mode's Quality button row (Smaller File / Balanced / Better
-# Quality) -- three plain-English buttons that resolve, per current
-# encoder+vendor, to the exact same numeric quality_value the matching
-# Low/Balanced/High built-in preset already ships (see BUILTIN_PRESETS'
-# own comment below for where 18/23/28 and 16/26/36 come from). Always
-# paired with RC_MODE_FRIENDLY[key]["quality"] as the rc_mode -- every
-# High/Balanced/Low built-in uses the quality-family rc_mode (CRF/ICQ/CQP),
-# never bitrate, so Quality tiers don't need their own rc_mode axis.
+# Quality) -- three plain-English buttons per current encoder+vendor.
+# Always paired with RC_MODE_FRIENDLY[key]["quality"] as the rc_mode --
+# every entry here uses the quality-family rc_mode (CRF/ICQ/CQP), never
+# bitrate, so Quality tiers don't need their own rc_mode axis.
+#
+# Mapped from the specialist build's own built-in High/Balanced/Low
+# presets (originally sourced from the user's real HandBrake custom
+# presets -- see README's Presets section), inlined here directly now
+# that this fork has no separate preset file to keep in sync with. CPU's
+# CRF 18/28 are real, widely-used x265 community reference points
+# ("visually lossless" / "noticeably smaller, still watchable"); ICQ/
+# CQP's 16/36 are this app's own estimate by rough analogy to those, not
+# independently A/B'd against remembered output quality -- see Known gaps.
+#
+# AMD's 26/16/36 mirror Intel's ICQ values directly -- AMD's driver has
+# no ICQ (see RC_MODES), so CQP is the closest quality-family equivalent.
 QUALITY_TIERS = {
     "libx265": {"smaller": 28, "balanced": 23, "better": 18},
     "libx264": {"smaller": 28, "balanced": 23, "better": 18},
     "hevc_vaapi_intel": {"smaller": 36, "balanced": 26, "better": 16},
     "hevc_vaapi_amd": {"smaller": 36, "balanced": 26, "better": 16},
 }
-
-# Mapped from the user's real HandBrake custom presets — see README's Presets
-# section. Protected: Save As refuses these names, Delete refuses these entries.
-#
-# Each engine gets a High/Balanced/Low trio, not just the one Balanced point
-# each used to be alone -- same speed as that engine's own Balanced (the
-# quality/size tradeoff is the axis these tiers move along, not effort-vs-
-# time, which Balanced already picked for engine-specific reasons of its
-# own -- see AMD Balanced's own note below), quality_value moved to a
-# meaningfully different point on the same ~50-value ICQ/CQP/CRF scale the
-# Quality slider's own 6-tier fuzzy captions (main.py) divide up. CPU's CRF
-# 18/28 are real, widely-used x265 community reference points ("visually
-# lossless" / "noticeably smaller, still watchable"); ICQ/CQP's 16/36 are
-# this app's own estimate by rough analogy to those, not independently
-# A/B'd against remembered output quality any more than Intel's Balanced
-# compression_level was -- see Known gaps.
-#
-# The actual 9 presets live in builtin_presets.json, not here -- plain,
-# readable/inspectable JSON, rather than a literal Python list baked into
-# this file. Loaded once at import time since nothing in the app ever
-# writes to it (unlike presets.json, which save_presets/_save_preset_as/
-# _delete_preset do write -- see presets.py).
-#
-# AMD Balanced's speed="4": no HandBrake/QSV legacy to map from (unlike the
-# Intel preset) -- "4" is a genuine middle-of-the-ladder default (1..7),
-# matching what "Balanced" actually means in this app's own speed
-# semantics, rather than inheriting Intel's "1" (its slowest, highest-
-# effort setting, chosen there for unrelated historical reasons -- see
-# that preset's own history). CQP 26 mirrors the Intel preset's ICQ 26 --
-# AMD's driver has no ICQ (see RC_MODES), so CQP is the closest quality-
-# family equivalent. High/Low mirror the Intel trio's own ICQ 16/36 the
-# same way, for the same reason.
-BUILTIN_PRESETS = load_builtin_presets()
-BUILTIN_PRESET_NAMES = {p["name"] for p in BUILTIN_PRESETS}

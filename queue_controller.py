@@ -648,7 +648,11 @@ class _QueueControllerMixin:
             self.progress_bar.setValue(0)
             self.progress_bar.setVisible(True)
             self.eta_label.setVisible(True)
-            self.stats_label.setVisible(True)
+            # Consumer build: no live technical line during conversion --
+            # stats_label stays hidden here (unlike the specialist build)
+            # since _on_job_stats no longer populates it in this phase;
+            # it's still used, and shown, once phase == "finished" below.
+            self.stats_label.setVisible(False)
         elif phase == "paused":
             self.start_btn.setEnabled(True)
             self.start_btn.setText("Resume")
@@ -907,20 +911,19 @@ class _QueueControllerMixin:
         return total
 
     def _on_job_stats(self, stats: dict):
-        fps = stats.get("fps", "?")
-        bitrate = stats.get("bitrate", "?")
-        speed = stats.get("speed", "?")
+        # Consumer build: no live fps/bitrate/speed/clock-format-ETA line
+        # (stats_label used to show one here) -- cut per CONSUMER_FORK_
+        # PLAN.md's v1 scope table. stats_label itself stays -- it's also
+        # the finished-run size/savings summary ("1.74 GB · 68% smaller",
+        # _apply_run_phase_visuals' "finished" branch), which is genuinely
+        # useful, non-technical information worth keeping; only its use
+        # *here*, during an active conversion, was the specialist-flavored
+        # part. eta_label (the plain-language "About 7 minutes remaining"
+        # line) is unaffected -- still the queue-wide estimate, not just
+        # this one file's own ETA, since "when will everything actually be
+        # done" is the more useful number for a multi-file queue.
         eta = stats.get("eta_seconds")
-        eta_str = formatting.format_eta(eta) if eta is not None else "--:--"
         queue_eta = self._queue_eta_seconds(eta, stats.get("speed_multiplier"))
-        queue_eta_str = formatting.format_eta(queue_eta) if queue_eta is not None else "--:--"
-        self.stats_label.setText(
-            f"{fps} fps  ·  {bitrate}  ·  {speed} speed  ·  ETA {eta_str}  ·  Queue ETA {queue_eta_str}"
-        )
-        # The queue-wide estimate (not just this one file's own ETA) --
-        # "when will everything actually be done" is the more useful plain-
-        # language number for a multi-file queue, and is already the same
-        # value queue_eta_str above just renders in clock form instead.
         self.eta_label.setText(formatting.format_eta_human(queue_eta) if queue_eta is not None else "")
 
     def _on_job_log(self, line: str):

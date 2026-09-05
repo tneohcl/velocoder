@@ -393,18 +393,6 @@ class TestThemeIntegration(unittest.TestCase):
         self.assertEqual(window._theme_choice, "light")
         mock_load.assert_called_once()
 
-    def test_selecting_the_combo_refreshes_save_delete_icons(self):
-        # _refresh_themed_icons re-reads the SVG for the new theme -- a
-        # stale icon object from construction time would otherwise keep
-        # showing the old theme's colors after switching.
-        with _empty_qsettings():
-            window = main.MainWindow()
-        light_index = window.theme_combo.findData("light")
-        with patch.object(window._qsettings, "setValue"):
-            with patch.object(window, "_refresh_themed_icons") as mock_refresh:
-                window.theme_combo.setCurrentIndex(light_index)
-        mock_refresh.assert_called_once()
-
 
 class TestFuzzyTextColor(unittest.TestCase):
     """theming._fuzzy_text_color backs both the quality/speed/audio-bitrate
@@ -475,20 +463,24 @@ class TestRateControlButtons(unittest.TestCase):
     rc_mode_combo (still the actual source of truth) -- see _set_rc_mode /
     _sync_rc_buttons_to_combo in main.py.
 
-    Every test below that actually .click()s one of these buttons needs
-    window.show() + video_expert_group expanded first -- confirmed
-    directly, not assumed: .click() on a checkable QPushButton nested
-    inside the still-collapsed Expert section silently does nothing
-    (isChecked() stays False, rc_mode_combo never changes) rather than
-    raising. Not a product bug -- a real user can only click these once
-    Expert is already visually expanded -- just a real gap in these
-    tests, invisible until a truly clean, uncontended full-suite run
-    actually reached them."""
+    Consumer build note: this whole form lives in window._video_expert_
+    content now, which this fork never shows at all (CONSUMER_FORK_PLAN.md)
+    -- .click() still works on an unshown-but-constructed QPushButton (only
+    real user *mouse* interaction needs genuine visibility; a direct
+    .click() call does not), so no window.show() workaround is needed to
+    exercise these. isVisible() checks below use isVisibleTo(window.
+    _video_expert_content) instead of plain isVisible() for the same
+    reason: isVisible() reflects the *whole* ancestor chain, which is
+    permanently False here regardless of the button's own flag -- that
+    would make every isVisible() assertion in this class trivially true
+    or false for the wrong reason, silently no longer testing what
+    _on_encoder_changed actually does to each button's own visibility.
+    isVisibleTo(ancestor) answers "would this be visible if ancestor were
+    shown", which is the real question these tests care about."""
 
     def _shown_window_with_expert_open(self):
         window = main.MainWindow()
         window.show()
-        window.video_expert_group.setChecked(True)
         return window
 
     def test_quality_button_selects_icq_for_vaapi(self):
@@ -519,21 +511,14 @@ class TestRateControlButtons(unittest.TestCase):
     def test_advanced_button_hidden_for_x265_no_cqp_equivalent(self):
         window = main.MainWindow()
         window.encoder_combo.setCurrentText("CPU")
-        self.assertFalse(window.rc_advanced_btn.isVisible())
+        self.assertFalse(window.rc_advanced_btn.isVisibleTo(window._video_expert_content))
 
     def test_advanced_button_visible_again_switching_back_to_vaapi(self):
-        # isVisible() reflects the whole ancestor chain, not just this
-        # widget's own flag -- False for everything until the window itself
-        # is shown, regardless of what setVisible() was called with. Also
-        # needs Expert expanded now (collapsed by default) -- these
-        # controls all live inside it since the progressive-disclosure
-        # restructuring.
         window = main.MainWindow()
         window.show()
-        window.video_expert_group.setChecked(True)
         window.encoder_combo.setCurrentText("CPU")
         window.encoder_combo.setCurrentText("Intel (iGPU)")
-        self.assertTrue(window.rc_advanced_btn.isVisible())
+        self.assertTrue(window.rc_advanced_btn.isVisibleTo(window._video_expert_content))
 
     def test_buttons_resync_to_combo_across_an_encoder_switch(self):
         # Quality on VAAPI (ICQ) should still read as the Quality button
@@ -571,22 +556,19 @@ class TestFileSizeButtonEndRounding(unittest.TestCase):
     def test_file_size_gets_the_end_rounding_when_advanced_is_hidden(self):
         window = main.MainWindow()
         window.encoder_combo.setCurrentText("CPU")  # no CQP equivalent
-        self.assertFalse(window.rc_advanced_btn.isVisible())
+        self.assertFalse(window.rc_advanced_btn.isVisibleTo(window._video_expert_content))
         self.assertTrue(window.rc_filesize_btn.property("segEnd"))
 
     def test_file_size_stays_a_plain_middle_segment_when_advanced_is_shown(self):
-        # isVisible() reflects the whole ancestor chain, not just this
-        # widget's own flag -- show() is needed before True reads back
-        # True (see the same gotcha noted elsewhere), and now rc_advanced_
-        # btn also lives inside the Expert section (collapsed by default,
-        # see the progressive-disclosure restructuring), so that also
-        # needs expanding -- a hidden widget doesn't need any of this,
-        # which is why the "hidden" test above doesn't call show() either.
+        # isVisibleTo(window._video_expert_content), not isVisible() --
+        # this whole form is never shown at all in this fork (Consumer
+        # build, see class docstring in TestRateControlButtons above), so
+        # plain isVisible() would read False here regardless of
+        # rc_advanced_btn's own flag.
         window = main.MainWindow()
         window.show()
-        window.video_expert_group.setChecked(True)
         window.encoder_combo.setCurrentText("Intel (iGPU)")
-        self.assertTrue(window.rc_advanced_btn.isVisible())
+        self.assertTrue(window.rc_advanced_btn.isVisibleTo(window._video_expert_content))
         self.assertFalse(window.rc_filesize_btn.property("segEnd"))
 
     def test_switching_back_to_vaapi_clears_the_end_rounding(self):
@@ -607,30 +589,30 @@ class TestSpeedSliderVisibility(unittest.TestCase):
     had no slider of its own to caption yet)."""
 
     def test_x265_slider_shown_and_vaapi_slider_hidden_for_cpu(self):
+        # isVisibleTo(window._video_expert_content), not isVisible() --
+        # this whole form is never shown at all in this fork (see
+        # TestRateControlButtons' own docstring for the full reasoning).
         window = main.MainWindow()
         window.show()
-        window.video_expert_group.setChecked(True)  # these live inside Expert now
         window.encoder_combo.setCurrentText("CPU")
-        self.assertTrue(window.speed_x265_slider.isVisible())
-        self.assertFalse(window.speed_slider.isVisible())
+        self.assertTrue(window.speed_x265_slider.isVisibleTo(window._video_expert_content))
+        self.assertFalse(window.speed_slider.isVisibleTo(window._video_expert_content))
 
     def test_vaapi_slider_shown_and_x265_slider_hidden_for_vaapi(self):
         window = main.MainWindow()
         window.show()
-        window.video_expert_group.setChecked(True)
         window.encoder_combo.setCurrentText("Intel (iGPU)")
-        self.assertTrue(window.speed_slider.isVisible())
-        self.assertFalse(window.speed_x265_slider.isVisible())
+        self.assertTrue(window.speed_slider.isVisibleTo(window._video_expert_content))
+        self.assertFalse(window.speed_x265_slider.isVisibleTo(window._video_expert_content))
 
     def test_shared_labels_stay_visible_regardless_of_encoder(self):
         window = main.MainWindow()
         window.show()
-        window.video_expert_group.setChecked(True)
         for encoder in ("CPU", "Intel (iGPU)", "AMD (GPU)"):
             window.encoder_combo.setCurrentText(encoder)
-            self.assertTrue(window.speed_faster_label.isVisible(), encoder)
-            self.assertTrue(window.speed_thorough_label.isVisible(), encoder)
-            self.assertTrue(window.speed_tier_label.isVisible(), encoder)
+            self.assertTrue(window.speed_faster_label.isVisibleTo(window._video_expert_content), encoder)
+            self.assertTrue(window.speed_thorough_label.isVisibleTo(window._video_expert_content), encoder)
+            self.assertTrue(window.speed_tier_label.isVisibleTo(window._video_expert_content), encoder)
 
 
 class TestTargetSizeSettings(unittest.TestCase):
@@ -640,32 +622,25 @@ class TestTargetSizeSettings(unittest.TestCase):
     itself. This covers the GUI's side of storing/round-tripping it."""
 
     def test_size_spin_value_flows_into_current_settings(self):
-        # .click() silently no-ops on a checkable QPushButton nested
-        # inside the still-collapsed Expert section (confirmed directly,
-        # not assumed: rc_mode_combo simply never changed without this) --
-        # window.show() + expanding Expert first, same requirement
-        # isVisible() checks elsewhere in this file already have, just
-        # for a real click rather than a visibility assertion. Not a
-        # product bug: a real user can only click this button once
-        # Expert is already visually expanded anyway.
         window = main.MainWindow()
         window.show()
-        window.video_expert_group.setChecked(True)
         window.rc_filesize_btn.click()
         window.size_spin.setValue(750)
         self.assertEqual(window._current_settings()["quality_value"], 750)
 
     def test_apply_settings_to_controls_round_trips_size(self):
+        # isVisibleTo(window._video_expert_content), not isVisible() --
+        # this whole form is never shown at all in this fork (see
+        # TestRateControlButtons' own docstring for the full reasoning).
         window = main.MainWindow()
-        window.show()  # isVisible() is always False pre-show(), see other tests' comments
-        window.video_expert_group.setChecked(True)  # size_spin/quality_slider live inside Expert now
+        window.show()
         settings = window._current_settings()
         settings["rc_mode"] = "VBR"
         settings["quality_value"] = 2500
         window._apply_settings_to_controls(settings)
         self.assertEqual(window.size_spin.value(), 2500)
-        self.assertTrue(window.size_spin.isVisible())
-        self.assertFalse(window.quality_slider.isVisible())
+        self.assertTrue(window.size_spin.isVisibleTo(window._video_expert_content))
+        self.assertFalse(window.quality_slider.isVisibleTo(window._video_expert_content))
 
 
 class TestSizeEstimateLabel(unittest.TestCase):
@@ -679,14 +654,12 @@ class TestSizeEstimateLabel(unittest.TestCase):
         # TestRateControlButtons' own tests (see that class's docstring).
         window = main.MainWindow()
         window.show()
-        window.video_expert_group.setChecked(True)
         window.rc_filesize_btn.click()
         self.assertIn("Add a file", window.size_estimate_label.text())
 
     def test_shows_a_real_computed_estimate_for_a_queued_file(self):
         window = main.MainWindow()
         window.show()
-        window.video_expert_group.setChecked(True)
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
             _make_clip(clip, "aac")
@@ -717,7 +690,6 @@ class TestSizeEstimateLabel(unittest.TestCase):
         # call the (patched) function at all.
         window = main.MainWindow()
         window.show()
-        window.video_expert_group.setChecked(True)
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
             _make_clip(clip, "aac")
@@ -740,7 +712,6 @@ class TestSizeEstimateLabel(unittest.TestCase):
         # ("target too small for this length") this is testing.
         window = main.MainWindow()
         window.show()
-        window.video_expert_group.setChecked(True)
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
             _make_clip(clip, "aac")
@@ -1031,186 +1002,6 @@ class TestFormatRunSummary(unittest.TestCase):
         self.assertEqual(count_line, "3 videos converted · 1 failed")
 
 
-class TestPresetModifiedIndicator(unittest.TestCase):
-    # A dynamic property on preset_combo itself (QSS: QComboBox[modified=
-    # "true"] recolors its text), not a separate "(modified)" label --
-    # that label's appearing/disappearing changed the preset row's width
-    # and visibly reflowed the window every time a control was touched
-    # (confirmed by screenshot). No window.show() needed here unlike most
-    # other visibility-flavored tests in this file: a plain widget property
-    # doesn't depend on the ancestor chain the way QWidget.isVisible() does.
-
-    def test_false_immediately_after_loading_a_preset(self):
-        window = main.MainWindow()
-        self.assertFalse(window.preset_combo.property("modified"))
-
-    def test_true_after_changing_a_setting(self):
-        window = main.MainWindow()
-        window.quality_slider.setValue(window.quality_slider.value() + 1)
-        self.assertTrue(window.preset_combo.property("modified"))
-
-    def test_false_again_after_reverting_the_change(self):
-        window = main.MainWindow()
-        original = window.quality_slider.value()
-        window.quality_slider.setValue(original + 1)
-        self.assertTrue(window.preset_combo.property("modified"))
-        window.quality_slider.setValue(original)
-        self.assertFalse(window.preset_combo.property("modified"))
-
-    def test_false_immediately_after_loading_a_cpu_preset(self):
-        # Real, confirmed bug: _current_settings() always includes
-        # "gpu_vendor" (None for a non-VAAPI encoder, via
-        # _current_gpu_vendor()), but the three built-in CPU presets never
-        # define that key at all -- only the six VAAPI presets do. Plain
-        # != treated a dict missing a key as different from one where it's
-        # explicitly None, so selecting any CPU preset showed "modified"
-        # immediately with nothing actually changed. The startup default
-        # (see test_false_immediately_after_loading_a_preset above) is a
-        # VAAPI preset and never exercised this -- this test selects a CPU
-        # one specifically, the case that was actually broken.
-        window = main.MainWindow()
-        idx = window.preset_combo.findText("720p CPU Balanced (Software / x265)")
-        window.preset_combo.setCurrentIndex(idx)
-        self.assertFalse(window.preset_combo.property("modified"))
-
-
-class TestCurrentSettingsSentinel(unittest.TestCase):
-    """Startup no longer leaves preset_combo visibly showing a named
-    technical preset ("720p CPU Balanced (Software / x265)") that isn't
-    actually active once Resolution/Processing get overridden to this
-    fork's own safer defaults -- a real UI-truthfulness gap, reported
-    live. main.CURRENT_SETTINGS_LABEL is the placeholder; it stands in
-    for "the app's own consumer default", not any specific saved preset."""
-
-    def test_startup_shows_current_settings_not_a_technical_preset_name(self):
-        window = main.MainWindow()
-        self.assertEqual(window.preset_combo.currentText(), main.CURRENT_SETTINGS_LABEL)
-
-    def test_selecting_a_real_preset_removes_the_sentinel(self):
-        window = main.MainWindow()
-        idx = window.preset_combo.findText("720p Intel High (Hardware / VAAPI)")
-        window.preset_combo.setCurrentIndex(idx)
-        self.assertEqual(window.preset_combo.currentText(), "720p Intel High (Hardware / VAAPI)")
-        self.assertEqual(window.preset_combo.findText(main.CURRENT_SETTINGS_LABEL), -1)
-
-    def test_modified_indicator_still_works_against_the_sentinel_baseline(self):
-        # The earlier fix for the truthfulness gap above (setting
-        # _loaded_preset_settings to None so the sentinel state never
-        # falsely read as "modified") broke this outright: with no
-        # baseline to compare against, the indicator could never turn
-        # true again either, even for a real change. Confirmed via a real
-        # test failure before the fix -- _loaded_preset_settings is now a
-        # snapshot of the resolved startup state, not None.
-        window = main.MainWindow()
-        self.assertFalse(window.preset_combo.property("modified"))
-        original = window.quality_slider.value()
-        window.quality_slider.setValue(original + 1)
-        self.assertTrue(window.preset_combo.property("modified"))
-        window.quality_slider.setValue(original)
-        self.assertFalse(window.preset_combo.property("modified"))
-
-    def test_settings_differ_treats_missing_key_and_explicit_none_the_same(self):
-        self.assertFalse(formatting.settings_differ({"a": None}, {}))
-        self.assertFalse(formatting.settings_differ({}, {"a": None}))
-        self.assertTrue(formatting.settings_differ({"a": 1}, {"a": 2}))
-        self.assertTrue(formatting.settings_differ({"a": 1}, {}))
-
-
-class TestSavePresetAsAndDelete(unittest.TestCase):
-    """_save_preset_as/_delete_preset mutate window.presets in memory and
-    persist via presets.save_presets() -- patched to a Mock in every test
-    here so real file I/O (and the real project's presets.json) is never
-    touched, regardless of what this test happens to save/delete."""
-
-    @staticmethod
-    def _window():
-        with patch.object(main, "load_presets", return_value=presets.load_builtin_presets()):
-            return main.MainWindow()
-
-    def test_save_as_appends_a_new_preset_after_the_built_ins(self):
-        window = self._window()
-        original_count = len(window.presets)
-        with patch.object(main, "save_presets") as mock_save, \
-                patch.object(main.QInputDialog, "getText", return_value=("My Preset", True)):
-            window._save_preset_as()
-        self.assertEqual(len(window.presets), original_count + 1)
-        self.assertEqual(window.presets[-1]["name"], "My Preset")  # appended, not inserted
-        mock_save.assert_called_once_with(window.presets)
-
-    def test_save_as_refuses_a_builtin_name(self):
-        window = self._window()
-        original_count = len(window.presets)
-        with patch.object(main, "save_presets") as mock_save, \
-                patch.object(main.QInputDialog, "getText",
-                              return_value=("720p Intel Balanced (Hardware / VAAPI)", True)), \
-                patch.object(main.QMessageBox, "warning") as mock_warning:
-            window._save_preset_as()
-        mock_warning.assert_called_once()
-        mock_save.assert_not_called()
-        self.assertEqual(len(window.presets), original_count)
-
-    def test_save_as_refuses_the_current_settings_sentinel_name(self):
-        # Real, confirmed collision otherwise: only BUILTIN_PRESET_NAMES
-        # was guarded, so a user could save a preset literally named
-        # "Current Settings" -- on the next launch, preset_combo would
-        # contain both the startup sentinel and this preset under the
-        # exact same visible text, ambiguous which one a click resolves.
-        window = self._window()
-        original_count = len(window.presets)
-        with patch.object(main, "save_presets") as mock_save, \
-                patch.object(main.QInputDialog, "getText",
-                              return_value=(main.CURRENT_SETTINGS_LABEL, True)), \
-                patch.object(main.QMessageBox, "warning") as mock_warning:
-            window._save_preset_as()
-        mock_warning.assert_called_once()
-        mock_save.assert_not_called()
-        self.assertEqual(len(window.presets), original_count)
-
-    def test_save_as_overwrites_an_existing_user_preset_in_place(self):
-        window = self._window()
-        with patch.object(main, "save_presets"), \
-                patch.object(main.QInputDialog, "getText", return_value=("My Preset", True)):
-            window._save_preset_as()
-        original_count = len(window.presets)
-        window.quality_slider.setValue(window.quality_slider.value() + 1)
-        new_value = window.quality_slider.value()
-        with patch.object(main, "save_presets") as mock_save, \
-                patch.object(main.QInputDialog, "getText", return_value=("My Preset", True)), \
-                patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
-            window._save_preset_as()
-        self.assertEqual(len(window.presets), original_count)  # overwritten, not appended again
-        saved = next(p for p in window.presets if p["name"] == "My Preset")
-        self.assertEqual(saved["quality_value"], new_value)
-        mock_save.assert_called_once_with(window.presets)
-
-    def test_delete_removes_a_user_preset(self):
-        window = self._window()
-        with patch.object(main, "save_presets"), \
-                patch.object(main.QInputDialog, "getText", return_value=("My Preset", True)):
-            window._save_preset_as()
-        original_count = len(window.presets)
-        window.preset_combo.setCurrentIndex(window.preset_combo.findText("My Preset"))
-        with patch.object(main, "save_presets") as mock_save, \
-                patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
-            window._delete_preset()
-        self.assertEqual(len(window.presets), original_count - 1)
-        self.assertNotIn("My Preset", {p["name"] for p in window.presets})
-        mock_save.assert_called_once_with(window.presets)
-
-    def test_delete_refuses_a_builtin(self):
-        window = self._window()
-        original_count = len(window.presets)
-        window.preset_combo.setCurrentIndex(
-            window.preset_combo.findText("720p Intel Balanced (Hardware / VAAPI)")
-        )
-        with patch.object(main, "save_presets") as mock_save, \
-                patch.object(main.QMessageBox, "warning") as mock_warning:
-            window._delete_preset()
-        mock_warning.assert_called_once()
-        mock_save.assert_not_called()
-        self.assertEqual(len(window.presets), original_count)
-
-
 class TestAudioBitrateSlider(unittest.TestCase):
     """Converted from a QComboBox to a slider (matching Quality/Speed on
     the Video tab) -- the slider's value is an *index* into AUDIO_BITRATES,
@@ -1234,7 +1025,7 @@ class TestAudioBitrateSlider(unittest.TestCase):
         self.assertEqual(window.audio_bitrate_slider.value(), main.AUDIO_BITRATES.index("96k"))
 
     def test_apply_settings_falls_back_to_160k_for_an_unknown_value(self):
-        # A hand-edited presets.json could carry a bitrate string that's
+        # A queue job's settings dict could carry a bitrate string that's
         # no longer one of the five real stops -- the old combo's
         # setCurrentText() silently ignored that; .index() would crash
         # without this same defensive fallback in _apply_settings_to_controls.
@@ -1281,8 +1072,8 @@ class TestX265SpeedSlider(unittest.TestCase):
         self.assertEqual(window.speed_x265_slider.value(), main.X265_PRESETS.index("superfast"))
 
     def test_apply_settings_falls_back_to_medium_for_an_unknown_value(self):
-        # Same defensive-fallback reasoning as Audio Bitrate -- a hand-
-        # edited presets.json could carry a preset name that isn't one of
+        # Same defensive-fallback reasoning as Audio Bitrate -- a queue
+        # job's settings dict could carry a preset name that isn't one of
         # X265_PRESETS; the old combo's setCurrentText() silently ignored
         # that, .index() would crash without this same fallback.
         window = main.MainWindow()
@@ -1355,30 +1146,23 @@ class TestX264Codec(unittest.TestCase):
     libx264: it fell through to the VAAPI branch instead, which several
     of these tests exercise directly.
 
-    Two more gaps, both the same shape as TestRateControlButtons' own
-    _shown_window_with_expert_open (encoder_combo/codec_combo/tune_combo
-    all live in the Video tab's Expert group, collapsed by default),
-    both confirmed directly rather than assumed, and both only surfacing
-    once a truly clean full-suite run actually reached this class:
+    Consumer build note: encoder_combo/codec_combo/tune_combo all live in
+    the Video tab's Expert form, which this fork never wraps in a
+    collapsible group or shows at all (CONSUMER_FORK_PLAN.md) -- so unlike
+    the specialist build this was originally written against, there's no
+    checkable-QGroupBox-disables-its-content-tree gotcha to work around
+    here anymore: a plain, never-shown QWidget doesn't disable its
+    children just for not being visible. _shown_window_with_expert_open
+    (TestRateControlButtons, below) no longer needs the
+    video_expert_group.setChecked(True) call its name still references --
+    confirmed directly (isEnabled() on these controls reads True without
+    it) rather than assumed, kept as a thin window+show() wrapper instead
+    of removing the helper and updating every call site for a rename that
+    doesn't change behavior.
 
-    1. A checkable QGroupBox (_make_collapsible_group, ui_builder.py)
-    disables its whole content tree natively while unchecked -- Qt's own
-    built-in behavior, nothing this app added. codec_combo.setEnabled(True)
-    inside _on_encoder_changed has no visible effect while Expert is still
-    collapsed: isEnabled() reflects the whole ancestor chain, same gotcha
-    already documented for isVisible() elsewhere in this file, just for
-    the enabled flag instead. Confirmed directly with a traced setEnabled()
-    call: it fires exactly once, with True, and isEnabled() still reports
-    False afterward. window.show() + video_expert_group.setChecked(True)
-    are both required before any isEnabled()/tune-repopulation assertion
-    here means what it looks like it means -- without them, an
-    assertFalse(...isEnabled()) passes for every encoder, hardware or not,
-    and a tune_combo repopulation assertion never actually exercises the
-    repopulation at all (is_vaapi's branch in _on_encoder_changed is
-    skipped whenever it's already True, so tune_combo just silently keeps
-    its initial X265_TUNES construction-time value throughout).
+    One gap remains, unrelated to Expert's own visibility:
 
-    2. This machine's own best_available_engine() resolves to real
+    This machine's own best_available_engine() resolves to real
     hardware (confirmed directly: ('hevc_vaapi', 'intel')) -- MainWindow()
     starts on Intel, not CPU/libx265, by the app's own deliberate design
     (Automatic resolves once at construction; see main.py). Any assertion
@@ -1390,7 +1174,6 @@ class TestX264Codec(unittest.TestCase):
     def _shown_window_with_expert_open(self):
         window = main.MainWindow()
         window.show()
-        window.video_expert_group.setChecked(True)
         return window
 
     def test_codec_combo_offers_both(self):
@@ -1574,46 +1357,38 @@ class TestComboPopupBackgroundFilter(unittest.TestCase):
         _app.removeEventFilter(self.filter)
 
     def test_popup_frame_gets_a_background_stylesheet_on_show(self):
+        # res_combo, not preset_combo -- this fork has no Presets UI at
+        # all (CONSUMER_FORK_PLAN.md), but Bug 1 (the black-bar popup-
+        # background fix) is generic to every QComboBox, not preset-
+        # specific, so it still needs a real combo to exercise against.
         window = main.MainWindow()
-        window.preset_combo.showPopup()
+        window.res_combo.showPopup()
         _app.processEvents()
-        popup = window.preset_combo.view().window()
+        popup = window.res_combo.view().window()
         self.assertIn(main._current_theme_palette["BG_PANEL"], popup.styleSheet())
-        window.preset_combo.hidePopup()
+        window.res_combo.hidePopup()
         _app.processEvents()
 
-    def test_modified_indicator_is_suppressed_while_popup_is_open(self):
-        window = main.MainWindow()
-        window.preset_combo.setProperty("modified", True)
-        window.preset_combo.style().unpolish(window.preset_combo)
-        window.preset_combo.style().polish(window.preset_combo)
-        window.preset_combo.showPopup()
-        _app.processEvents()
-        self.assertFalse(window.preset_combo.property("modified"))
-        window.preset_combo.hidePopup()
-        _app.processEvents()
-
-    def test_modified_indicator_is_restored_after_popup_closes(self):
-        window = main.MainWindow()
-        window.preset_combo.setProperty("modified", True)
-        window.preset_combo.style().unpolish(window.preset_combo)
-        window.preset_combo.style().polish(window.preset_combo)
-        window.preset_combo.showPopup()
-        _app.processEvents()
-        window.preset_combo.hidePopup()
-        _app.processEvents()
-        self.assertTrue(window.preset_combo.property("modified"))
+    # test_modified_indicator_is_suppressed_while_popup_is_open and
+    # test_modified_indicator_is_restored_after_popup_closes (Bug 2,
+    # theming.py's _ComboPopupBackgroundFilter docstring) were removed --
+    # both tested QComboBox[modified="true"] styling bleeding into a
+    # popup, a state only the (now-removed) preset-modified indicator
+    # ever set on any combo. Nothing in this fork sets "modified" on any
+    # QComboBox anymore, so that suppress/restore code path in the filter
+    # itself is unreachable now, not just untested -- left in place as
+    # harmless dead code rather than also touching theming.py in this pass.
 
     def test_unmodified_combo_is_left_alone(self):
         window = main.MainWindow()
-        self.assertFalse(window.preset_combo.property("modified"))
-        window.preset_combo.showPopup()
+        self.assertFalse(window.res_combo.property("modified"))
+        window.res_combo.showPopup()
         _app.processEvents()
-        self.assertFalse(window.preset_combo.property("modified"))
-        self.assertFalse(window.preset_combo.property("_popupSuppressedModified"))
-        window.preset_combo.hidePopup()
+        self.assertFalse(window.res_combo.property("modified"))
+        self.assertFalse(window.res_combo.property("_popupSuppressedModified"))
+        window.res_combo.hidePopup()
         _app.processEvents()
-        self.assertFalse(window.preset_combo.property("modified"))
+        self.assertFalse(window.res_combo.property("modified"))
 
 
 class TestFocusVisibleFilter(unittest.TestCase):
@@ -1628,18 +1403,34 @@ class TestFocusVisibleFilter(unittest.TestCase):
     Each focus-reason case needs its own clearFocus() first when reusing the
     same widget across assertions in one test -- confirmed directly that
     calling setFocus() again on a widget that already has focus is a no-op,
-    generating no new FocusIn to observe. deinterlace_check itself lives in
-    the Video tab's Expert group, collapsed by default -- same as the
-    .click()-on-a-hidden-widget gap TestRateControlButtons hit (main.py's
-    own Expert-nested widgets), just for setFocus() instead: a widget inside
-    a still-collapsed ancestor isn't visible, and Qt silently no-ops
-    setFocus() on it, same as it does .click(). video_expert_group.
-    setChecked(True) before setFocus() is required for the same reason
-    _shown_window_with_expert_open() is there. assertFalse(...) cases are
-    especially deceptive here -- property("focusVisible") reads None (unset)
-    rather than False when the no-op swallows the whole interaction, and
-    assertFalse(None) still passes, so this was invisible until a truly
-    clean, uncontended full-suite run actually reached the assertTrue case.
+    generating no new FocusIn to observe.
+
+    res_combo, not deinterlace_check or quality_smaller_btn -- two
+    different widgets tried and rejected here, for two different reasons.
+    deinterlace_check lives in window._video_expert_content, which this
+    fork never shows at all (CONSUMER_FORK_PLAN.md), and setFocus()
+    genuinely cannot land on an invisible widget (confirmed directly:
+    property("focusVisible") stays None, not just False) -- a fundamental
+    Qt behavior, not something a visibility-ignoring check like
+    isVisibleTo() (used elsewhere in this file for widgets that stay
+    interactive despite being unshown) can work around. quality_smaller_btn
+    is visible, but became unusable here for a different reason once the
+    Video/Audio tab widget was removed (left/right panel merge): it's now
+    the very first focusable widget in the whole window, so Qt hands it
+    automatic focus the moment window.show() runs, before setFocus(Tab)
+    is ever called -- confirmed directly (app.focusWidget() was already
+    quality_smaller_btn right after show()). setFocus() on a widget that
+    already has focus is the same documented no-op as reusing one widget
+    across assertions above, so it never generated a fresh, observable
+    FocusIn at all; property("focusVisible") was just left at whatever
+    that earlier auto-focus (a non-Tab reason) had already set it to --
+    which happened to be False, making test_tab_focus_is_visible fail
+    honestly and test_mouse_focus_is_not_visible pass for the wrong
+    reason, the exact assertFalse(...)-is-blind-here failure mode this
+    class's own docstring already warns about. Any focusable widget that
+    ISN'T the window's natural first tab-stop sidesteps both problems;
+    res_combo, well down in the Format group, isn't a candidate for
+    Qt's initial auto-focus and isn't inside any hidden container either.
     """
 
     def setUp(self):
@@ -1652,32 +1443,29 @@ class TestFocusVisibleFilter(unittest.TestCase):
     def test_tab_focus_is_visible(self):
         window = main.MainWindow()
         window.show()
-        window.video_expert_group.setChecked(True)  # deinterlace_check lives in Expert
         _app.processEvents()
-        window.deinterlace_check.setFocus(Qt.FocusReason.TabFocusReason)
+        window.res_combo.setFocus(Qt.FocusReason.TabFocusReason)
         _app.processEvents()
-        self.assertTrue(window.deinterlace_check.property("focusVisible"))
+        self.assertTrue(window.res_combo.property("focusVisible"))
 
     def test_mouse_focus_is_not_visible(self):
         window = main.MainWindow()
         window.show()
-        window.video_expert_group.setChecked(True)  # deinterlace_check lives in Expert
         _app.processEvents()
-        window.deinterlace_check.setFocus(Qt.FocusReason.MouseFocusReason)
+        window.res_combo.setFocus(Qt.FocusReason.MouseFocusReason)
         _app.processEvents()
-        self.assertFalse(window.deinterlace_check.property("focusVisible"))
+        self.assertFalse(window.res_combo.property("focusVisible"))
 
     def test_losing_focus_clears_the_property(self):
         window = main.MainWindow()
         window.show()
-        window.video_expert_group.setChecked(True)  # deinterlace_check lives in Expert
         _app.processEvents()
-        window.deinterlace_check.setFocus(Qt.FocusReason.TabFocusReason)
+        window.res_combo.setFocus(Qt.FocusReason.TabFocusReason)
         _app.processEvents()
-        self.assertTrue(window.deinterlace_check.property("focusVisible"))
-        window.deinterlace_check.clearFocus()
+        self.assertTrue(window.res_combo.property("focusVisible"))
+        window.res_combo.clearFocus()
         _app.processEvents()
-        self.assertFalse(window.deinterlace_check.property("focusVisible"))
+        self.assertFalse(window.res_combo.property("focusVisible"))
 
     def test_window_activation_focus_events_do_not_crash(self):
         # Real bug, caught by actually running this against a real X11
@@ -1845,6 +1633,11 @@ class TestQueueWideETA(unittest.TestCase):
         self.assertEqual(window._queue_eta_seconds(30.0, 2.0), 30.0)
 
     def test_on_job_stats_includes_queue_eta_in_the_label(self):
+        # eta_label, not stats_label -- this fork's _on_job_stats no
+        # longer populates a live fps/bitrate/speed/clock-format-ETA line
+        # at all (CONSUMER_FORK_PLAN.md), only the plain-language queue-
+        # wide estimate. 30s (current job) + 60s/2.0x (next job) = 60s
+        # total -> format_eta_human(60) == "About 1 min remaining".
         window = main.MainWindow()
         current = self._add_row(window, 100)
         next_job = self._add_row(window, 60)
@@ -1854,15 +1647,19 @@ class TestQueueWideETA(unittest.TestCase):
             "fps": "24", "bitrate": "1200kbits/s", "speed": "2.0x",
             "eta_seconds": 30.0, "speed_multiplier": 2.0,
         })
-        self.assertIn("Queue ETA 1:00", window.stats_label.text())
+        self.assertEqual(window.eta_label.text(), "About 1 min remaining")
 
     def test_on_job_stats_shows_placeholder_before_any_progress(self):
+        # No eta_seconds/speed_multiplier yet -> _queue_eta_seconds returns
+        # None -> eta_label.setText("") (empty, not a "--:--" placeholder --
+        # that was stats_label's own raw-clock-format text, cut along with
+        # the rest of that line).
         window = main.MainWindow()
         current = self._add_row(window, 100)
         window._running_items = [current]
         window._current_running_item = current
         window._on_job_stats({"fps": "?", "bitrate": "?", "speed": "?"})
-        self.assertIn("Queue ETA --:--", window.stats_label.text())
+        self.assertEqual(window.eta_label.text(), "")
 
 
 class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
@@ -2900,7 +2697,11 @@ class TestRunPhaseVisuals(unittest.TestCase):
         self.assertEqual(window.progress_bar.maximum(), 1000)  # un-stuck from preparing's marquee
         self.assertTrue(window.progress_bar.isVisible())
         self.assertTrue(window.eta_label.isVisible())
-        self.assertTrue(window.stats_label.isVisible())
+        # stats_label stays hidden through "converting" in this fork --
+        # no live technical line (CONSUMER_FORK_PLAN.md); it's still used,
+        # and shown, for the finished-run size/savings summary instead
+        # (see the "finished" phase elsewhere in this test class).
+        self.assertFalse(window.stats_label.isVisible())
         self.assertTrue(window.stop_btn.isVisible())
         self.assertEqual(window.stop_btn.text(), "Cancel")
         self.assertEqual(window.start_btn.text(), "Converting…")
@@ -3641,12 +3442,18 @@ class TestSegmentedButtonBoldWidth(unittest.TestCase):
     # this checks that reservation actually covers the bold text for real
     # buttons in the app, not just that the helper function exists.
     def test_button_width_covers_its_own_bold_text(self):
+        # No processing_cpu_btn/processing_intel_btn/processing_amd_btn/
+        # compat_modern_btn/compat_compatible_btn here -- cut entirely in
+        # this fork (CONSUMER_FORK_PLAN.md), not just hidden, so they don't
+        # exist as attributes to check at all. rc_quality_btn/rc_filesize_
+        # btn/rc_advanced_btn do still exist (Expert form, never shown but
+        # still fully constructed) -- kept in this list since the
+        # underlying width-reservation mechanism is still real for them,
+        # even though nothing ever displays them now.
         window = main.MainWindow()
         window.show()
         for btn in (
             window.quality_smaller_btn, window.quality_balanced_btn, window.quality_better_btn,
-            window.processing_cpu_btn, window.processing_intel_btn, window.processing_amd_btn,
-            window.compat_modern_btn, window.compat_compatible_btn,
             window.rc_quality_btn, window.rc_filesize_btn, window.rc_advanced_btn,
             window.audio_automatic_btn, window.audio_stereo_btn,
         ):

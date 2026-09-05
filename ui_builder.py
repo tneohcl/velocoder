@@ -1,5 +1,5 @@
 """Widget-construction methods, split out of MainWindow into a mixin --
-this is the bulk of what made main.py huge: every tab's controls, the
+this is the bulk of what made main.py huge: every settings control, the
 left/right panel shells, the collapsible-group helper, and the command
 preview box. Nothing here holds its own state; everything lands on
 `self` (the composed MainWindow instance) exactly as it did before the
@@ -107,95 +107,34 @@ class _UiBuilderMixin:
             lambda: self._apply_theme(self.theme_combo.currentData())
         )
 
-    def _build_preset_row(self) -> QVBoxLayout:
-        # No inline "Preset:" label -- this row only ever appears inside the
-        # "Presets" collapsible group (_build_left_panel below), whose own
-        # header already says that; a second label directly under it would
-        # just repeat the group title for no added information.
-        #
-        # Two rows now (combo on its own, Save As…/Delete below it), not
-        # one -- reported live as the combo's text visibly overlapping the
-        # buttons for a longer preset name ("720p AMD Balanced (Hardware /
-        # VAAPI)"). The old single-row layout put the combo (a 300px floor)
-        # and both buttons side by side, which fit fine back when the left
-        # panel could be dragged wider, but the panel is a genuinely fixed
-        # 470px now (_build_ui) -- 300 (combo floor) plus both buttons'
-        # own icon+text width never fit inside that regardless of preset
-        # name length, only exactly how badly depended on it. Splitting
-        # the row instead of re-tuning widths fixes it structurally: the
-        # combo gets the full row on its own line now, with real room for
-        # a long name, and the buttons no longer compete with it for
-        # space at all.
-        column = QVBoxLayout()
-        column.setSpacing(8)
-
-        self.preset_combo = QComboBox()
-        self.preset_combo.currentIndexChanged.connect(self._on_preset_selected)
-        column.addWidget(self.preset_combo)
-
-        btn_row = QHBoxLayout()
-        # Custom icons, not style().standardIcon(...) -- Fusion's standard
-        # icons are colored from the app's QPalette, which this app never
-        # sets of its own (only this stylesheet), so they stayed locked to
-        # whatever Fusion's default happens to be regardless of the chosen
-        # theme -- confirmed by screenshot: SP_TrashIcon in particular was
-        # all but invisible against a light-theme button. The queue row's
-        # status icons (▶/✓/⚠, _on_job_started/_finished/_failed) used to
-        # be standardIcon() too, mixing two icon styles in one app -- an
-        # Apple-design-language pass's "one icon family throughout" moved
-        # those onto the same custom-SVG family this file already used for
-        # Save/Delete, not the other way around: reverting Save/Delete back
-        # to standardIcon() would have reintroduced the confirmed contrast
-        # bug above just to make the family "native" instead of consistent.
-        # _refresh_themed_icons re-applies these on every theme change,
-        # same reason the SVGs style.qss references have separate dark/
-        # light files.
-        self.save_btn = QPushButton(self._themed_icon("save"), "Save As…")
-        self.save_btn.clicked.connect(self._save_preset_as)
-        self.delete_btn = QPushButton(self._themed_icon("delete"), "Delete")
-        self.delete_btn.clicked.connect(self._delete_preset)
-        btn_row.addWidget(self.save_btn)
-        btn_row.addWidget(self.delete_btn)
-        btn_row.addStretch(1)
-        column.addLayout(btn_row)
-        return column
-
     def _build_left_panel(self) -> QWidget:
         left = QWidget()
         layout = QVBoxLayout(left)
         layout.setContentsMargins(PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN)
         layout.setSpacing(PANEL_SPACING)
 
-        # Collapsed by default, unlike the sibling TITAN-i Transcoder app
-        # (where Preset is "the main lever" right at the top) -- the new
-        # Normal-mode Quality/Compatibility/Processing/Audio rows below
-        # cover the common cases now, and every built-in preset's own
-        # technical name ("720p CPU Balanced (Software / x265)") was
-        # sitting in front of them as the very first thing in the window.
-        # Still fully present, one click away -- Save As.../Delete and
-        # custom presets aren't lost, just no longer the default vocabulary.
-        preset_content = QWidget()
-        preset_layout = QVBoxLayout(preset_content)
-        preset_layout.setContentsMargins(0, 0, 0, 0)
-        preset_layout.addLayout(self._build_preset_row())
-        self.preset_group = self._make_collapsible_group("Presets", preset_content, expanded=False)
-        layout.addWidget(self.preset_group)
+        # Consumer build: no Presets group at all -- see
+        # CONSUMER_FORK_PLAN.md's "Presets -> plain-language quality"
+        # section. With Processing/Compatibility/File Format all cut above,
+        # there's very little left for a saved preset to actually bundle;
+        # the Quality tier row (inside the Video tab below) is the entire
+        # "which preset" decision now, always visible, no save/delete/
+        # manage step. _build_preset_row/_save_preset_as/_delete_preset
+        # are deleted, not just unused; presets.py itself is kept but
+        # trimmed to just load_builtin_presets(), which nothing in the
+        # app calls anymore -- only test fixtures do (see presets.py's
+        # own module docstring).
 
-        # Went through a QStackedWidget + segmented-QPushButton-selector
-        # redesign attempt (twice -- once wrapped in its own card, reported
-        # live as an amateurish box-in-a-box next to Quality/Format/Expert's
-        # own cards; once unwrapped) trying to get out from under a real
-        # rendering defect QTabWidget kept showing on the real display at
-        # fractional (1.5x) DPI. Reverted back to QTabWidget entirely on
-        # explicit request -- "the imperfect tab bar version" is preferred
-        # to continuing to chase a replacement. This is the QTabWidget/
-        # QTabBar state from just before that redesign: tab bar inset off
-        # the pane's own rounded corner (QTabWidget::tab-bar, style.qss),
-        # uniform 8px pane radius (no more per-corner special-casing or
-        # top: -1px overlap), and borderless filled tabs (QTabBar::tab) --
-        # see style.qss for the full history of what was tried before
-        # landing here, including the specific rendering defect this was
-        # chasing.
+        # Went briefly (this same fork's own history) to a single flat
+        # panel with Video/Audio's cards stacked directly, no tab bar at
+        # all, on the reasoning that so few controls remained per section
+        # that a tab click was pure overhead. Reverted back to two tabs
+        # on explicit request -- back to the same QTabWidget/QTabBar/
+        # tabPageCard treatment (style.qss) this app has used since before
+        # the flat-panel experiment, including the corner-rendering-defect
+        # history documented there. video_tab/audio_tab build their own
+        # tabPageCard-styled page and add it here, same shape as before
+        # that experiment.
         tabs = QTabWidget()
         tabs.addTab(self._build_video_tab(), "Video")
         tabs.addTab(self._build_audio_tab(), "Audio")
@@ -339,49 +278,28 @@ class _UiBuilderMixin:
         self.command_preview.setReadOnly(True)
         self.command_preview.setLineWrapMode(QPlainTextEdit.WidgetWidth)
 
-    def _build_normal_quality_group(self) -> QGroupBox:
-        """Always-visible Normal-mode controls: Processing/Quality/
-        Compatibility. Each one is a thin remote control over the exact
-        same settings the Expert section's raw controls drive (see
-        main.py's _on_processing_choice/_on_quality_tier_clicked/
-        _on_compatibility_clicked, all of which go through
-        _apply_settings_to_controls -- no parallel state, no new logic
-        beyond best_available_engine()/QUALITY_TIERS)."""
-        group = QGroupBox("Quality")
+    def _build_video_group(self) -> QGroupBox:
+        """Consumer build: Quality and Resolution share one "Video" card --
+        previously two separate cards (Quality, Format), split when Format
+        also held Processing/Compatibility/File Format; once those were
+        all cut (CONSUMER_FORK_PLAN.md's v1 scope table) Resolution was
+        the only thing left in Format, too thin to keep its own card
+        border for one row, so it moved in with Quality instead (merged
+        on explicit request, along with renaming this card "Video" -- the
+        plainer, more recognizable label once it's the one card covering
+        every video-side decision in the app). The app always runs
+        main.py's _apply_automatic_processing() at startup instead of a
+        visible Processing choice (same worker.best_available_engine()
+        pick the removed "Automatic" button used to trigger on click), and
+        always encodes Modern/HEVC-when-available rather than exposing a
+        Most-Compatible/H.264 fallback as a user decision. Quality itself
+        is a thin remote control over the same settings Expert's raw
+        controls used to drive (main.py's _on_quality_tier_clicked ->
+        _apply_settings_to_controls) -- no parallel state, no new logic
+        beyond QUALITY_TIERS."""
+        group = QGroupBox("Video")
         form = QFormLayout(group)
         form.setVerticalSpacing(14)
-
-        processing_row = QHBoxLayout()
-        processing_row.setSpacing(6)
-        self.processing_auto_btn = QPushButton("Automatic")
-        self.processing_auto_btn.setToolTip(
-            "Automatically chooses the fastest available method for this\n"
-            "computer. Recommended."
-        )
-        self.processing_auto_btn.clicked.connect(lambda: self._on_processing_choice("automatic"))
-        processing_row.addWidget(self.processing_auto_btn)
-
-        processing_seg_row = QHBoxLayout()
-        processing_seg_row.setSpacing(0)
-        self.processing_button_group = QButtonGroup(self)
-        self.processing_cpu_btn = QPushButton("CPU")
-        self.processing_cpu_btn.setObjectName("segLeft")
-        self.processing_intel_btn = QPushButton("Intel")
-        self.processing_intel_btn.setObjectName("segMid")
-        self.processing_amd_btn = QPushButton("AMD")
-        self.processing_amd_btn.setObjectName("segRight")
-        for btn, choice in (
-            (self.processing_cpu_btn, "cpu"),
-            (self.processing_intel_btn, "intel"),
-            (self.processing_amd_btn, "amd"),
-        ):
-            btn.setCheckable(True)
-            btn.setMinimumWidth(self._segmented_btn_min_width(btn))
-            self.processing_button_group.addButton(btn)
-            processing_seg_row.addWidget(btn, 1)
-            btn.clicked.connect(lambda _checked, c=choice: self._on_processing_choice(c))
-        processing_row.addWidget(self._capped_row(processing_seg_row, 240), 1)
-        form.addRow("Processing:", processing_row)
 
         quality_tier_row = QHBoxLayout()
         quality_tier_row.setSpacing(0)
@@ -410,70 +328,6 @@ class _UiBuilderMixin:
         # comfortably under equal-thirds division (114 * 3 = 342).
         form.addRow("Quality:", self._capped_row(quality_tier_row, 360))
 
-        compat_row = QHBoxLayout()
-        compat_row.setSpacing(0)
-        self.compat_button_group = QButtonGroup(self)
-        self.compat_modern_btn = QPushButton("Modern")
-        self.compat_modern_btn.setObjectName("segLeft")
-        self.compat_modern_btn.setToolTip(
-            "Creates smaller files with excellent quality. Recommended for\n"
-            "current devices and software."
-        )
-        self.compat_compatible_btn = QPushButton("Most Compatible")
-        self.compat_compatible_btn.setObjectName("segRight")
-        self.compat_compatible_btn.setToolTip(
-            "Best for older TVs, devices, browsers, and software. Files\n"
-            "may be larger."
-        )
-        for btn, choice in (
-            (self.compat_modern_btn, "modern"),
-            (self.compat_compatible_btn, "compatible"),
-        ):
-            btn.setCheckable(True)
-            btn.setMinimumWidth(self._segmented_btn_min_width(btn))
-            self.compat_button_group.addButton(btn)
-            compat_row.addWidget(btn, 1)
-            btn.clicked.connect(lambda _checked, c=choice: self._on_compatibility_clicked(c))
-        form.addRow("Compatibility:", self._capped_row(compat_row, 320))
-
-        return group
-
-    def _build_video_tab(self) -> QWidget:
-        tab = QWidget()
-        # tabPageCard -- the "Video"/"Audio" card's own border+radius+fill
-        # lives on this plain QWidget now, not on QTabWidget::pane
-        # (style.qss, that rule's own history comment has the full story):
-        # QTabWidget's pane is a special Qt subcontrol with its own native,
-        # non-QSS-overridable corner-painting logic that kept producing a
-        # real, only-reproducible-on-the-real-display broken corner no
-        # matter what radius/border/position combination was tried there.
-        # QGroupBox's border-radius, by contrast, has never once shown this
-        # defect all session (Presets/Quality/Format/Expert all use it,
-        # all clean) -- because it's a plain CSS box-model render, not a
-        # special subcontrol. This page widget is exactly that same plain
-        # case: giving *it* the border/radius/fill instead reuses the
-        # reliable rendering path, not the broken one, while the actual
-        # DOM/widget structure (Quality/Format/Expert as direct children
-        # of this one widget) is unchanged from before -- this isn't a
-        # second wrapping layer, it's relocating where the existing card
-        # styling is declared.
-        tab.setObjectName("tabPageCard")
-        outer = QVBoxLayout(tab)
-        outer.setContentsMargins(12, 12, 12, 12)
-        # SECTION_SPACING (card-to-card), not PANEL_SPACING -- Quality to
-        # Format to Expert are real section breaks, not just another row
-        # in the same list; 20px reads as a deliberate gap next to each
-        # card's own internal 14px control rhythm, where the previous 10px
-        # read too close to that same internal spacing to tell the two
-        # apart.
-        outer.setSpacing(SECTION_SPACING)
-
-        outer.addWidget(self._build_normal_quality_group())
-
-        output_group = QGroupBox("Format")
-        out_form = QFormLayout(output_group)
-        out_form.setVerticalSpacing(14)
-
         self.res_combo = QComboBox()
         for r in RESOLUTIONS:
             self.res_combo.addItem(r["label"])
@@ -489,31 +343,60 @@ class _UiBuilderMixin:
         # unusually wide left pane just reads as an oversized web-form
         # field, not a deliberately sized control.
         self.res_combo.setMaximumWidth(200)
-        out_form.addRow("Resolution:", self.res_combo)
+        form.addRow("Resolution:", self.res_combo)
 
+        return group
+
+    def _build_video_tab(self) -> QWidget:
+        tab = QWidget()
+        # tabPageCard -- the Video/Audio tab page's own border+radius+fill
+        # lives on this plain QWidget, not on QTabWidget::pane (style.qss,
+        # that rule's own history comment has the full story: pane is a
+        # special Qt subcontrol with its own native, non-QSS-overridable
+        # corner-painting logic that produced a real, only-on-the-real-
+        # display broken corner no matter what was tried there; a plain
+        # QWidget's border-radius never showed that defect, same
+        # rendering path QGroupBox already uses everywhere else in this
+        # file).
+        tab.setObjectName("tabPageCard")
+        outer = QVBoxLayout(tab)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.addWidget(self._build_video_group())
+        # Explicit trailing stretch -- the Video card (Quality+Resolution
+        # merged into one) is the only item in this tab's own layout now,
+        # and a lone Preferred-policy widget with nothing else to share
+        # leftover space with gets stretched to fill it rather than
+        # staying at its own sizeHint. Same fix the Audio tab below
+        # already needed for the same one-group-per-tab reason.
+        outer.addStretch()
+
+        # Consumer build: no visible File Format row -- always MP4 (index 0
+        # of CONTAINERS), the broadest-compatibility choice, per
+        # CONSUMER_FORK_PLAN.md's v1 scope table. container_combo stays
+        # constructed (not shown or added to any layout) so
+        # _current_settings()/_apply_settings_to_controls() keep working
+        # unchanged; it just never leaves its default index 0 ("mp4") since
+        # nothing ever changes it now.
         self.container_combo = QComboBox()
         self.container_combo.addItems(CONTAINERS)
-        self.container_combo.setToolTip(
-            "MP4: broadest compatibility -- phones, TVs, browsers,\n"
-            "streaming platforms. Includes a \"fast start\" flag so\n"
-            "playback can begin before the whole file has downloaded.\n"
-            "MKV: the more flexible container, common for media-server\n"
-            "and archival libraries (Plex, Jellyfin, ...). No real\n"
-            "downside here otherwise -- this app doesn't carry subtitle\n"
-            "tracks through on either container yet."
-        )
-        self.container_combo.currentIndexChanged.connect(self._on_control_changed)
-        self.container_combo.setMaximumWidth(200)
-        out_form.addRow("File Format:", self.container_combo)
 
-        outer.addWidget(output_group)
-
-        # Everything below is the full technical control set the sibling
-        # TITAN-i Transcoder app always shows -- unchanged code, just
-        # rehomed from a plain "Encoding"/"Format" QGroupBox into one
-        # collapsed-by-default section, so no capability is lost, only
-        # deferred behind one click.
-        expert_content = QWidget()
+        # Everything below is the full technical control set the specialist
+        # build always shows, unchanged -- see this file's own comment
+        # further down (where this card used to be wrapped in a
+        # collapsible group) for why it's never shown here.
+        # self._video_expert_content, not a bare local -- a QWidget()
+        # constructed with no C++ parent (never true here before: the old
+        # collapsible-group wrapping gave it one via layout.addWidget)
+        # is owned by Python reference counting alone, and nothing else
+        # keeps a live reference to expert_content itself once this
+        # function returns (only to specific *children* of it, like
+        # self.encoder_combo -- which does not keep their parent alive).
+        # Confirmed as a real crash, not a theoretical one: without this,
+        # expert_content got garbage-collected right after construction,
+        # taking every control inside it down with it -- the exact same
+        # class of bug as the Settings-dialog crash fixed earlier in the
+        # specialist build's own history (a parentless QComboBox there).
+        self._video_expert_content = expert_content = QWidget()
         self.video_form = form = QFormLayout(expert_content)
         # Default Fusion spacing reads as cramped once every row has a small
         # secondary line under it (quality/speed tiers, the bit-depth combo's
@@ -760,9 +643,11 @@ class _UiBuilderMixin:
         # wired up, hardware is HEVC-only here), so it's disabled and
         # forced to H.265 whenever Encoder above is set to a hardware
         # engine -- see main.py's _on_encoder_changed, which this cascades
-        # into exactly like encoder_combo's own change does. The Normal-
-        # mode Compatibility row above is the friendly front end for this
-        # same combo -- see main.py's _on_compatibility_clicked.
+        # into exactly like encoder_combo's own change does. This whole
+        # form is unshown internal state in this build (see this file's
+        # own comment where Expert used to be wrapped and added) -- always
+        # stays at its DEFAULT_SETTINGS value ("None"/H.265) now that
+        # there's no Compatibility row to drive it.
         self.codec_combo = QComboBox()
         for value, label in CODECS:
             self.codec_combo.addItem(label, userData=value)
@@ -781,8 +666,14 @@ class _UiBuilderMixin:
         self.codec_combo.currentIndexChanged.connect(self._on_encoder_changed)
         form.addRow("Codec:", self.codec_combo)
 
-        self.video_expert_group = self._make_collapsible_group("Expert", expert_content, expanded=False)
-        outer.addWidget(self.video_expert_group)
+        # Consumer build: expert_content (and everything built into it
+        # above -- encoder_combo, rc_mode_combo, codec_combo, bitdepth_combo,
+        # tune_combo, deinterlace_check) is deliberately never wrapped in a
+        # collapsible group or added to outer, unlike the specialist build.
+        # It stays fully constructed and live -- _current_settings()/
+        # _apply_settings_to_controls() still read and drive it exactly as
+        # before, so that plumbing didn't need touching -- it's just never
+        # shown to the user. See CONSUMER_FORK_PLAN.md's v1 scope table.
         return tab
 
     def _build_audio_tab(self) -> QWidget:
@@ -827,18 +718,26 @@ class _UiBuilderMixin:
         normal_form.addRow("Audio:", self._capped_row(audio_choice_row, 320))
 
         outer.addWidget(normal_group)
-        # Explicit trailing stretch -- normal_group is now the only item
-        # in this layout (Expert moved inside it, below), and a lone
-        # Preferred-policy widget with nothing else to share leftover
-        # space with gets stretched to fill it rather than staying at its
-        # own sizeHint (confirmed live: a large blank gap opened up
-        # *inside* the Audio box's own border, below the nested Expert
-        # row). Same fix as _build_left_panel's own trailing stretch.
+        # Explicit trailing stretch -- normal_group is the only item in
+        # this tab's own layout, and a lone Preferred-policy widget with
+        # nothing else to share leftover space with gets stretched to
+        # fill it rather than staying at its own sizeHint (confirmed
+        # live: a large blank gap opened up *inside* the Audio box's own
+        # border). Same fix the Video tab above needs for the same
+        # one-group-per-tab reason.
         outer.addStretch()
 
-        # Full technical audio control set, same "just tucked away, not
-        # removed" treatment as the Video tab's Expert section.
-        expert_content = QWidget()
+        # Full technical audio control set, same "internal state, never
+        # shown" treatment as the Video tab's Expert section -- see that
+        # section's own comment on self._video_expert_content for why this
+        # needs a real, lasting Python reference (self._audio_expert_
+        # content) rather than a bare local variable: a parentless QWidget
+        # with nothing keeping it alive gets garbage-collected, taking
+        # every control inside it down too, which is a real crash, not a
+        # theoretical one -- confirmed directly when this was first tried
+        # as a bare local (audio_bitrate_slider came back as "Internal
+        # C++ object already deleted" the moment __init__ tried to use it).
+        self._audio_expert_content = expert_content = QWidget()
         form = QFormLayout(expert_content)
         # Matches the Video tab's Expert form exactly (see video_form
         # above) -- Fusion's default (~11px) was never applied here, so
@@ -916,12 +815,11 @@ class _UiBuilderMixin:
         self.audio_downmix_check.stateChanged.connect(self._on_control_changed)
         form.addRow("", self.audio_downmix_check)
 
-        # Nested inside the Audio box itself (a form row), not a sibling
-        # box below it -- unlike the Video tab, Audio only has the one
-        # Normal-mode group above it, so there's no separate parent
-        # concept Expert would otherwise belong under.
-        self.audio_expert_group = self._make_collapsible_group("Expert", expert_content, expanded=False)
-        normal_form.addRow(self.audio_expert_group)
+        # Consumer build: expert_content (audio_combo, audio_copy_check,
+        # audio_bitrate_slider, audio_downmix_check) stays fully constructed
+        # and live -- same reasoning as the Video tab's own Expert section
+        # above -- but is never wrapped in a collapsible group or added to
+        # normal_form, so it's never shown. See CONSUMER_FORK_PLAN.md.
         return tab
 
     def _build_right_panel(self) -> QWidget:

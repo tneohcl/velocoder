@@ -100,45 +100,43 @@ QGroupBox#collapsibleGroup::indicator {
 
 QTabWidget::pane {
     /* Fully invisible now -- no border, no radius, no fill. Every corner
-       defect chased this session (broken/double line, missing-pixel gap,
-       a hard square corner with no curve attempted at all, all confirmed
-       by pixel-level RGB scans, none reproducible in an offscreen/1x
-       test) was in *this specific subcontrol's* own native border
-       painting. QTabWidget::pane is special Qt/Fusion C++ code, not a
-       plain CSS box -- and dropping the fill too (an earlier attempt at
-       "just lose the stroke, keep the fill") cost the pane's whole
-       visible ownership cue, reported live as losing the outline
+       defect chased earlier in this app's history (broken/double line,
+       missing-pixel gap, a hard square corner with no curve attempted at
+       all, all confirmed by pixel-level RGB scans, none reproducible in
+       an offscreen/1x test) was in *this specific subcontrol's* own
+       native border painting. QTabWidget::pane is special Qt/Fusion C++
+       code, not a plain CSS box -- and dropping the fill too (an earlier
+       attempt at "just lose the stroke, keep the fill") cost the pane's
+       whole visible ownership cue, reported live as losing the outline
        entirely, since $BG_PANEL and $BG_WINDOW are too close in value on
        their own (see this file's top comment) to read as a container
        without either a border or real contrast.
        The actual fix: stop asking this subcontrol to draw anything at
        all, and give the *tab page widgets themselves* (ui_builder.py,
-       _build_video_tab/_build_audio_tab, objectName tabPageCard) the
-       exact border+radius+fill this rule used to have. A plain QWidget's
-       border-radius is the same rendering path QGroupBox already uses
-       everywhere else in this file (Presets/Quality/Format/Expert) --
-       never once broken all session -- because it's ordinary CSS box
-       painting, not this subcontrol's own special-cased one. Same visible
-       card, same border, same radius on all four corners now (no more
-       squaring one off to dodge a native override that doesn't exist for
-       a plain QWidget); see style.qss's QWidget#tabPageCard rule and
-       QTabBar::tab:selected below for how the tab still visually merges
-       into it. */
+       objectName tabPageCard) the exact border+radius+fill this rule
+       used to have. A plain QWidget's border-radius is the same
+       rendering path QGroupBox already uses everywhere else in this
+       file -- never once broken -- because it's ordinary CSS box
+       painting, not this subcontrol's own special-cased one. Same
+       visible card, same border, same radius on all four corners now
+       (no more squaring one off to dodge a native override that doesn't
+       exist for a plain QWidget); see style.qss's QWidget#tabPageCard
+       rule and QTabBar::tab:selected below for how the tab still
+       visually merges into it. */
     border: none;
     background: transparent;
     top: -1px;
 }
 
 QTabWidget::tab-bar {
-    /* Purely cosmetic now, unlike the earlier attempt at this same
-       property (this rule's own git history) -- that version was trying
-       to use the inset to *fix* a corner-rendering defect on
-       QTabWidget::pane, which didn't work because the defect was in
-       pane's own native painting regardless of where the tab bar sat.
-       Now that the card border lives on tabPageCard (a plain QWidget,
-       unaffected by tab-bar position), this is safe: just clears the
-       first tab off the card's rounded top-left corner underneath it so
-       the tab doesn't visually sit on top of the curve. */
+    /* Purely cosmetic now, unlike an earlier attempt at this same
+       property that was trying to use the inset to *fix* a corner-
+       rendering defect on QTabWidget::pane, which didn't work because
+       the defect was in pane's own native painting regardless of where
+       the tab bar sat. Now that the card border lives on tabPageCard (a
+       plain QWidget, unaffected by tab-bar position), this is safe: just
+       clears the first tab off the card's rounded top-left corner
+       underneath it so the tab doesn't visually sit on top of the curve. */
     left: 10px;
 }
 
@@ -148,43 +146,19 @@ QWidget#tabPageCard {
     background: $BG_PANEL;
 }
 
-/* Six iterations to get here now. A plain underline (no fill, no border)
-   read as floating clickable text, not an actual tab shape. A filled
-   $BG_PANEL selected-tab plus a full $BORDER box read as too heavy a
-   highlight next to unselected tabs' plain outline. Uniform $BG_WINDOW
-   fill on both states (an outline-only middle ground) still wasn't right
-   either -- the selected tab is supposed to represent the *content pane
-   right below it*, and that pane is $BG_PANEL, not $BG_WINDOW, so a
-   selected tab colored like the window instead of its own content still
-   didn't visually belong to what it was selecting. $BG_PANEL fill with
-   the border color *also* set to $BG_PANEL (next attempt) went a step
-   too far -- border-bottom: none was what actually produced the
-   seamless-with-content look on the one edge that should have it; setting
-   border-color killed the color on all four sides, not just the bottom
-   one that needed it, leaving the selected tab with no visible outline of
-   its own at all. Landed (for a while) on: border-bottom stays none on
-   *every* tab (seamless into the pane), remaining three sides $ACCENT for
-   selected, $BORDER for unselected -- the accent outline was the fifth
-   thing to go, for the same reason the section-heading color and the
-   outer tab-pane border both did in this pass -- blue reserved for
-   controls/progress/focus/Convert, not chrome.
-   border-bottom: none on the base rule (every tab, not just selected) was
-   the sixth thing to go, and for a real reason rather than more polish:
-   it meant an *unselected* tab (Audio) had no bottom border either, so it
-   read as just as "connected" to the pane as the selected one -- reported
-   live as weakening the selected/unselected distinction. Unselected tabs
-   get a real, fully-outlined border on all four sides like any other
-   control; only the selected tab erases its own bottom edge, and it does
-   that by color-matching (border-bottom-color: $BG_PANEL) plus nudging
-   itself down into the pane (margin-bottom: -1px) rather than by
-   removing the border outright.
-   A seventh version dropped the border entirely, on every tab -- a plain
-   filled shape (unselected transparent, selected filled $BG_PANEL, no
-   border at all) instead of a stroked-and-radiused one, trying to
-   sidestep the stroke-rasterization risk that kept causing the rendering
-   defect documented on QTabWidget::pane above. Reverted back to this
-   bordered version on explicit request ("the imperfect tab bar version")
-   along with the pane -- see that rule's own note. */
+/* Landed here after several iterations (see git history for the earlier
+   attempts and why each was rejected -- a plain underline read as
+   floating clickable text, a full-$ACCENT-outline selected state read
+   too heavy, etc.): border-bottom stays none on *every* tab (seamless
+   into the pane), remaining three sides $BORDER for both states -- an
+   accent outline was tried and dropped, for the same reason the section-
+   heading color and the outer tab-pane border both are neutral in this
+   app -- blue is reserved for controls/progress/focus/Convert, not
+   chrome. Unselected tabs get a real, fully-outlined border on all four
+   sides like any other control; only the selected tab erases its own
+   bottom edge, by color-matching (border-bottom-color: $BG_PANEL) plus
+   nudging itself down into the pane (margin-bottom: -1px) rather than by
+   removing the border outright. */
 QTabBar::tab {
     background: $BG_WINDOW;
     color: $TEXT_SECONDARY;

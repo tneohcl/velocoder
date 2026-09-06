@@ -192,6 +192,15 @@ class _UiBuilderMixin:
         # panel); only vertical overflow (Expert expanded) is the real
         # concern here.
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Kept for _update_left_panel_min_height (main.py) -- reported
+        # live, explicitly accepting the tradeoff: shrinking the window
+        # below what this panel's *current* state (Expert collapsed or
+        # expanded) actually needs should be refused outright rather than
+        # just scrolling silently, which read as accidentally hiding
+        # content rather than a deliberate choice. Scrolling itself stays
+        # as a fallback for a real screen too short even for that.
+        self._left_panel_scroll = scroll
+        self._left_panel_content = content
         return scroll
 
     @staticmethod

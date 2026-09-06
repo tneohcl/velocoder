@@ -10,7 +10,7 @@ import sys
 import weakref
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSettings, QProcess
+from PySide6.QtCore import Qt, QSettings, QProcess, QTimer
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFormLayout, QMainWindow, QTreeWidgetItem, QLabel,
@@ -31,7 +31,7 @@ from queue_widget import (
 )
 from theming import (
     _current_theme_palette, _system_accent_tokens, _load_stylesheet,
-    _ComboPopupBackgroundFilter, _FocusVisibleFilter,
+    _ComboPopupBackgroundFilter, _FocusVisibleFilter, _ComboWheelBlockFilter,
     _validate_theme_choice, _resolve_theme, _fuzzy_text_color,
 )
 from ui_builder import _UiBuilderMixin
@@ -246,6 +246,15 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # waiting for one.
         self.res_combo.setCurrentIndex(0)  # Keep Original
         self._on_processing_choice("automatic")
+        # Before _restore_window_state(): Expert is still guaranteed
+        # collapsed here (construction-time default), which is exactly
+        # the height _pin_left_panel_min_height needs to read. Connecting
+        # _on_expert_toggled before that restore call is deliberate too --
+        # if a previous session left Expert expanded, restoring that
+        # state below re-checks the box and should trigger the same
+        # grow-to-fit behavior a live click does, not a silent exception.
+        self._pin_left_panel_min_height()
+        self.video_expert_group.toggled.connect(self._on_expert_toggled)
         self._restore_window_state()
         # Establishes correct starting visibility (progress_bar/eta_label/
         # stats_label/stop_btn/open_folder_btn hidden while idle) -- one
@@ -272,6 +281,45 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._qsettings.setValue("window_geometry", self.saveGeometry())
         self._qsettings.setValue("video_expert_expanded", self.video_expert_group.isChecked())
         super().closeEvent(event)
+
+    def _pin_left_panel_min_height(self):
+        # Reported live: the floor is always Expert's *collapsed* height,
+        # not whichever height the panel currently needs -- expanding
+        # Expert should never make the window impossible to shrink back
+        # down again afterward (falls back to the scrolling that already
+        # existed if the user does shrink it while Expert is still
+        # expanded). Called once, right after _build_ui() and before
+        # _restore_window_state() -- Expert is still guaranteed collapsed
+        # at that point (its own construction-time default), so this
+        # reads the right value regardless of what gets restored right
+        # after. Setting the scroll area's own minimum height is enough --
+        # central's QHBoxLayout won't let a fixed-width sibling be
+        # squeezed shorter than its minimum, so this propagates up to the
+        # window's own effective minimum automatically, no separate
+        # self.setMinimumHeight() needed.
+        self._left_panel_scroll.setMinimumHeight(self._left_panel_content.sizeHint().height())
+
+    def _on_expert_toggled(self, checked):
+        if not checked:
+            return
+        # Expanding can reveal more than the window currently shows
+        # without scrolling -- grow the window to fit, once, rather than
+        # leaving the user to notice a scrollbar appeared or resize it
+        # themselves. Deferred a full event-loop turn (QTimer.singleShot
+        # with delay 0, not called directly here): sizeHint() read
+        # synchronously inside this same handler still reflects the
+        # pre-toggle (collapsed) layout every time, confirmed directly --
+        # content.setVisible() inside _make_collapsible_group's own
+        # _toggle marks the layout dirty, but Qt only recomputes it lazily
+        # once the event loop actually runs, not synchronously within the
+        # same call stack as the toggled signal that triggered it.
+        QTimer.singleShot(0, self._grow_window_for_expanded_expert)
+
+    def _grow_window_for_expanded_expert(self):
+        needed = self._left_panel_content.sizeHint().height()
+        shortfall = needed - self._left_panel_scroll.height()
+        if shortfall > 0:
+            self.resize(self.width(), self.height() + shortfall)
 
     def _restore_window_state(self):
         geometry = self._qsettings.value("window_geometry")
@@ -1191,6 +1239,8 @@ def main():
     app.installEventFilter(app._combo_popup_filter)
     app._focus_visible_filter = _FocusVisibleFilter()
     app.installEventFilter(app._focus_visible_filter)
+    app._combo_wheel_block_filter = _ComboWheelBlockFilter()
+    app.installEventFilter(app._combo_wheel_block_filter)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

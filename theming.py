@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QEvent, QObject
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QComboBox, QProxyStyle, QStyle, QWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QProxyStyle, QScrollArea, QStyle, QWidget
 
 import themes
 
@@ -294,6 +294,54 @@ class _FocusVisibleFilter(QObject):
             obj.setProperty("focusVisible", False)
             obj.style().unpolish(obj)
             obj.style().polish(obj)
+        return False
+
+
+class _ComboWheelBlockFilter(QObject):
+    """Reported live: scrolling the mouse wheel over a QComboBox changes
+    its selected value by default (standard Qt behavior, not a bug in
+    this app) -- easy to trigger by accident, and more so now that the
+    left panel itself scrolls vertically (ui_builder.py's #leftPanel
+    QScrollArea): the cursor passing over Codec/Resolution/File Format/
+    etc. while scrolling the *panel* could silently change one of them
+    instead. Blocks Wheel events app-wide for every QComboBox rather
+    than only the ones in that scrollable panel -- a combo box changing
+    value under the cursor by accident is the same surprise regardless
+    of which one it is, not something worth special-casing by location.
+
+    Forwards the event to the nearest QScrollArea ancestor instead of
+    just swallowing it outright, so scrolling still reaches the left
+    panel with the cursor over a combo box inside it. Walks up to that
+    ancestor explicitly rather than forwarding one level to the combo's
+    immediate parent and hoping Qt's own ignored-event propagation
+    carries it the rest of the way up -- confirmed directly that it
+    doesn't: a combo box sits several plain QWidget/QGroupBox/QTabWidget
+    layers below #leftPanel's QScrollArea (combo -> QGroupBox -> tab
+    page -> QStackedWidget -> QTabWidget -> ... -> the scroll area's own
+    viewport), and a single explicit sendEvent() to just the immediate
+    parent left the scrollbar's value completely unchanged in a real
+    test. Falls back to the immediate parent when no QScrollArea ancestor
+    exists at all (a combo outside any scrollable container, e.g. in the
+    Settings dialog) -- nothing to scroll there either way, so this is
+    just staying consistent rather than leaving the fallback unhandled."""
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel and isinstance(obj, QComboBox):
+            target = obj.parentWidget()
+            while target is not None and not isinstance(target, QScrollArea):
+                target = target.parentWidget()
+            if isinstance(target, QScrollArea):
+                # Not the QScrollArea widget itself -- confirmed directly
+                # that sending a wheel event straight to it does nothing
+                # at all (QAbstractScrollArea processes wheel events via
+                # an event filter it installs on its own *viewport*
+                # widget, not on itself).
+                target = target.viewport()
+            elif target is None:
+                target = obj.parentWidget()
+            if target is not None:
+                QApplication.sendEvent(target, event)
+            return True
         return False
 
 

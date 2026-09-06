@@ -21,10 +21,12 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from PySide6.QtCore import QEvent, QEventLoop, QMimeData, QPoint, QRect, QSize, Qt, QTimer, QUrl  # noqa: E402
+from PySide6.QtCore import (  # noqa: E402
+    QEvent, QEventLoop, QMimeData, QPoint, QPointF, QRect, QSize, Qt, QTimer, QUrl,
+)
 from PySide6.QtGui import (  # noqa: E402
     QColor, QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QFocusEvent, QFont,
-    QFontMetrics, QPainter, QPalette, QPixmap,
+    QFontMetrics, QPainter, QPalette, QPixmap, QWheelEvent,
 )
 from PySide6.QtWidgets import QApplication, QScrollArea, QStyleOptionViewItem, QWidget  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
@@ -1597,6 +1599,61 @@ class TestComboPopupBackgroundFilter(unittest.TestCase):
         window.res_combo.hidePopup()
         _app.processEvents()
         self.assertFalse(window.res_combo.property("modified"))
+
+
+class TestComboWheelBlockFilter(unittest.TestCase):
+    """_ComboWheelBlockFilter isn't installed by MainWindow() itself --
+    only main() wires it onto the real QApplication -- so each test
+    installs its own instance and removes it in tearDown, same scoping
+    discipline as TestComboPopupBackgroundFilter above. Reported live:
+    scrolling the mouse wheel over a combo box changed its value by
+    accident, more so now that the left panel itself scrolls."""
+
+    def setUp(self):
+        self.filter = main._ComboWheelBlockFilter()
+        _app.installEventFilter(self.filter)
+
+    def tearDown(self):
+        _app.removeEventFilter(self.filter)
+
+    @staticmethod
+    def _wheel_event(delta=120):
+        return QWheelEvent(
+            QPointF(0, 0), QPointF(0, 0), QPoint(0, 0), QPoint(0, delta),
+            Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False,
+        )
+
+    def test_wheel_over_a_combo_does_not_change_its_value(self):
+        window = main.MainWindow()
+        window.show()
+        before = window.res_combo.currentIndex()
+        QApplication.sendEvent(window.res_combo, self._wheel_event())
+        self.assertEqual(window.res_combo.currentIndex(), before)
+
+    def test_wheel_over_a_combo_inside_the_scrollable_panel_still_scrolls_it(self):
+        # End-to-end, not just "the combo didn't change" -- the whole
+        # point of forwarding to the parent (rather than just swallowing
+        # the event outright) is that scrolling the panel still works
+        # with the cursor over a combo box, not just that the combo
+        # itself stays inert. Expert expanding now grows the window to
+        # fit instead of needing to scroll (see TestExpertExpandGrows
+        # Window) -- shrunk back down to the collapsed floor afterward
+        # specifically to force a real scroll need, the same technique
+        # TestLeftPanelScrolling's own fallback test uses.
+        window = main.MainWindow()
+        window.show()
+        window.processing_cpu_btn.click()
+        left = window.findChild(QWidget, "leftPanel")
+        window.video_expert_group.setChecked(True)
+        _app.processEvents()
+        window.resize(window.width(), left.minimumHeight())
+        _app.processEvents()
+        self.assertGreater(left.verticalScrollBar().maximum(), 0)  # something to actually scroll
+        before_index = window.codec_combo.currentIndex()
+        before_scroll = left.verticalScrollBar().value()
+        QApplication.sendEvent(window.codec_combo, self._wheel_event(delta=-120))
+        self.assertEqual(window.codec_combo.currentIndex(), before_index)
+        self.assertNotEqual(left.verticalScrollBar().value(), before_scroll)
 
 
 class TestFocusVisibleFilter(unittest.TestCase):
@@ -3665,9 +3722,18 @@ class TestLeftPanelScrolling(unittest.TestCase):
     reachable Expert section again) can genuinely exceed the window's
     default 820px height once Expert is expanded -- #leftPanel (still
     fixed at 470px wide, see TestLeftPanelFixedWidth above) is a
-    QScrollArea now, not a bare QWidget, so that overflow scrolls
-    instead of clipping Expert's bottom rows or forcing the window
-    taller just to fit its one tallest possible state."""
+    QScrollArea now, not a bare QWidget.
+
+    Expanding Expert now grows the window to fit instead, when there's a
+    shortfall to fit (see TestExpertExpandGrowsWindow below) -- reported
+    live, an explicit revision of this class's own original design
+    intent (a comment right above used to say the opposite: "instead of
+    ... forcing the window taller"). Scrolling here is now the fallback
+    for whatever growing can't cover: the window's minimum height is
+    pinned to Expert's *collapsed* height specifically so a user can
+    still shrink it back down after expanding (accepting scrolling if
+    they do), not because growing was abandoned as the primary
+    behavior."""
 
     def test_left_panel_is_a_scroll_area(self):
         window = main.MainWindow()
@@ -3680,36 +3746,41 @@ class TestLeftPanelScrolling(unittest.TestCase):
         left = window.findChild(QWidget, "leftPanel")
         self.assertEqual(left.verticalScrollBar().maximum(), 0)
 
-    def test_expanding_expert_can_require_scrolling(self):
-        # CPU processing, not whatever Automatic resolved to -- Expert's
-        # content is taller on a software encoder (Tune's own row is
-        # only shown there, see _on_encoder_changed), so this needs a
-        # deterministic engine rather than depending on this machine's
-        # own hardware.
-        window = main.MainWindow()
-        window.show()
-        window.processing_cpu_btn.click()
-        left = window.findChild(QWidget, "leftPanel")
-        window.video_expert_group.setChecked(True)
-        # QScrollArea's viewport/content geometry recompute is deferred
-        # to the event loop, not synchronous with setChecked() itself --
-        # confirmed directly (the scrollbar's maximum() read back 0
-        # without this, even though the same state visibly scrolled in a
-        # real running app).
+    def test_shrinking_below_the_collapsed_floor_is_refused(self):
+        # _empty_qsettings -- needs Expert to genuinely be collapsed so
+        # the floor read below is the real collapsed-height one, not
+        # whatever this machine's real config last persisted for
+        # video_expert_expanded. Asserts against left.minimumHeight()
+        # itself, not the window's starting height (1240x820, main.py's
+        # own hardcoded default) -- that default is comfortably taller
+        # than the actual floor, so it's the wrong thing to compare a
+        # shrink-below-the-floor attempt against.
+        with _empty_qsettings():
+            window = main.MainWindow()
+            window.show()
+            _app.processEvents()
+            left = window.findChild(QWidget, "leftPanel")
+            floor = left.minimumHeight()
+        window.resize(window.width(), 50)
         _app.processEvents()
-        self.assertGreater(left.verticalScrollBar().maximum(), 0)
+        self.assertEqual(window.height(), floor)
 
-    def test_collapsing_expert_again_removes_the_need_to_scroll(self):
+    def test_shrinking_after_expanding_falls_back_to_scrolling(self):
+        # The window grew to fit when Expert expanded (TestExpertExpand
+        # GrowsWindow below) -- forcing it back down to the (unchanged)
+        # collapsed-height floor, still with Expert expanded, is exactly
+        # the case this class's own docstring says scrolling still
+        # exists for.
         window = main.MainWindow()
         window.show()
         window.processing_cpu_btn.click()
         left = window.findChild(QWidget, "leftPanel")
         window.video_expert_group.setChecked(True)
         _app.processEvents()
-        self.assertGreater(left.verticalScrollBar().maximum(), 0)
-        window.video_expert_group.setChecked(False)
+        collapsed_floor = left.minimumHeight()
+        window.resize(window.width(), collapsed_floor)
         _app.processEvents()
-        self.assertEqual(left.verticalScrollBar().maximum(), 0)
+        self.assertGreater(left.verticalScrollBar().maximum(), 0)
 
     def test_horizontal_scrollbar_is_never_shown(self):
         # Content is sized for exactly this fixed 470px width by design
@@ -3720,6 +3791,91 @@ class TestLeftPanelScrolling(unittest.TestCase):
         left = window.findChild(QWidget, "leftPanel")
         window.video_expert_group.setChecked(True)
         self.assertEqual(left.horizontalScrollBarPolicy(), Qt.ScrollBarAlwaysOff)
+
+
+class TestExpertExpandGrowsWindow(unittest.TestCase):
+    """Reported live, explicitly requested with the tradeoff spelled out:
+    expanding Expert should grow the window to fit rather than silently
+    starting to scroll -- the user should see what they just expanded
+    without an extra resize or noticing a scrollbar appeared. The window
+    can still be shrunk back down afterward, just never below Expert's
+    *collapsed* height (TestLeftPanelScrolling above covers that floor
+    and its scrolling fallback)."""
+
+    def test_expanding_grows_the_window_instead_of_requiring_scrolling(self):
+        # CPU processing, not whatever Automatic resolved to -- Expert's
+        # content is taller on a software encoder (Tune's own row is
+        # only shown there, see _on_encoder_changed), so this needs a
+        # deterministic engine rather than depending on this machine's
+        # own hardware. _empty_qsettings -- needs Expert to genuinely
+        # start collapsed so setChecked(True) below is a real transition;
+        # a bare MainWindow() would otherwise restore whatever this
+        # machine's real config last persisted for video_expert_expanded,
+        # which could make this a silent no-op instead of a real toggle.
+        with _empty_qsettings():
+            window = main.MainWindow()
+        window.show()
+        window.processing_cpu_btn.click()
+        _app.processEvents()
+        collapsed_height = window.height()
+        left = window.findChild(QWidget, "leftPanel")
+        window.video_expert_group.setChecked(True)
+        # The grow itself is deferred a full event-loop turn (QTimer.
+        # singleShot(0, ...) in _on_expert_toggled) -- sizeHint() read
+        # synchronously inside that handler still reflects the pre-toggle
+        # (collapsed) layout every time, confirmed directly. A single
+        # processEvents() call does carry a 0ms singleShot through to
+        # completion here.
+        _app.processEvents()
+        self.assertGreater(window.height(), collapsed_height)
+        self.assertEqual(left.verticalScrollBar().maximum(), 0)
+
+    def test_collapsing_again_leaves_the_grown_size_alone(self):
+        # No auto-shrink-on-collapse -- collapsing just frees up space
+        # inside whatever size the window already is, it doesn't need to
+        # actively resize anything the way expanding does.
+        window = main.MainWindow()
+        window.show()
+        window.processing_cpu_btn.click()
+        _app.processEvents()
+        window.video_expert_group.setChecked(True)
+        _app.processEvents()
+        grown_height = window.height()
+        window.video_expert_group.setChecked(False)
+        _app.processEvents()
+        self.assertEqual(window.height(), grown_height)
+
+    def test_re_expanding_after_manually_shrinking_grows_again(self):
+        window = main.MainWindow()
+        window.show()
+        window.processing_cpu_btn.click()
+        _app.processEvents()
+        left = window.findChild(QWidget, "leftPanel")
+        window.video_expert_group.setChecked(True)
+        _app.processEvents()
+        window.resize(window.width(), left.minimumHeight())
+        _app.processEvents()
+        window.video_expert_group.setChecked(False)
+        _app.processEvents()
+        window.video_expert_group.setChecked(True)
+        _app.processEvents()
+        self.assertEqual(left.verticalScrollBar().maximum(), 0)
+
+    def test_restoring_a_persisted_expanded_state_grows_the_window_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                main.QSettings, "value",
+                side_effect=lambda key, default=None: (
+                    "true" if key == "video_expert_expanded" else default
+                ),
+            ):
+                window = main.MainWindow()
+                window.processing_cpu_btn.click()
+                window.show()
+                _app.processEvents()
+                left = window.findChild(QWidget, "leftPanel")
+                self.assertTrue(window.video_expert_group.isChecked())
+                self.assertEqual(left.verticalScrollBar().maximum(), 0)
 
 
 class TestSegmentedButtonBoldWidth(unittest.TestCase):

@@ -4361,6 +4361,45 @@ class TestDynamicProcessingButtons(unittest.TestCase):
         self.assertEqual(job["encoder"], "hevc_vaapi")
         self.assertEqual(job["gpu_vendor"], "amd")
 
+    def test_editing_a_queued_items_settings_also_sanitizes_an_unavailable_vendor(self):
+        # add_files alone isn't the only place a settings dict becomes a
+        # real job -- selecting an already-queued item and then picking
+        # an unavailable vendor from Expert's own combo pushes that
+        # straight into the item's stored settings via _sync_settings_to_
+        # selected_queue_items, a second real path build_args could later
+        # fail a job on if it weren't also sanitized. speed must land on
+        # "medium" here too, not stay at whatever compression_level
+        # string the (rejected) VAAPI pick would have used -- the same
+        # family-crossing translation _on_processing_choice already does,
+        # now shared via _settings_for_engine_vendor.
+        with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main.MainWindow()
+            with tempfile.TemporaryDirectory() as tmp:
+                clip = Path(tmp) / "clip.mkv"
+                clip.touch()
+                window.add_files([clip])
+                item = window.queue_list.topLevelItem(0)
+                item.setSelected(True)
+                window.encoder_combo.setCurrentIndex(self._intel_encoder_combo_index())
+                job = item.data(queue_widget.STATUS_COL, Qt.UserRole)
+        self.assertEqual(job["encoder"], "libx265")
+        self.assertIsNone(job["gpu_vendor"])
+        self.assertEqual(job["speed"], "medium")
+
+    def test_editing_a_queued_items_settings_prefers_the_real_gpu_thats_present(self):
+        with patch.object(main.worker, "find_render_node", side_effect=_find_render_node_for(main.worker.AMD_VENDOR_ID)):
+            window = main.MainWindow()
+            with tempfile.TemporaryDirectory() as tmp:
+                clip = Path(tmp) / "clip.mkv"
+                clip.touch()
+                window.add_files([clip])
+                item = window.queue_list.topLevelItem(0)
+                item.setSelected(True)
+                window.encoder_combo.setCurrentIndex(self._intel_encoder_combo_index())
+                job = item.data(queue_widget.STATUS_COL, Qt.UserRole)
+        self.assertEqual(job["encoder"], "hevc_vaapi")
+        self.assertEqual(job["gpu_vendor"], "amd")
+
 
 class TestHardwareProbedOnceForTheWholeSession(unittest.TestCase):
     """detect_available_backends does a real filesystem probe (find_render_

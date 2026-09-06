@@ -152,23 +152,13 @@ class _QueueControllerMixin:
         if real_paths:
             self._push_undo_snapshot()
         for path in real_paths:
-            job = {"path": path, **self._current_settings()}
-            # The one place this actually needs correcting -- Expert's own
-            # encoder_combo lists every vendor unconditionally, unfiltered
-            # by real hardware (deliberately out of scope for this pass),
-            # so _current_settings() can carry a vendor this machine never
-            # had a render node for. Left uncorrected here, that would only
-            # surface once this job actually ran and build_args's own
-            # find_render_node call failed. main.py's _on_encoder_changed/
-            # _apply_settings_to_controls deliberately do NOT do this
-            # correction themselves -- both are read/apply round-trips a
-            # great many hardware-agnostic tests rely on being able to
-            # drive to any encoder regardless of the real machine's own
-            # hardware; this is the one place a settings dict actually
-            # becomes a real job that could reach build_args.
-            job["encoder"], job["gpu_vendor"] = self._resolved_engine_vendor(
-                job["encoder"], job.get("gpu_vendor")
-            )
+            # _effective_current_settings(), not _current_settings() --
+            # this is one of the real boundaries where UI state becomes
+            # an actual job that could reach build_args (see that
+            # method's own docstring on why the correction lives there
+            # and not in _current_settings()/_apply_settings_to_controls
+            # themselves).
+            job = {"path": path, **self._effective_current_settings()}
             item = self._make_queue_row(job)
             self.queue_list.addTopLevelItem(item)
             if not self._queue_editable:

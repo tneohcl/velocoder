@@ -818,12 +818,27 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         Compatibility itself is gone (Codec is Normal-visible directly
         now), so there's nothing left to sync for it."""
         engine, vendor = self._current_encoder_id(), self._current_gpu_vendor()
+        target_btn = None
         if engine == "hevc_vaapi" and vendor == "intel":
-            self.processing_intel_btn.setChecked(True)
+            target_btn = self.processing_intel_btn
         elif engine == "hevc_vaapi" and vendor == "amd":
-            self.processing_amd_btn.setChecked(True)
+            target_btn = self.processing_amd_btn
         else:
-            self.processing_cpu_btn.setChecked(True)
+            target_btn = self.processing_cpu_btn
+        if target_btn is not None:
+            target_btn.setChecked(True)
+        else:
+            # A settings dict naming a vendor this machine's Processing
+            # row never offered a button for at all (e.g. a preset saved
+            # on a different machine) -- same "no exact match" shape as
+            # the quality-tier handling just below, and the same fix:
+            # leave the row showing nothing checked rather than falsely
+            # implying CPU when the real settings say otherwise.
+            self.processing_button_group.setExclusive(False)
+            for btn in (self.processing_cpu_btn, self.processing_intel_btn, self.processing_amd_btn):
+                if btn is not None:
+                    btn.setChecked(False)
+            self.processing_button_group.setExclusive(True)
 
         key = self._current_encoder_key()
         rc_mode = self.rc_mode_combo.currentData()

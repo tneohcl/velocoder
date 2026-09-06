@@ -1716,6 +1716,80 @@ class TestFindRenderNode(unittest.TestCase):
         )
 
 
+def _find_render_node_for(*present_vendors: str):
+    """A find_render_node stand-in that only "resolves" the given vendor
+    ids (worker.INTEL_VENDOR_ID / worker.AMD_VENDOR_ID), raising for
+    everything else -- same shape the real function raises for a vendor
+    with no render node."""
+    def _fake(vendor_id):
+        if vendor_id in present_vendors:
+            return f"/dev/dri/renderD{present_vendors.index(vendor_id)}"
+        raise RuntimeError(f"no render node found for PCI vendor {vendor_id}")
+    return _fake
+
+
+class TestDetectAvailableBackends(unittest.TestCase):
+    """Processing's own button set (ui_builder.py) and Automatic's silent
+    resolution (best_available_engine, below) both come from this one
+    function now -- mocked here rather than gated on this machine's real
+    hardware (HAS_VAAPI/HAS_AMD_VAAPI above), so every combination is
+    actually exercised in CI regardless of what GPUs happen to be
+    installed wherever the suite runs."""
+
+    def test_no_gpu_at_all_is_cpu_only(self):
+        with patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")):
+            backends = worker.detect_available_backends()
+        self.assertEqual([b.id for b in backends], ["cpu"])
+
+    def test_intel_only(self):
+        with patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID)):
+            backends = worker.detect_available_backends()
+        self.assertEqual([b.id for b in backends], ["cpu", "intel"])
+
+    def test_amd_only(self):
+        with patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.AMD_VENDOR_ID)):
+            backends = worker.detect_available_backends()
+        self.assertEqual([b.id for b in backends], ["cpu", "amd"])
+
+    def test_both_intel_and_amd(self):
+        with patch.object(
+            worker, "find_render_node",
+            side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID),
+        ):
+            backends = worker.detect_available_backends()
+        self.assertEqual([b.id for b in backends], ["cpu", "intel", "amd"])
+
+    def test_cpu_is_always_first_regardless_of_which_vendors_are_present(self):
+        with patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.AMD_VENDOR_ID)):
+            backends = worker.detect_available_backends()
+        self.assertEqual(backends[0].id, "cpu")
+
+
+class TestBestAvailableEngineReusesDetection(unittest.TestCase):
+    """best_available_engine used to re-probe find_render_node on its own;
+    it now reuses detect_available_backends instead, so these two can
+    never disagree about what's actually present."""
+
+    def test_no_gpu_falls_back_to_cpu(self):
+        with patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")):
+            self.assertEqual(worker.best_available_engine(), ("libx265", None))
+
+    def test_intel_only_prefers_intel(self):
+        with patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID)):
+            self.assertEqual(worker.best_available_engine(), ("hevc_vaapi", "intel"))
+
+    def test_amd_only_prefers_amd(self):
+        with patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.AMD_VENDOR_ID)):
+            self.assertEqual(worker.best_available_engine(), ("hevc_vaapi", "amd"))
+
+    def test_both_present_still_prefers_intel(self):
+        with patch.object(
+            worker, "find_render_node",
+            side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID),
+        ):
+            self.assertEqual(worker.best_available_engine(), ("hevc_vaapi", "intel"))
+
+
 class TestGpuVendorSelection(ClipTestCase):
     """gpu_vendor picks which GPU's render node build_args opens -- separate
     from HAS_AMD_VAAPI-gated tests below since these only check which flag

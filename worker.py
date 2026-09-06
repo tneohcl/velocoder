@@ -7,6 +7,7 @@ engine only ever sees the resolved values.
 import json
 import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, Signal
@@ -50,6 +51,37 @@ def find_render_node(vendor_id: str) -> str:
     raise RuntimeError(f"No render node found for PCI vendor {vendor_id}")
 
 
+@dataclass(frozen=True)
+class ProcessingBackend:
+    """One real, verified-present Processing choice. "Verified" here means
+    only what find_render_node already means -- a DRM render node exists
+    for that PCI vendor -- not a real validation encode; see this
+    fork's hardware-detection proposal for the (currently deferred) real-
+    encode validation stage."""
+    id: str
+    display_name: str
+
+
+def detect_available_backends() -> list[ProcessingBackend]:
+    """Every Processing choice actually usable on this machine, CPU first
+    then whichever GPU vendors resolve a real render node -- CPU/Intel/AMD
+    order matches the segmented row's own longstanding left-to-right
+    layout (ui_builder.py), not a hardware-preference ranking. CPU is
+    unconditional: the software encoder needs no device at all. The one
+    place anything picks hardware *for* the user (best_available_engine,
+    below) reuses this instead of re-probing on its own, so "what Automatic
+    silently resolves to" and "what Processing even offers to pick
+    manually" can never disagree."""
+    backends = [ProcessingBackend("cpu", "CPU")]
+    for vendor, display_name in (("intel", "Intel"), ("amd", "AMD")):
+        try:
+            find_render_node(GPU_VENDOR_IDS[vendor])
+            backends.append(ProcessingBackend(vendor, display_name))
+        except RuntimeError:
+            continue
+    return backends
+
+
 def best_available_engine() -> tuple[str, str | None]:
     """Normal-mode's "Processing: Automatic" resolves to this -- prefer
     Intel iGPU, then AMD GPU, then fall back to CPU. Returns (encoder id,
@@ -58,16 +90,12 @@ def best_available_engine() -> tuple[str, str | None]:
     Encoder-dropdown pick already goes through.
 
     Order matches formatting.hardware_status_text()'s own vendor-probe
-    order, and reuses find_render_node above rather than re-implementing
-    detection -- this is the one place in the app anything auto-picks
-    hardware; everything else has always required an explicit choice.
+    order.
     """
+    available = {backend.id for backend in detect_available_backends()}
     for vendor in ("intel", "amd"):
-        try:
-            find_render_node(GPU_VENDOR_IDS[vendor])
+        if vendor in available:
             return "hevc_vaapi", vendor
-        except RuntimeError:
-            continue
     return "libx265", None
 
 

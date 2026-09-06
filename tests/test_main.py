@@ -4198,6 +4198,77 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
         self.assertEqual(window.height(), 950)
 
 
+class TestDynamicProcessingButtons(unittest.TestCase):
+    """Processing (ui_builder.py's processing_seg_row) is built from
+    worker.detect_available_backends() now instead of three hardcoded
+    buttons -- a vendor with no button doesn't just get disabled, it
+    never exists as a widget at all, matching the actual product goal
+    (don't ask a non-technical user to choose between options that can't
+    work). Mocked rather than gated on this machine's real hardware, so
+    every combination is actually exercised regardless of what happens to
+    be installed wherever this runs."""
+
+    def test_no_gpu_leaves_only_a_solo_cpu_button(self):
+        with patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main.MainWindow()
+        self.assertEqual(window.processing_cpu_btn.objectName(), "segSolo")
+        self.assertIsNone(window.processing_intel_btn)
+        self.assertIsNone(window.processing_amd_btn)
+        self.assertEqual(len(window.processing_button_group.buttons()), 1)
+
+    def test_intel_only_gets_a_two_segment_row(self):
+        with patch.object(main.worker, "find_render_node", side_effect=_find_render_node_for(main.worker.INTEL_VENDOR_ID)):
+            window = main.MainWindow()
+        self.assertEqual(window.processing_cpu_btn.objectName(), "segLeft")
+        self.assertEqual(window.processing_intel_btn.objectName(), "segRight")
+        self.assertIsNone(window.processing_amd_btn)
+        self.assertEqual(len(window.processing_button_group.buttons()), 2)
+
+    def test_amd_only_gets_a_two_segment_row(self):
+        with patch.object(main.worker, "find_render_node", side_effect=_find_render_node_for(main.worker.AMD_VENDOR_ID)):
+            window = main.MainWindow()
+        self.assertEqual(window.processing_cpu_btn.objectName(), "segLeft")
+        self.assertIsNone(window.processing_intel_btn)
+        self.assertEqual(window.processing_amd_btn.objectName(), "segRight")
+        self.assertEqual(len(window.processing_button_group.buttons()), 2)
+
+    def test_both_vendors_present_gets_the_original_three_segment_row(self):
+        with patch.object(
+            main.worker, "find_render_node",
+            side_effect=_find_render_node_for(main.worker.INTEL_VENDOR_ID, main.worker.AMD_VENDOR_ID),
+        ):
+            window = main.MainWindow()
+        self.assertEqual(window.processing_cpu_btn.objectName(), "segLeft")
+        self.assertEqual(window.processing_intel_btn.objectName(), "segMid")
+        self.assertEqual(window.processing_amd_btn.objectName(), "segRight")
+        self.assertEqual(len(window.processing_button_group.buttons()), 3)
+
+    def test_stale_vendor_selection_with_no_matching_button_does_not_crash(self):
+        # Realistic even without touching QSettings/presets directly --
+        # Expert's own encoder_combo (main.py's _current_encoder_id/
+        # _current_gpu_vendor) lists every theoretical encoder regardless
+        # of hardware, same as today; this is just that same combo landing
+        # on "Intel" while Processing's own row (built from real detected
+        # hardware) never got an Intel button to reflect it in.
+        with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main.MainWindow()
+        intel_index = next(
+            i for i, (encoder, vendor, _) in enumerate(main.ENCODERS)
+            if encoder == "hevc_vaapi" and vendor == "intel"
+        )
+        window.encoder_combo.setCurrentIndex(intel_index)
+        window._sync_normal_video_controls()  # must not raise
+        self.assertFalse(window.processing_cpu_btn.isChecked())
+
+
+def _find_render_node_for(*present_vendors: str):
+    def _fake(vendor_id):
+        if vendor_id in present_vendors:
+            return f"/dev/dri/renderD{present_vendors.index(vendor_id)}"
+        raise RuntimeError(f"no render node found for PCI vendor {vendor_id}")
+    return _fake
+
+
 class TestSegmentedButtonBoldWidth(unittest.TestCase):
     # Regression guard for a real, reported-live clipping bug: "Better
     # Quality" (the longest label in its row) had its text cut off,
@@ -4220,7 +4291,14 @@ class TestSegmentedButtonBoldWidth(unittest.TestCase):
         # directly now, a QComboBox with no bold-state width concern.
         # processing_* is back (restored, now Normal-visible) alongside
         # mode_*/audio_handling_*/audio_channels_* (new Normal rows).
-        window = main.MainWindow()
+        # processing_intel_btn/processing_amd_btn only exist at all when
+        # that vendor's hardware was detected (ui_builder.py) -- pinned
+        # present here so this test covers all three regardless of
+        # whatever GPUs happen to be installed on whatever machine runs
+        # it, same reasoning TestRateControlButtons' own docstring gives
+        # for not trusting ambient hardware.
+        with patch.object(worker, "find_render_node", return_value="/dev/dri/renderD128"):
+            window = main.MainWindow()
         window.show()
         for btn in (
             window.processing_cpu_btn, window.processing_intel_btn, window.processing_amd_btn,

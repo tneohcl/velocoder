@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 import formatting
+import worker
 from constants import (
     AUDIO_BITRATES, AUDIO_TRACK_LABELS, CODECS, CONTAINERS, ENCODERS, RC_MODE_FRIENDLY,
     RESOLUTIONS, X265_PRESETS, X265_TUNES,
@@ -355,17 +356,46 @@ class _UiBuilderMixin:
         processing_seg_row = QHBoxLayout()
         processing_seg_row.setSpacing(0)
         self.processing_button_group = QButtonGroup(self)
-        self.processing_cpu_btn = QPushButton("CPU")
-        self.processing_cpu_btn.setObjectName("segLeft")
-        self.processing_intel_btn = QPushButton("Intel")
-        self.processing_intel_btn.setObjectName("segMid")
-        self.processing_amd_btn = QPushButton("AMD")
-        self.processing_amd_btn.setObjectName("segRight")
-        for btn, choice in (
-            (self.processing_cpu_btn, "cpu"),
-            (self.processing_intel_btn, "intel"),
-            (self.processing_amd_btn, "amd"),
-        ):
+        # Intel/AMD only exist as attributes at all when that vendor's
+        # hardware was actually detected -- _sync_normal_video_controls
+        # (main.py) guards every reference to them for exactly this
+        # reason. A machine with no GPU at all still gets CPU alone,
+        # never an empty or hidden row -- "Processing: CPU" next to
+        # Automatic is still real information (it's what Automatic will
+        # always resolve to here), matching best_available_engine's own
+        # unconditional CPU fallback.
+        self.processing_intel_btn = None
+        self.processing_amd_btn = None
+        attr_by_id = {
+            "cpu": "processing_cpu_btn",
+            "intel": "processing_intel_btn",
+            "amd": "processing_amd_btn",
+        }
+        detected = worker.detect_available_backends()
+        seg_buttons = []
+        for backend in detected:
+            btn = QPushButton(backend.display_name)
+            setattr(self, attr_by_id[backend.id], btn)
+            seg_buttons.append((btn, backend.id))
+
+        # Corner-rounding follows actual visible position, not a fixed
+        # CPU/Intel/AMD identity -- style.qss's segLeft/segMid/segRight
+        # only round the row's real outer edges; segSolo is the one-
+        # button-total case (a lone CPU row on a machine with no GPU at
+        # all), which needs both corners rounded like segLeft+segRight
+        # combined, not the "no rounding, no :checked style" a bare
+        # unnamed QPushButton would fall back to.
+        for i, (btn, _choice) in enumerate(seg_buttons):
+            if len(seg_buttons) == 1:
+                btn.setObjectName("segSolo")
+            elif i == 0:
+                btn.setObjectName("segLeft")
+            elif i == len(seg_buttons) - 1:
+                btn.setObjectName("segRight")
+            else:
+                btn.setObjectName("segMid")
+
+        for btn, choice in seg_buttons:
             btn.setCheckable(True)
             btn.setMinimumWidth(self._segmented_btn_min_width(btn))
             self.processing_button_group.addButton(btn)

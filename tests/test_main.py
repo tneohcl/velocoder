@@ -3362,8 +3362,14 @@ class TestHideIdleStatus(unittest.TestCase):
     the bare word, not for any other status text."""
 
     def test_idle_status_is_hidden(self):
-        window = main.MainWindow()
-        window.show()
+        # Pinned to hardware being available (see TestRateControlButtons'
+        # docstring on why this can't rely on the running machine's own
+        # best_available_engine()) -- on a no-GPU box (e.g. CI),
+        # _maybe_note_no_hardware overwrites this status at construction,
+        # which is correct real behavior but not what this test is about.
+        with patch.object(worker, "best_available_engine", return_value=("hevc_vaapi", "intel")):
+            window = main.MainWindow()
+            window.show()
         self.assertEqual(window.status_label.text(), "Idle")
         self.assertFalse(window.status_label.isVisible())
 

@@ -28,7 +28,7 @@ from PySide6.QtGui import (  # noqa: E402
     QColor, QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QFocusEvent, QFont,
     QFontMetrics, QPainter, QPalette, QPixmap, QWheelEvent,
 )
-from PySide6.QtWidgets import QApplication, QScrollArea, QStyleOptionViewItem, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QScrollArea, QStyleOptionViewItem, QTabWidget, QWidget  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
@@ -3349,6 +3349,45 @@ class TestOnAllFinishedSummary(unittest.TestCase):
         window._on_all_finished()
         self.assertEqual(window.status_label.text(), "✓ Conversion Complete")
         self.assertEqual(window.eta_label.text(), "4 videos converted")
+
+
+class TestVideoAudioTabAlignment(unittest.TestCase):
+    """Reported live and confirmed by direct measurement: Video and Audio's
+    tab pages are forced to the same overall height (QStackedWidget sizes
+    every page to the tallest one), but only _build_audio_tab's outer
+    layout had a trailing addStretch() to absorb the resulting surplus
+    space. Video's surplus had nowhere to go but into its own items,
+    inflating video_scope_label past its own sizeHint (confirmed: rendered
+    22px vs a 17px sizeHint at a 1240x900 window) and pushing Encoding's
+    top down out of alignment with Audio's card below its own,
+    correctly-unstretched, scope label. This checks the actual geometry
+    relationship -- first card top relative to its tab page -- not one
+    magic Y coordinate, so it stays meaningful across DPI/theme/font
+    changes."""
+
+    def test_first_card_top_matches_between_video_and_audio_tabs(self):
+        window = main.MainWindow()
+        window.resize(1240, 900)
+        window.show()
+        for _ in range(5):
+            QApplication.processEvents()
+
+        video_label_bottom = window.video_scope_label.geometry().bottom()
+        encoding_group = window.video_scope_label.parentWidget().layout().itemAt(1).widget()
+        video_gap = encoding_group.geometry().top() - video_label_bottom
+
+        tabs = window.findChild(QTabWidget)
+        tabs.setCurrentIndex(1)
+        for _ in range(5):
+            QApplication.processEvents()
+
+        audio_label_bottom = window.audio_scope_label.geometry().bottom()
+        audio_group = window.audio_scope_label.parentWidget().layout().itemAt(1).widget()
+        audio_gap = audio_group.geometry().top() - audio_label_bottom
+
+        self.assertEqual(window.video_scope_label.height(), window.video_scope_label.sizeHint().height())
+        self.assertEqual(window.audio_scope_label.height(), window.audio_scope_label.sizeHint().height())
+        self.assertEqual(video_gap, audio_gap)
 
 
 class TestHideIdleStatus(unittest.TestCase):

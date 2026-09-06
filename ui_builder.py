@@ -836,6 +836,16 @@ class _UiBuilderMixin:
         self.video_expert_group = self._make_collapsible_group("Expert", expert_content, expanded=False)
         outer.addWidget(self.video_expert_group)
 
+        # Without this, Video and Audio's tab pages are forced to the same
+        # height (QStackedWidget sizes every page to the tallest one) but
+        # only Audio had a trailing stretch to absorb the resulting surplus
+        # -- Video's surplus space had nowhere to go but into its own
+        # items, inflating video_scope_label past its own sizeHint (real,
+        # confirmed: rendered 22px vs a 17px sizeHint) and pushing Encoding
+        # down with it, out of alignment with Audio's card below its own,
+        # correctly unstretched, scope label.
+        outer.addStretch()
+
         return tab
 
     def _build_audio_tab(self) -> QWidget:

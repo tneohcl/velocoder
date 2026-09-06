@@ -2,7 +2,7 @@
 # Shares the transcoder venv (identical dependencies -- PySide6 etc. --
 # no reason to duplicate a ~500MB install for a sibling app).
 source /mnt/data/tools/venv/transcoder/bin/activate
-cd /mnt/data/tools/titan-video-consumer
+cd /mnt/data/tools/velocoder
 
 LOG=/tmp/velocoder_debug.log
 echo "===== launch $(date '+%Y-%m-%d %H:%M:%S') =====" >> "$LOG"

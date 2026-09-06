@@ -139,8 +139,9 @@ specialist repo you want:
    and awkward to keep rebasing. Not recommended given how much of
    `ui_builder.py`/`style.qss` this cut list touches.
 
-**Decision made: option 2.** This folder (`titan-video-consumer`,
-sibling to `titan-video`) is a plain `git clone` of `titan-video` at
+**Decision made: option 2.** This folder (originally `titan-video-
+consumer`, sibling to `titan-video`; renamed to `velocoder` once the app
+itself was) is a plain `git clone` of `titan-video` at
 commit `d9c4cdc`, given the cut list above is subtractive enough that
 upstream UI changes won't merge cleanly either direction, and the two
 products may end up branded separately per the naming question above.

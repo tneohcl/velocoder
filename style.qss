@@ -324,20 +324,14 @@ QPushButton#segMid[segEnd="true"] {
    $BORDER_STRONG instead, so the selected segment keeps a real, visible
    edge and the row's overall perimeter reads as one consistent outline
    regardless of which segment is checked -- only the fill/text/weight
-   change to show selection, not the border. segSolo (Processing's own
-   row when only CPU is available at all -- ui_builder.py) gets the same
-   treatment: it's not in the border-radius: 0 reset above, so it keeps
-   the base QPushButton rule's own full 6px radius, needing only this
-   checked-state styling to match its segmented siblings. */
-QPushButton#segLeft:checked, QPushButton#segMid:checked, QPushButton#segRight:checked,
-QPushButton#segSolo:checked {
+   change to show selection, not the border. */
+QPushButton#segLeft:checked, QPushButton#segMid:checked, QPushButton#segRight:checked {
     background-color: $ACCENT;
     color: $TEXT_ON_ACCENT;
     font-weight: 600;
 }
 
-QPushButton#segLeft:checked:hover, QPushButton#segMid:checked:hover, QPushButton#segRight:checked:hover,
-QPushButton#segSolo:checked:hover {
+QPushButton#segLeft:checked:hover, QPushButton#segMid:checked:hover, QPushButton#segRight:checked:hover {
     background-color: $ACCENT_HOVER;
 }
 
@@ -433,8 +427,7 @@ QToolButton[focusVisible="true"], QTabBar::tab:focus {
 QPushButton#startButton[focusVisible="true"],
 QPushButton#segLeft:checked[focusVisible="true"],
 QPushButton#segMid:checked[focusVisible="true"],
-QPushButton#segRight:checked[focusVisible="true"],
-QPushButton#segSolo:checked[focusVisible="true"] {
+QPushButton#segRight:checked[focusVisible="true"] {
     outline-color: $TEXT_ON_ACCENT;
 }
 

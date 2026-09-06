@@ -197,6 +197,15 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self.queue.all_finished.connect(self._on_all_finished)
         self.queue.paused.connect(self._on_paused)
 
+        # Probed once per session, not re-detected on every Processing-
+        # row build or Automatic resolution -- hardware is fixed for the
+        # life of a run of this app (no hot-plug monitoring), and this
+        # snapshot is what both _build_encoding_group's button set and
+        # _resolved_engine_vendor below check against, so they can never
+        # disagree about what's actually present.
+        self._available_backends = worker.detect_available_backends()
+        self._available_backend_ids = {b.id for b in self._available_backends}
+
         self._build_ui()
         # Ctrl+Z/Ctrl+Shift+Z -- default Qt.WindowShortcut context, fires
         # regardless of which child widget has focus, matching how
@@ -502,6 +511,21 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         QApplication.clipboard().setText(shlex.join(self._last_preview_args))
 
     # --- cascading settings behavior ---
+    def _resolved_engine_vendor(self, engine: str, vendor: str | None) -> tuple[str, str | None]:
+        """engine/vendor as this session's own _available_backends actually
+        supports. constants.ENCODERS lists Intel/AMD unconditionally
+        regardless of real hardware (Expert's encoder_combo isn't filtered
+        by detected capability -- that's Phase 4's job, not this pass'),
+        so a vendor named there can still be one this machine never had a
+        render node for. Resolves through the same worker.best_available_
+        engine() Automatic already uses rather than leaving a selection
+        build_args would later fail a real job on. A real, currently-
+        available combo (including plain CPU, vendor None) passes through
+        unchanged."""
+        if engine == "hevc_vaapi" and vendor not in self._available_backend_ids:
+            return worker.best_available_engine()
+        return engine, vendor
+
     def _current_encoder_id(self) -> str:
         # Resolves ENCODERS' engine choice and CODECS' codec choice into
         # the one real ffmpeg encoder id the rest of the app (RC_MODES,
@@ -526,6 +550,28 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         return encoder_profile_key(self._current_encoder_id(), self._current_gpu_vendor())
 
     def _on_encoder_changed(self):
+        # encoder_combo just landed on a vendor _resolved_engine_vendor
+        # doesn't consider available (Expert's own combo lists every
+        # vendor unconditionally, unfiltered by real hardware) --
+        # self-correct the combo's own selection to whatever Automatic
+        # would actually resolve to before anything below reads it, same
+        # blockSignals-around-a-self-triggered-setCurrentIndex shape
+        # codec_combo's own forced-H.265 case just below already uses, so
+        # every one of this function's later _current_encoder_id() calls
+        # (and _current_settings(), and anything a new queue item captures
+        # afterward) reads an already-valid state instead of needing its
+        # own separate correction.
+        resolved_engine, resolved_vendor = self._resolved_engine_vendor(
+            self._current_encoder_id(), self._current_gpu_vendor()
+        )
+        if (resolved_engine, resolved_vendor) != (self._current_encoder_id(), self._current_gpu_vendor()):
+            corrected_index = next(
+                i for i, (_enc, vendor, _label) in enumerate(ENCODERS) if vendor == resolved_vendor
+            )
+            self.encoder_combo.blockSignals(True)
+            self.encoder_combo.setCurrentIndex(corrected_index)
+            self.encoder_combo.blockSignals(False)
+
         # Also called from _on_codec_changed below (not wired to codec_
         # combo.currentIndexChanged directly anymore) -- the resolved
         # encoder id depends on both encoder_combo and codec_combo (see
@@ -876,8 +922,16 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             engine, vendor = self.codec_combo.currentData(), None
         elif choice == "intel":
             engine, vendor = "hevc_vaapi", "intel"
-        else:
+        elif choice == "amd":
             engine, vendor = "hevc_vaapi", "amd"
+        else:
+            # Every real click is wired to one of the literals above
+            # (ui_builder.py) -- anything else is a real bug, not a
+            # hardware possibility to fall back from. Explicit branches,
+            # not an else defaulting to "amd", so a future vendor
+            # (NVIDIA) added to this chain can't silently land on the
+            # wrong one if a branch for it gets missed.
+            raise ValueError(f"unknown Processing choice: {choice!r}")
         settings = self._current_settings()
         old_key = self._current_encoder_key()
         was_vaapi = settings["encoder"] == "hevc_vaapi"
@@ -1245,6 +1299,21 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # option then), so that's the correct default for anything missing it.
         is_vaapi_settings = settings["encoder"] == "hevc_vaapi"
         wanted_vendor = settings.get("gpu_vendor", "intel") if is_vaapi_settings else None
+        resolved_engine, resolved_vendor = self._resolved_engine_vendor(settings["encoder"], wanted_vendor)
+        if (resolved_engine, resolved_vendor) != (settings["encoder"], wanted_vendor):
+            # A job/settings dict naming a vendor this machine doesn't
+            # actually have -- same resolution _on_encoder_changed's own
+            # self-correction uses, needed here too since this path
+            # (queue-item selection, __init__'s own DEFAULT_SETTINGS)
+            # never fires that signal at all. A local copy, not a
+            # mutation of the caller's own dict -- this can be DEFAULT_
+            # SETTINGS itself (one shared module-level constant every
+            # MainWindow reads) or a queue item's live settings, neither
+            # of which should get silently rewritten just from being
+            # displayed.
+            settings = {**settings, "encoder": resolved_engine, "gpu_vendor": resolved_vendor}
+            is_vaapi_settings = resolved_engine == "hevc_vaapi"
+            wanted_vendor = resolved_vendor
         # Matched by vendor alone, not enc == settings["encoder"] -- the
         # CPU row's own id in ENCODERS is just a placeholder now (see its
         # own comment in constants.py), not necessarily what

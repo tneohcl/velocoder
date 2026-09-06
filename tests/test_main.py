@@ -4208,10 +4208,18 @@ class TestDynamicProcessingButtons(unittest.TestCase):
     every combination is actually exercised regardless of what happens to
     be installed wherever this runs."""
 
-    def test_no_gpu_leaves_only_a_solo_cpu_button(self):
+    def test_no_gpu_hides_the_whole_processing_row(self):
+        # Automatic and a lone CPU segment would always mean the exact
+        # same outcome on a machine with no GPU at all -- asking
+        # "Processing?" is a decision with only one possible answer, so
+        # the row (Automatic included, not just the segmented part)
+        # doesn't get shown rather than offering a choice with nothing
+        # to actually choose between.
         with patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")):
             window = main.MainWindow()
-        self.assertEqual(window.processing_cpu_btn.objectName(), "segSolo")
+        window.show()
+        self.assertFalse(window.processing_auto_btn.isVisible())
+        self.assertFalse(window.processing_cpu_btn.isVisible())
         self.assertIsNone(window.processing_intel_btn)
         self.assertIsNone(window.processing_amd_btn)
         self.assertEqual(len(window.processing_button_group.buttons()), 1)
@@ -4243,22 +4251,75 @@ class TestDynamicProcessingButtons(unittest.TestCase):
         self.assertEqual(window.processing_amd_btn.objectName(), "segRight")
         self.assertEqual(len(window.processing_button_group.buttons()), 3)
 
-    def test_stale_vendor_selection_with_no_matching_button_does_not_crash(self):
-        # Realistic even without touching QSettings/presets directly --
-        # Expert's own encoder_combo (main.py's _current_encoder_id/
-        # _current_gpu_vendor) lists every theoretical encoder regardless
-        # of hardware, same as today; this is just that same combo landing
-        # on "Intel" while Processing's own row (built from real detected
-        # hardware) never got an Intel button to reflect it in.
-        with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
-            window = main.MainWindow()
-        intel_index = next(
-            i for i, (encoder, vendor, _) in enumerate(main.ENCODERS)
+    @staticmethod
+    def _intel_encoder_combo_index():
+        return next(
+            i for i, (encoder, vendor, _label) in enumerate(main.ENCODERS)
             if encoder == "hevc_vaapi" and vendor == "intel"
         )
-        window.encoder_combo.setCurrentIndex(intel_index)
-        window._sync_normal_video_controls()  # must not raise
-        self.assertFalse(window.processing_cpu_btn.isChecked())
+
+    def test_live_pick_of_an_unavailable_vendor_self_corrects_to_cpu(self):
+        # Expert's own encoder_combo (main.py's _current_encoder_id/
+        # _current_gpu_vendor) lists every vendor unconditionally,
+        # unfiltered by real hardware -- picking "Intel" there on a
+        # machine with no Intel render node used to just leave Processing
+        # showing nothing checked while encoder_combo itself still quietly
+        # held "Intel", which build_args would later fail a real job on.
+        # _on_encoder_changed now self-corrects the combo's own selection
+        # immediately, the same resolution Automatic already uses.
+        with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main.MainWindow()
+            window.encoder_combo.setCurrentIndex(self._intel_encoder_combo_index())
+            self.assertEqual(window._current_encoder_id(), "libx265")
+            self.assertIsNone(window._current_gpu_vendor())
+            self.assertTrue(window.processing_cpu_btn.isChecked())
+
+    def test_live_pick_of_an_unavailable_vendor_prefers_the_real_gpu_thats_present(self):
+        with patch.object(main.worker, "find_render_node", side_effect=_find_render_node_for(main.worker.AMD_VENDOR_ID)):
+            window = main.MainWindow()
+            window.encoder_combo.setCurrentIndex(self._intel_encoder_combo_index())
+            self.assertEqual(window._current_encoder_id(), "hevc_vaapi")
+            self.assertEqual(window._current_gpu_vendor(), "amd")
+            self.assertTrue(window.processing_amd_btn.isChecked())
+
+    def test_applying_a_job_with_an_unavailable_vendor_resolves_through_automatic(self):
+        # The realistic way a queue item's own stored settings end up
+        # naming an unavailable vendor at all: added while Expert's combo
+        # was on "Intel" (previous test), not any preset/save-file feature
+        # -- this fork has none (presets.py's own docstring). speed="4"
+        # here, not DEFAULT_SETTINGS' own "medium" -- a real job that was
+        # genuinely built on hevc_vaapi always carries a compression_level
+        # string, never an x264/x265 preset name; mixing the two is an
+        # invalid settings shape this test has no reason to manufacture.
+        with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main.MainWindow()
+            stale_job = {**main.DEFAULT_SETTINGS, "encoder": "hevc_vaapi", "gpu_vendor": "intel", "speed": "4"}
+            window._apply_settings_to_controls(stale_job)  # must not raise
+            self.assertEqual(window._current_encoder_id(), "libx265")
+            self.assertIsNone(window._current_gpu_vendor())
+        # DEFAULT_SETTINGS is one shared module-level dict every
+        # MainWindow reads -- applying a *different* dict's corrected
+        # values must never leak back into it.
+        self.assertEqual(main.DEFAULT_SETTINGS["encoder"], "libx265")
+        self.assertNotIn("gpu_vendor", main.DEFAULT_SETTINGS)
+
+    def test_applying_a_job_with_an_unavailable_vendor_prefers_the_real_gpu_thats_present(self):
+        with patch.object(main.worker, "find_render_node", side_effect=_find_render_node_for(main.worker.AMD_VENDOR_ID)):
+            window = main.MainWindow()
+            stale_job = {**main.DEFAULT_SETTINGS, "encoder": "hevc_vaapi", "gpu_vendor": "intel", "speed": "4"}
+            window._apply_settings_to_controls(stale_job)
+            self.assertEqual(window._current_encoder_id(), "hevc_vaapi")
+            self.assertEqual(window._current_gpu_vendor(), "amd")
+
+
+class TestUnknownProcessingChoiceRaises(unittest.TestCase):
+    def test_unrecognized_choice_raises_rather_than_silently_picking_a_vendor(self):
+        # Cheap insurance against a future vendor (NVIDIA) landing on the
+        # wrong branch if adding it to _on_processing_choice ever misses
+        # a case -- an explicit crash beats a silently wrong encoder.
+        window = main.MainWindow()
+        with self.assertRaises(ValueError):
+            window._on_processing_choice("nvidia")
 
 
 def _find_render_node_for(*present_vendors: str):

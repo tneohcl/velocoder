@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
 )
 
 import formatting
-import worker
 from constants import (
     AUDIO_BITRATES, AUDIO_TRACK_LABELS, CODECS, CONTAINERS, ENCODERS, RC_MODE_FRIENDLY,
     RESOLUTIONS, X265_PRESETS, X265_TUNES,
@@ -359,11 +358,7 @@ class _UiBuilderMixin:
         # Intel/AMD only exist as attributes at all when that vendor's
         # hardware was actually detected -- _sync_normal_video_controls
         # (main.py) guards every reference to them for exactly this
-        # reason. A machine with no GPU at all still gets CPU alone,
-        # never an empty or hidden row -- "Processing: CPU" next to
-        # Automatic is still real information (it's what Automatic will
-        # always resolve to here), matching best_available_engine's own
-        # unconditional CPU fallback.
+        # reason.
         self.processing_intel_btn = None
         self.processing_amd_btn = None
         attr_by_id = {
@@ -371,7 +366,12 @@ class _UiBuilderMixin:
             "intel": "processing_intel_btn",
             "amd": "processing_amd_btn",
         }
-        detected = worker.detect_available_backends()
+        # Cached once in MainWindow.__init__, not re-probed here -- this
+        # session's hardware is fixed for its whole lifetime (no hot-plug
+        # monitoring), and _resolved_engine_vendor (main.py) checks
+        # against this exact same snapshot, so Automatic's silent pick
+        # and this row's own button set can never disagree.
+        detected = self._available_backends
         seg_buttons = []
         for backend in detected:
             btn = QPushButton(backend.display_name)
@@ -380,15 +380,9 @@ class _UiBuilderMixin:
 
         # Corner-rounding follows actual visible position, not a fixed
         # CPU/Intel/AMD identity -- style.qss's segLeft/segMid/segRight
-        # only round the row's real outer edges; segSolo is the one-
-        # button-total case (a lone CPU row on a machine with no GPU at
-        # all), which needs both corners rounded like segLeft+segRight
-        # combined, not the "no rounding, no :checked style" a bare
-        # unnamed QPushButton would fall back to.
+        # only round the row's real outer two edges.
         for i, (btn, _choice) in enumerate(seg_buttons):
-            if len(seg_buttons) == 1:
-                btn.setObjectName("segSolo")
-            elif i == 0:
+            if i == 0:
                 btn.setObjectName("segLeft")
             elif i == len(seg_buttons) - 1:
                 btn.setObjectName("segRight")
@@ -403,6 +397,16 @@ class _UiBuilderMixin:
             btn.clicked.connect(lambda _checked, c=choice: self._on_processing_choice(c))
         processing_row.addWidget(self._capped_row(processing_seg_row, 240), 1)
         form.addRow("Processing:", processing_row)
+        if len(detected) == 1:
+            # Only CPU exists at all -- Automatic and the lone CPU segment
+            # would always mean the exact same outcome, so asking "which
+            # Processing?" is a decision with only one possible answer.
+            # Hide the whole row (label included) rather than show a
+            # single-button segmented control with nothing to actually
+            # choose between; _on_processing_choice/_sync_normal_video_
+            # controls still work normally on the buttons underneath,
+            # they're just never shown.
+            form.setRowVisible(processing_row, False)
 
         # H.265/H.264 -- only meaningful for the CPU engine (no h264_vaapi
         # wired up, hardware is HEVC-only here), so it's disabled and

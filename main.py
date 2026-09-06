@@ -858,16 +858,22 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         if target_btn is not None:
             target_btn.setChecked(True)
         else:
-            # Belt-and-suspenders: _on_encoder_changed/_apply_settings_to_
-            # controls already resolve an unavailable vendor before it can
-            # reach encoder_combo's own selection at all (see _resolved_
-            # engine_vendor), so this shouldn't be reachable in practice.
-            # If it ever is anyway -- a settings state naming a vendor
-            # unavailable on this machine, from some path that missed that
-            # resolution -- same "no exact match" shape as the quality-tier
-            # handling just below, and the same fix: leave the row showing
-            # nothing checked rather than falsely implying CPU when the
-            # real settings say otherwise.
+            # Genuinely reachable, not just defensive: encoder_combo is
+            # deliberately free-floating UI state (Expert's own combo
+            # lists every vendor unconditionally, unfiltered by real
+            # hardware -- _on_encoder_changed/_apply_settings_to_controls
+            # do NOT self-correct it, on purpose, so a great many
+            # hardware-agnostic UI-cascade tests can keep driving it to
+            # any encoder regardless of the real machine's own hardware).
+            # _resolved_engine_vendor's correction only happens at the
+            # actual job boundaries (add_files, syncing a selected queue
+            # item's settings -- see _effective_current_settings), so
+            # this branch is exactly what a live Expert pick of an
+            # unavailable vendor looks like before either of those runs.
+            # Same "no exact match" shape as the quality-tier handling
+            # just below, and the same fix: leave the row showing nothing
+            # checked rather than falsely implying CPU when the real
+            # settings say otherwise.
             self.processing_button_group.setExclusive(False)
             for btn in (self.processing_cpu_btn, self.processing_intel_btn, self.processing_amd_btn):
                 if btn is not None:
@@ -901,27 +907,16 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
                 btn.setChecked(False)
             self.quality_tier_button_group.setExclusive(True)
 
-    def _on_processing_choice(self, choice: str):
-        if choice == "automatic":
-            engine, vendor = worker.best_available_engine(self._available_backends)
-        elif choice == "cpu":
-            # Whatever Codec (H.265/H.264) already holds -- switching
-            # engine back to CPU shouldn't silently change codec too.
-            engine, vendor = self.codec_combo.currentData(), None
-        elif choice == "intel":
-            engine, vendor = "hevc_vaapi", "intel"
-        elif choice == "amd":
-            engine, vendor = "hevc_vaapi", "amd"
-        else:
-            # Every real click is wired to one of the literals above
-            # (ui_builder.py) -- anything else is a real bug, not a
-            # hardware possibility to fall back from. Explicit branches,
-            # not an else defaulting to "amd", so a future vendor
-            # (NVIDIA) added to this chain can't silently land on the
-            # wrong one if a branch for it gets missed.
-            raise ValueError(f"unknown Processing choice: {choice!r}")
-        settings = self._current_settings()
-        old_key = self._current_encoder_key()
+    def _settings_for_engine_vendor(self, settings: dict, engine: str, vendor: str | None) -> dict:
+        """settings moved to a different (engine, vendor), translating
+        everything that only means something within one encoder family's
+        own scale -- shared by _on_processing_choice (a live Processing
+        pick) and _effective_current_settings (an unavailable-vendor
+        correction), which are both "move these settings to a different
+        engine family" in exactly the same sense. Returns a new dict,
+        never mutates the one passed in."""
+        settings = dict(settings)
+        old_key = encoder_profile_key(settings["encoder"], settings.get("gpu_vendor"))
         was_vaapi = settings["encoder"] == "hevc_vaapi"
         now_vaapi = engine == "hevc_vaapi"
         settings["encoder"] = engine
@@ -959,7 +954,48 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             )
             settings["rc_mode"] = RC_MODE_FRIENDLY[new_key]["quality"]
             settings["quality_value"] = QUALITY_TIERS[new_key][old_tier]
+        return settings
+
+    def _on_processing_choice(self, choice: str):
+        if choice == "automatic":
+            engine, vendor = worker.best_available_engine(self._available_backends)
+        elif choice == "cpu":
+            # Whatever Codec (H.265/H.264) already holds -- switching
+            # engine back to CPU shouldn't silently change codec too.
+            engine, vendor = self.codec_combo.currentData(), None
+        elif choice == "intel":
+            engine, vendor = "hevc_vaapi", "intel"
+        elif choice == "amd":
+            engine, vendor = "hevc_vaapi", "amd"
+        else:
+            # Every real click is wired to one of the literals above
+            # (ui_builder.py) -- anything else is a real bug, not a
+            # hardware possibility to fall back from. Explicit branches,
+            # not an else defaulting to "amd", so a future vendor
+            # (NVIDIA) added to this chain can't silently land on the
+            # wrong one if a branch for it gets missed.
+            raise ValueError(f"unknown Processing choice: {choice!r}")
+        settings = self._settings_for_engine_vendor(self._current_settings(), engine, vendor)
         self._apply_settings_to_controls(settings)
+
+    def _effective_current_settings(self) -> dict:
+        """_current_settings(), corrected for a vendor that isn't
+        actually there. Expert's own encoder_combo isn't filtered by
+        real hardware (deliberately -- see _resolved_engine_vendor's own
+        docstring, and _on_encoder_changed's on why that correction
+        doesn't belong there), so the raw settings can name a vendor
+        build_args would fail a real job trying to open. Every boundary
+        where UI state becomes a real, executable job -- add_files,
+        syncing a queue item's settings from the panel -- should read
+        this instead of _current_settings() directly. The many hardware-
+        agnostic UI-cascade tests that deliberately rely on
+        _current_settings() staying a literal, uncorrected read of the
+        controls are exactly why this lives here instead."""
+        settings = self._current_settings()
+        engine, vendor = self._resolved_engine_vendor(settings["encoder"], settings.get("gpu_vendor"))
+        if (engine, vendor) == (settings["encoder"], settings.get("gpu_vendor")):
+            return settings
+        return self._settings_for_engine_vendor(settings, engine, vendor)
 
     def _on_quality_tier_clicked(self, tier: str):
         key = self._current_encoder_key()
@@ -985,7 +1021,11 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # item's settings with the first one's, just from clicking to select.
         if self._syncing_controls_from_selection or not self._queue_editable:
             return
-        settings = self._current_settings()
+        # _effective_current_settings(), not _current_settings() -- this
+        # writes directly into a real queue item's own stored settings,
+        # the other real boundary a settings dict becomes a job that
+        # could reach build_args (see that method's own docstring).
+        settings = self._effective_current_settings()
         selected = self.queue_list.selectedItems()
         if not selected:
             return

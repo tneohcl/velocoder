@@ -867,12 +867,16 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         if target_btn is not None:
             target_btn.setChecked(True)
         else:
-            # A settings dict naming a vendor this machine's Processing
-            # row never offered a button for at all (e.g. a preset saved
-            # on a different machine) -- same "no exact match" shape as
-            # the quality-tier handling just below, and the same fix:
-            # leave the row showing nothing checked rather than falsely
-            # implying CPU when the real settings say otherwise.
+            # Belt-and-suspenders: _on_encoder_changed/_apply_settings_to_
+            # controls already resolve an unavailable vendor before it can
+            # reach encoder_combo's own selection at all (see _resolved_
+            # engine_vendor), so this shouldn't be reachable in practice.
+            # If it ever is anyway -- a settings state naming a vendor
+            # unavailable on this machine, from some path that missed that
+            # resolution -- same "no exact match" shape as the quality-tier
+            # handling just below, and the same fix: leave the row showing
+            # nothing checked rather than falsely implying CPU when the
+            # real settings say otherwise.
             self.processing_button_group.setExclusive(False)
             for btn in (self.processing_cpu_btn, self.processing_intel_btn, self.processing_amd_btn):
                 if btn is not None:

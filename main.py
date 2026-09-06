@@ -197,6 +197,15 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self.queue.all_finished.connect(self._on_all_finished)
         self.queue.paused.connect(self._on_paused)
 
+        # Probed once per session, not re-detected on every Processing-
+        # row build or Automatic resolution -- hardware is fixed for the
+        # life of a run of this app (no hot-plug monitoring), and this
+        # snapshot is what both _build_encoding_group's button set and
+        # _resolved_engine_vendor below check against, so they can never
+        # disagree about what's actually present.
+        self._available_backends = worker.detect_available_backends()
+        self._available_backend_ids = {b.id for b in self._available_backends}
+
         self._build_ui()
         # Ctrl+Z/Ctrl+Shift+Z -- default Qt.WindowShortcut context, fires
         # regardless of which child widget has focus, matching how
@@ -267,7 +276,13 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # rather than hand-setting setVisible(False) per-widget in
         # ui_builder.py at construction time.
         self._apply_run_phase_visuals("idle")
-        self._maybe_note_no_hardware()
+        # Deliberately no "no hardware found" startup notice -- CPU is a
+        # completely valid, silent Automatic outcome (worth knowing about
+        # in a future diagnostics screen, not worth greeting a non-
+        # technical user with something that reads like a problem when
+        # nothing is wrong; Processing's own row already hides itself
+        # entirely on a CPU-only machine for the same reason, see
+        # ui_builder.py's _build_encoding_group).
         self._update_settings_scope_label()
         # Only ever read while something is selected (_sync_settings_to_
         # selected_queue_items) -- this initial value is never actually
@@ -275,19 +290,6 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # but every control already has its real starting value by this
         # point in __init__, so there's no reason to leave it unset.
         self._last_synced_settings = self._current_settings()
-
-    def _maybe_note_no_hardware(self):
-        # Silent when hardware acceleration is available -- Automatic
-        # Processing already just works, nobody needs ambient reassurance
-        # a render node exists (the old persistent footer said so
-        # regardless, reported as the most generic-utility-feeling part
-        # of the window). Only speaks up in the one case that actually
-        # matters to the user: no hardware found at all, so Processing
-        # will always resolve to CPU regardless of which engine button is
-        # picked -- worth knowing once, not worth a permanent status line.
-        engine, _vendor = worker.best_available_engine()
-        if engine != "hevc_vaapi":
-            self._set_status("No hardware acceleration detected — using CPU")
 
     def closeEvent(self, event):
         self._qsettings.setValue("window_geometry", self.saveGeometry())
@@ -502,6 +504,21 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         QApplication.clipboard().setText(shlex.join(self._last_preview_args))
 
     # --- cascading settings behavior ---
+    def _resolved_engine_vendor(self, engine: str, vendor: str | None) -> tuple[str, str | None]:
+        """engine/vendor as this session's own _available_backends actually
+        supports. constants.ENCODERS lists Intel/AMD unconditionally
+        regardless of real hardware (Expert's encoder_combo isn't filtered
+        by detected capability -- that's Phase 4's job, not this pass'),
+        so a vendor named there can still be one this machine never had a
+        render node for. Resolves through the same worker.best_available_
+        engine() Automatic already uses rather than leaving a selection
+        build_args would later fail a real job on. A real, currently-
+        available combo (including plain CPU, vendor None) passes through
+        unchanged."""
+        if engine == "hevc_vaapi" and vendor not in self._available_backend_ids:
+            return worker.best_available_engine(self._available_backends)
+        return engine, vendor
+
     def _current_encoder_id(self) -> str:
         # Resolves ENCODERS' engine choice and CODECS' codec choice into
         # the one real ffmpeg encoder id the rest of the app (RC_MODES,
@@ -531,6 +548,19 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # encoder id depends on both encoder_combo and codec_combo (see
         # _current_encoder_id()), so a codec change needs this same full
         # cascade too, just wrapped with quality-tier preservation first.
+        #
+        # Deliberately does NOT self-correct an unavailable vendor here --
+        # encoder_combo is free-floating UI state (Expert's combo lists
+        # every vendor unconditionally, unfiltered by real hardware), and
+        # a great many existing tests rely on being able to set it to any
+        # of the three rows regardless of what hardware the machine
+        # actually running the suite has (confirmed the hard way: an
+        # earlier version of this correction here broke a wide swath of
+        # pre-existing hardware-agnostic UI-cascade tests on a genuinely
+        # hardware-less CI runner). The one place this actually needs
+        # correcting -- a real queue item that could reach build_args with
+        # an impossible vendor -- is add_files (queue_controller.py),
+        # which is the sole place a job's settings get captured at all.
         encoder = self._current_encoder_id()
         encoder_key = self._current_encoder_key()
         is_vaapi = encoder == "hevc_vaapi"
@@ -818,12 +848,31 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         Compatibility itself is gone (Codec is Normal-visible directly
         now), so there's nothing left to sync for it."""
         engine, vendor = self._current_encoder_id(), self._current_gpu_vendor()
+        target_btn = None
         if engine == "hevc_vaapi" and vendor == "intel":
-            self.processing_intel_btn.setChecked(True)
+            target_btn = self.processing_intel_btn
         elif engine == "hevc_vaapi" and vendor == "amd":
-            self.processing_amd_btn.setChecked(True)
+            target_btn = self.processing_amd_btn
         else:
-            self.processing_cpu_btn.setChecked(True)
+            target_btn = self.processing_cpu_btn
+        if target_btn is not None:
+            target_btn.setChecked(True)
+        else:
+            # Belt-and-suspenders: _on_encoder_changed/_apply_settings_to_
+            # controls already resolve an unavailable vendor before it can
+            # reach encoder_combo's own selection at all (see _resolved_
+            # engine_vendor), so this shouldn't be reachable in practice.
+            # If it ever is anyway -- a settings state naming a vendor
+            # unavailable on this machine, from some path that missed that
+            # resolution -- same "no exact match" shape as the quality-tier
+            # handling just below, and the same fix: leave the row showing
+            # nothing checked rather than falsely implying CPU when the
+            # real settings say otherwise.
+            self.processing_button_group.setExclusive(False)
+            for btn in (self.processing_cpu_btn, self.processing_intel_btn, self.processing_amd_btn):
+                if btn is not None:
+                    btn.setChecked(False)
+            self.processing_button_group.setExclusive(True)
 
         key = self._current_encoder_key()
         rc_mode = self.rc_mode_combo.currentData()
@@ -854,15 +903,23 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
 
     def _on_processing_choice(self, choice: str):
         if choice == "automatic":
-            engine, vendor = worker.best_available_engine()
+            engine, vendor = worker.best_available_engine(self._available_backends)
         elif choice == "cpu":
             # Whatever Codec (H.265/H.264) already holds -- switching
             # engine back to CPU shouldn't silently change codec too.
             engine, vendor = self.codec_combo.currentData(), None
         elif choice == "intel":
             engine, vendor = "hevc_vaapi", "intel"
-        else:
+        elif choice == "amd":
             engine, vendor = "hevc_vaapi", "amd"
+        else:
+            # Every real click is wired to one of the literals above
+            # (ui_builder.py) -- anything else is a real bug, not a
+            # hardware possibility to fall back from. Explicit branches,
+            # not an else defaulting to "amd", so a future vendor
+            # (NVIDIA) added to this chain can't silently land on the
+            # wrong one if a branch for it gets missed.
+            raise ValueError(f"unknown Processing choice: {choice!r}")
         settings = self._current_settings()
         old_key = self._current_encoder_key()
         was_vaapi = settings["encoder"] == "hevc_vaapi"
@@ -1230,6 +1287,13 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # option then), so that's the correct default for anything missing it.
         is_vaapi_settings = settings["encoder"] == "hevc_vaapi"
         wanted_vendor = settings.get("gpu_vendor", "intel") if is_vaapi_settings else None
+        # Deliberately does not correct an unavailable vendor here -- see
+        # _on_encoder_changed's own comment on why that check doesn't
+        # belong anywhere in this settings <-> controls round-trip at all
+        # (a wide swath of pre-existing tests apply a hardware-specific
+        # settings dict directly, on whatever hardware happens to be
+        # running the suite). add_files (queue_controller.py) is the one
+        # place this actually needs correcting.
         # Matched by vendor alone, not enc == settings["encoder"] -- the
         # CPU row's own id in ENCODERS is just a placeholder now (see its
         # own comment in constants.py), not necessarily what

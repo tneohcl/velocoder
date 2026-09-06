@@ -89,11 +89,10 @@ class _UiBuilderMixin:
         # footer strip"), reported live as the most generic-utility-
         # feeling part of an otherwise much friendlier window. Theme
         # moved into Settings… (the overflow menu, _build_right_panel);
-        # hardware status is now silent during normal operation --
-        # Automatic Processing already just works, nobody needs ambient
-        # reassurance a render node exists. See _maybe_note_no_hardware
-        # (main.py) for the one case it still speaks up: no hardware
-        # acceleration found at all, so Processing will always mean CPU.
+        # hardware status is silent now even when no acceleration exists
+        # at all -- CPU is a completely valid, unremarkable Automatic
+        # outcome, not something worth greeting a non-technical user with
+        # on startup (main.py's __init__ has the fuller reasoning).
         #
         # self.theme_combo is still built here, still populated and set
         # to the current choice exactly as before -- just never added to
@@ -355,17 +354,41 @@ class _UiBuilderMixin:
         processing_seg_row = QHBoxLayout()
         processing_seg_row.setSpacing(0)
         self.processing_button_group = QButtonGroup(self)
-        self.processing_cpu_btn = QPushButton("CPU")
-        self.processing_cpu_btn.setObjectName("segLeft")
-        self.processing_intel_btn = QPushButton("Intel")
-        self.processing_intel_btn.setObjectName("segMid")
-        self.processing_amd_btn = QPushButton("AMD")
-        self.processing_amd_btn.setObjectName("segRight")
-        for btn, choice in (
-            (self.processing_cpu_btn, "cpu"),
-            (self.processing_intel_btn, "intel"),
-            (self.processing_amd_btn, "amd"),
-        ):
+        # Intel/AMD only exist as attributes at all when that vendor's
+        # hardware was actually detected -- _sync_normal_video_controls
+        # (main.py) guards every reference to them for exactly this
+        # reason.
+        self.processing_intel_btn = None
+        self.processing_amd_btn = None
+        attr_by_id = {
+            "cpu": "processing_cpu_btn",
+            "intel": "processing_intel_btn",
+            "amd": "processing_amd_btn",
+        }
+        # Cached once in MainWindow.__init__, not re-probed here -- this
+        # session's hardware is fixed for its whole lifetime (no hot-plug
+        # monitoring), and _resolved_engine_vendor (main.py) checks
+        # against this exact same snapshot, so Automatic's silent pick
+        # and this row's own button set can never disagree.
+        detected = self._available_backends
+        seg_buttons = []
+        for backend in detected:
+            btn = QPushButton(backend.display_name)
+            setattr(self, attr_by_id[backend.id], btn)
+            seg_buttons.append((btn, backend.id))
+
+        # Corner-rounding follows actual visible position, not a fixed
+        # CPU/Intel/AMD identity -- style.qss's segLeft/segMid/segRight
+        # only round the row's real outer two edges.
+        for i, (btn, _choice) in enumerate(seg_buttons):
+            if i == 0:
+                btn.setObjectName("segLeft")
+            elif i == len(seg_buttons) - 1:
+                btn.setObjectName("segRight")
+            else:
+                btn.setObjectName("segMid")
+
+        for btn, choice in seg_buttons:
             btn.setCheckable(True)
             btn.setMinimumWidth(self._segmented_btn_min_width(btn))
             self.processing_button_group.addButton(btn)
@@ -373,6 +396,16 @@ class _UiBuilderMixin:
             btn.clicked.connect(lambda _checked, c=choice: self._on_processing_choice(c))
         processing_row.addWidget(self._capped_row(processing_seg_row, 240), 1)
         form.addRow("Processing:", processing_row)
+        if len(detected) == 1:
+            # Only CPU exists at all -- Automatic and the lone CPU segment
+            # would always mean the exact same outcome, so asking "which
+            # Processing?" is a decision with only one possible answer.
+            # Hide the whole row (label included) rather than show a
+            # single-button segmented control with nothing to actually
+            # choose between; _on_processing_choice/_sync_normal_video_
+            # controls still work normally on the buttons underneath,
+            # they're just never shown.
+            form.setRowVisible(processing_row, False)
 
         # H.265/H.264 -- only meaningful for the CPU engine (no h264_vaapi
         # wired up, hardware is HEVC-only here), so it's disabled and

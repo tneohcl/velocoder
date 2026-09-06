@@ -1769,11 +1769,20 @@ class TestComboWheelBlockFilter(unittest.TestCase):
     installs its own instance and removes it in tearDown, same scoping
     discipline as TestComboPopupBackgroundFilter above. Reported live:
     scrolling the mouse wheel over a combo box changed its value by
-    accident, more so now that the left panel itself scrolls."""
+    accident, more so now that the left panel itself scrolls.
+
+    Also pins Intel present (same reason TestExpertExpandGrowsWindow/
+    TestLeftPanelScrolling do) -- one of these tests below needs Expert's
+    expanded content to genuinely need scrolling, which a hardware-less
+    machine's now-hidden Processing row can leave enough spare vertical
+    room to no longer be true."""
 
     def setUp(self):
         self.filter = main._ComboWheelBlockFilter()
         _app.installEventFilter(self.filter)
+        patcher = patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         _app.removeEventFilter(self.filter)
@@ -3401,14 +3410,13 @@ class TestHideIdleStatus(unittest.TestCase):
     the bare word, not for any other status text."""
 
     def test_idle_status_is_hidden(self):
-        # Pinned to hardware being available (see TestRateControlButtons'
-        # docstring on why this can't rely on the running machine's own
-        # best_available_engine()) -- on a no-GPU box (e.g. CI),
-        # _maybe_note_no_hardware overwrites this status at construction,
-        # which is correct real behavior but not what this test is about.
-        with patch.object(worker, "best_available_engine", return_value=("hevc_vaapi", "intel")):
-            window = main.MainWindow()
-            window.show()
+        # No longer machine-dependent -- __init__ used to also call
+        # _maybe_note_no_hardware(), which overwrote this status on a
+        # no-GPU box (e.g. CI) before that startup notice was removed
+        # entirely (CPU-only Automatic is a silent, valid outcome now,
+        # not something to greet a non-technical user with).
+        window = main.MainWindow()
+        window.show()
         self.assertEqual(window.status_label.text(), "Idle")
         self.assertFalse(window.status_label.isVisible())
 
@@ -3490,19 +3498,23 @@ class TestFinishedSummaryDismissal(unittest.TestCase):
         window._refresh_idle_controls()
         self.assertEqual(window.status_label.text(), "Idle")
 
-    def test_ordinary_idle_mutation_does_not_clobber_the_hardware_notice(self):
+    def test_ordinary_idle_mutation_does_not_clobber_an_unrelated_status(self):
         # The other half of the same fix: unconditionally resetting
         # status_label to "Idle" on every _refresh_idle_controls() call
         # would have its own bug -- adding a file to a never-yet-run queue
-        # also reaches this method, and status_label may legitimately still
-        # hold _maybe_note_no_hardware's one-time startup notice at that
-        # point. Only a genuine finished-summary dismissal should reset it.
+        # also reaches this method, and status_label may legitimately be
+        # holding some other status set independently of the queue's own
+        # empty/non-empty state at that point (an arbitrary example here,
+        # not tied to any one real message -- the no-hardware startup
+        # notice this test used to use as its example was removed
+        # entirely). Only a genuine finished-summary dismissal should
+        # reset it.
         window = main.MainWindow()
         window.show()
-        window._set_status("No hardware acceleration detected — using CPU")
+        window._set_status("Some other status")
         _add_dummy_item(window, "a.mkv")
         window._refresh_idle_controls()
-        self.assertEqual(window.status_label.text(), "No hardware acceleration detected — using CPU")
+        self.assertEqual(window.status_label.text(), "Some other status")
 
 
 class TestQueueDragReorder(unittest.TestCase):
@@ -3979,7 +3991,25 @@ class TestLeftPanelScrolling(unittest.TestCase):
     pinned to Expert's *collapsed* height specifically so a user can
     still shrink it back down after expanding (accepting scrolling if
     they do), not because growing was abandoned as the primary
-    behavior."""
+    behavior.
+
+    Pins Intel present (setUp/tearDown below): Processing's own row
+    (ui_builder.py) hides itself entirely on a genuinely hardware-less
+    machine, which frees up enough of #leftPanel's own vertical space
+    that Expert's expanded content can end up fitting within the
+    unchanged 820px default after all -- confirmed as the actual cause
+    of a real CI-only failure (this dev box always has real hardware, so
+    Processing's row is never hidden here, silently masking it locally).
+    These tests are about the scroll/grow *mechanism* specifically, not
+    about whether Processing happens to be visible, so pinning hardware
+    present keeps their vertical-space math the same as before Phase 1's
+    hardware-detection work touched it at all, regardless of whatever
+    font metrics or margins the machine running them happens to have."""
+
+    def setUp(self):
+        patcher = patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_left_panel_is_a_scroll_area(self):
         window = main.MainWindow()
@@ -4046,7 +4076,19 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
     without an extra resize or noticing a scrollbar appeared. The window
     can still be shrunk back down afterward, just never below Expert's
     *collapsed* height (TestLeftPanelScrolling above covers that floor
-    and its scrolling fallback)."""
+    and its scrolling fallback).
+
+    Pins Intel present (setUp/tearDown) for the same reason
+    TestLeftPanelScrolling does now -- Processing's own row hiding
+    itself on a hardware-less machine frees up enough vertical space
+    that these height comparisons can silently stop holding, confirmed
+    as a real CI-only failure this dev box's own real hardware always
+    masked locally."""
+
+    def setUp(self):
+        patcher = patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_expanding_grows_the_window_instead_of_requiring_scrolling(self):
         # CPU processing, not whatever Automatic resolved to -- Expert's
@@ -4198,6 +4240,182 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
         self.assertEqual(window.height(), 950)
 
 
+class TestDynamicProcessingButtons(unittest.TestCase):
+    """Processing (ui_builder.py's processing_seg_row) is built from
+    worker.detect_available_backends() now instead of three hardcoded
+    buttons -- a vendor with no button doesn't just get disabled, it
+    never exists as a widget at all, matching the actual product goal
+    (don't ask a non-technical user to choose between options that can't
+    work). Mocked rather than gated on this machine's real hardware, so
+    every combination is actually exercised regardless of what happens to
+    be installed wherever this runs."""
+
+    def test_no_gpu_hides_the_whole_processing_row(self):
+        # Automatic and a lone CPU segment would always mean the exact
+        # same outcome on a machine with no GPU at all -- asking
+        # "Processing?" is a decision with only one possible answer, so
+        # the row (Automatic included, not just the segmented part)
+        # doesn't get shown rather than offering a choice with nothing
+        # to actually choose between.
+        with patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main.MainWindow()
+        window.show()
+        self.assertFalse(window.processing_auto_btn.isVisible())
+        self.assertFalse(window.processing_cpu_btn.isVisible())
+        self.assertIsNone(window.processing_intel_btn)
+        self.assertIsNone(window.processing_amd_btn)
+        self.assertEqual(len(window.processing_button_group.buttons()), 1)
+
+    def test_intel_only_gets_a_two_segment_row(self):
+        with patch.object(main.worker, "find_render_node", side_effect=_find_render_node_for(main.worker.INTEL_VENDOR_ID)):
+            window = main.MainWindow()
+        self.assertEqual(window.processing_cpu_btn.objectName(), "segLeft")
+        self.assertEqual(window.processing_intel_btn.objectName(), "segRight")
+        self.assertIsNone(window.processing_amd_btn)
+        self.assertEqual(len(window.processing_button_group.buttons()), 2)
+
+    def test_amd_only_gets_a_two_segment_row(self):
+        with patch.object(main.worker, "find_render_node", side_effect=_find_render_node_for(main.worker.AMD_VENDOR_ID)):
+            window = main.MainWindow()
+        self.assertEqual(window.processing_cpu_btn.objectName(), "segLeft")
+        self.assertIsNone(window.processing_intel_btn)
+        self.assertEqual(window.processing_amd_btn.objectName(), "segRight")
+        self.assertEqual(len(window.processing_button_group.buttons()), 2)
+
+    def test_both_vendors_present_gets_the_original_three_segment_row(self):
+        with patch.object(
+            main.worker, "find_render_node",
+            side_effect=_find_render_node_for(main.worker.INTEL_VENDOR_ID, main.worker.AMD_VENDOR_ID),
+        ):
+            window = main.MainWindow()
+        self.assertEqual(window.processing_cpu_btn.objectName(), "segLeft")
+        self.assertEqual(window.processing_intel_btn.objectName(), "segMid")
+        self.assertEqual(window.processing_amd_btn.objectName(), "segRight")
+        self.assertEqual(len(window.processing_button_group.buttons()), 3)
+
+    @staticmethod
+    def _intel_encoder_combo_index():
+        return next(
+            i for i, (encoder, vendor, _label) in enumerate(main.ENCODERS)
+            if encoder == "hevc_vaapi" and vendor == "intel"
+        )
+
+    def test_encoder_combo_itself_is_not_self_corrected(self):
+        # Regression guard: an earlier version of this branch self-
+        # corrected encoder_combo's own selection the moment it landed on
+        # an unavailable vendor, which broke a wide swath of pre-existing
+        # hardware-agnostic UI-cascade tests the instant they ran on a
+        # genuinely hardware-less machine (confirmed directly on CI,
+        # unmasked by this dev box's own real Intel+AMD hardware hiding it
+        # in every prior local run). encoder_combo must stay free-floating
+        # UI state -- correction happens only where a job settings dict
+        # actually gets captured for real use (add_files, below).
+        with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main.MainWindow()
+            window.encoder_combo.setCurrentIndex(self._intel_encoder_combo_index())
+            self.assertEqual(window._current_encoder_id(), "hevc_vaapi")
+            self.assertEqual(window._current_gpu_vendor(), "intel")
+
+    def test_apply_settings_to_controls_does_not_correct_an_unavailable_vendor(self):
+        # Same regression guard as above, for the settings -> controls
+        # direction -- a great many existing tests apply a hardware-
+        # specific settings dict directly and expect it to stick.
+        with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main.MainWindow()
+            settings = {**main.DEFAULT_SETTINGS, "encoder": "hevc_vaapi", "gpu_vendor": "intel", "speed": "4"}
+            window._apply_settings_to_controls(settings)
+            self.assertEqual(window._current_encoder_id(), "hevc_vaapi")
+            self.assertEqual(window._current_gpu_vendor(), "intel")
+
+    def test_add_files_resolves_an_unavailable_vendor_through_automatic(self):
+        # The realistic way a queue item's settings end up naming an
+        # unavailable vendor at all: Expert's combo was left on "Intel"
+        # (previous two tests) when a video got added -- there's no
+        # preset/save-file feature to bring stale settings in from
+        # elsewhere (presets.py's own docstring). add_files is the one
+        # place this actually gets corrected, since it's the one place a
+        # settings dict becomes a real job that could reach build_args.
+        with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main.MainWindow()
+            window.encoder_combo.setCurrentIndex(self._intel_encoder_combo_index())
+            with tempfile.TemporaryDirectory() as tmp:
+                clip = Path(tmp) / "clip.mkv"
+                clip.touch()  # add_files only needs path.is_file() -- the
+                # correction happens synchronously at job creation, before
+                # any async probe/detection subprocess would need a real,
+                # decodable video.
+                window.add_files([clip])
+                job = window.queue_list.topLevelItem(0).data(queue_widget.STATUS_COL, Qt.UserRole)
+        self.assertEqual(job["encoder"], "libx265")
+        self.assertIsNone(job["gpu_vendor"])
+
+    def test_add_files_prefers_the_real_gpu_thats_present(self):
+        with patch.object(main.worker, "find_render_node", side_effect=_find_render_node_for(main.worker.AMD_VENDOR_ID)):
+            window = main.MainWindow()
+            window.encoder_combo.setCurrentIndex(self._intel_encoder_combo_index())
+            with tempfile.TemporaryDirectory() as tmp:
+                clip = Path(tmp) / "clip.mkv"
+                clip.touch()
+                window.add_files([clip])
+                job = window.queue_list.topLevelItem(0).data(queue_widget.STATUS_COL, Qt.UserRole)
+        self.assertEqual(job["encoder"], "hevc_vaapi")
+        self.assertEqual(job["gpu_vendor"], "amd")
+
+
+class TestHardwareProbedOnceForTheWholeSession(unittest.TestCase):
+    """detect_available_backends does a real filesystem probe (find_render_
+    node -> /dev/dri/by-path) -- cheap today, but the whole point of
+    caching it once in MainWindow.__init__ (_available_backends) rather
+    than re-detecting per call site is that this stops being true the
+    moment detection means an actual FFmpeg validation encode. Spies on
+    the real function (side_effect=the real thing, not a stub) so this
+    also exercises genuine detection logic, not just a call-count."""
+
+    def test_automatic_and_add_files_correction_both_reuse_the_startup_snapshot(self):
+        real_detect = worker.detect_available_backends
+        with patch.object(worker, "detect_available_backends", side_effect=real_detect) as mock_detect, \
+             patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main.MainWindow()
+            self.assertEqual(mock_detect.call_count, 1)
+
+            window._on_processing_choice("automatic")
+            self.assertEqual(mock_detect.call_count, 1)
+
+            # Forces add_files' own _resolved_engine_vendor correction
+            # (Expert's combo landing on a vendor this CPU-only mock
+            # doesn't have) -- the one other real call site of
+            # best_available_engine() now that encoder_combo itself is
+            # deliberately not self-correcting (see TestDynamicProcessing
+            # Buttons' own regression guards on that).
+            intel_index = next(
+                i for i, (e, v, _l) in enumerate(main.ENCODERS) if e == "hevc_vaapi" and v == "intel"
+            )
+            window.encoder_combo.setCurrentIndex(intel_index)
+            with tempfile.TemporaryDirectory() as tmp:
+                clip = Path(tmp) / "clip.mkv"
+                clip.touch()
+                window.add_files([clip])
+            self.assertEqual(mock_detect.call_count, 1)
+
+
+class TestUnknownProcessingChoiceRaises(unittest.TestCase):
+    def test_unrecognized_choice_raises_rather_than_silently_picking_a_vendor(self):
+        # Cheap insurance against a future vendor (NVIDIA) landing on the
+        # wrong branch if adding it to _on_processing_choice ever misses
+        # a case -- an explicit crash beats a silently wrong encoder.
+        window = main.MainWindow()
+        with self.assertRaises(ValueError):
+            window._on_processing_choice("nvidia")
+
+
+def _find_render_node_for(*present_vendors: str):
+    def _fake(vendor_id):
+        if vendor_id in present_vendors:
+            return f"/dev/dri/renderD{present_vendors.index(vendor_id)}"
+        raise RuntimeError(f"no render node found for PCI vendor {vendor_id}")
+    return _fake
+
+
 class TestSegmentedButtonBoldWidth(unittest.TestCase):
     # Regression guard for a real, reported-live clipping bug: "Better
     # Quality" (the longest label in its row) had its text cut off,
@@ -4220,7 +4438,14 @@ class TestSegmentedButtonBoldWidth(unittest.TestCase):
         # directly now, a QComboBox with no bold-state width concern.
         # processing_* is back (restored, now Normal-visible) alongside
         # mode_*/audio_handling_*/audio_channels_* (new Normal rows).
-        window = main.MainWindow()
+        # processing_intel_btn/processing_amd_btn only exist at all when
+        # that vendor's hardware was detected (ui_builder.py) -- pinned
+        # present here so this test covers all three regardless of
+        # whatever GPUs happen to be installed on whatever machine runs
+        # it, same reasoning TestRateControlButtons' own docstring gives
+        # for not trusting ambient hardware.
+        with patch.object(worker, "find_render_node", return_value="/dev/dri/renderD128"):
+            window = main.MainWindow()
         window.show()
         for btn in (
             window.processing_cpu_btn, window.processing_intel_btn, window.processing_amd_btn,

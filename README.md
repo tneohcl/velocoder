@@ -247,10 +247,17 @@ same underlying value, never two independently-tracked ones.
   (recommended — picks the fastest available option on this machine,
   preferring Intel iGPU, then AMD GPU, then CPU) or an explicit **CPU**
   (software) / **Intel (iGPU)** / **AMD (GPU)** choice (the latter two
-  both `hevc_vaapi`, distinguished by the `gpu_vendor` settings-dict key
-  — this machine has both a real Intel iGPU and an AMD discrete GPU). No
-  NVIDIA option — no such hardware here, and there's no NVENC code in
-  `worker.py` to back one. `constants.ENCODERS` is a list of `(engine
+  both `hevc_vaapi`, distinguished by the `gpu_vendor` settings-dict key).
+  The explicit choices are dynamic now, not a fixed list: `worker.
+  detect_available_backends()` probes `/dev/dri/by-path` once at startup,
+  and Intel/AMD only appear as buttons at all when that vendor's render
+  node actually resolved — a machine with only one GPU vendor gets a
+  two-way CPU/Intel or CPU/AMD row, and a machine with neither shows no
+  Processing row at all (Automatic and a lone CPU choice would always
+  mean the same thing, so there's nothing to ask). No NVIDIA option yet
+  — NVENC support is planned as a separate, isolated pass once there's
+  real NVIDIA hardware to validate it against, not bundled into Intel/AMD
+  discovery. `constants.ENCODERS` is a list of `(engine
   id, gpu_vendor, label)` triples in this same CPU/Intel/AMD order,
   specifically so one ffmpeg codec (`hevc_vaapi`) can back two distinct
   menu entries; `constants.encoder_profile_key()` turns a resolved
@@ -422,12 +429,15 @@ the most generic-desktop-utility-feeling part of an otherwise much
 friendlier window, so this fork's own footer is gone entirely. Theme moved
 into **Settings…** (same overflow menu), a small `QDialog` hosting the
 exact same `theme_combo` widget, reparented in on open rather than
-duplicated. Hardware status is now silent during normal operation —
-Automatic Processing already picks the best available engine on its own,
-nobody needs ambient reassurance a render node exists — and only speaks up
-once, at startup, in the one case that actually matters: no hardware found
-at all, so Processing will always mean CPU regardless of which button is
-picked (`_maybe_note_no_hardware`, main.py).
+duplicated. Hardware status is silent during normal operation, including
+when no hardware acceleration exists at all — Automatic Processing
+already picks the best available engine on its own, and a machine with no
+GPU falls back to CPU without comment (CPU is a completely ordinary
+outcome, not something worth greeting a non-technical user with on
+startup). Processing's own row already reflects this directly, hiding
+itself entirely rather than offering CPU/Intel/AMD choices that don't
+exist (see the Processing entry above) — there's no separate startup
+notice on top of it.
 
 **Queue pane (right side)**
 - **The queue itself** — a `DropTreeWidget` (flat `QTreeWidget`, no actual

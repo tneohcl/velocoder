@@ -82,17 +82,29 @@ def detect_available_backends() -> list[ProcessingBackend]:
     return backends
 
 
-def best_available_engine() -> tuple[str, str | None]:
+def best_available_engine(backends: list[ProcessingBackend] | None = None) -> tuple[str, str | None]:
     """Normal-mode's "Processing: Automatic" resolves to this -- prefer
     Intel iGPU, then AMD GPU, then fall back to CPU. Returns (encoder id,
     gpu_vendor), matching ENCODERS' own row shape in constants.py, so a
     caller can feed this straight into the same code path a manual
     Encoder-dropdown pick already goes through.
 
+    backends: pass this session's own cached detect_available_backends()
+    snapshot (MainWindow._available_backends) rather than leaving this to
+    re-probe on its own -- hardware is fixed for the life of a run of this
+    app (no hot-plug monitoring), and every caller re-detecting
+    independently is how "what Automatic resolves to" and "what Processing
+    offers to pick manually" could end up disagreeing the moment detection
+    stops being a cheap sysfs read (a real validation encode, say).
+    Defaults to a fresh probe for standalone/test use where no such
+    snapshot exists.
+
     Order matches formatting.hardware_status_text()'s own vendor-probe
     order.
     """
-    available = {backend.id for backend in detect_available_backends()}
+    if backends is None:
+        backends = detect_available_backends()
+    available = {backend.id for backend in backends}
     for vendor in ("intel", "amd"):
         if vendor in available:
             return "hevc_vaapi", vendor

@@ -611,9 +611,10 @@ class _QueueControllerMixin:
         # already moved on. Unconditionally resetting to "Idle" instead
         # would have its own bug: this same method also runs on an
         # ordinary idle-to-idle mutation (e.g. adding the first file to a
-        # never-yet-run queue), where status_label may still legitimately
-        # hold _maybe_note_no_hardware's one-time startup notice -- that
-        # must not get clobbered just because a file was added.
+        # never-yet-run queue), where status_label may legitimately be
+        # holding some other status set independently of the queue's own
+        # empty/non-empty state -- that must not get clobbered just
+        # because a file was added.
         was_showing_finished_summary = self.open_folder_btn.isVisible()
         self._apply_run_phase_visuals("idle")
         if was_showing_finished_summary:

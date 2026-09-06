@@ -89,11 +89,10 @@ class _UiBuilderMixin:
         # footer strip"), reported live as the most generic-utility-
         # feeling part of an otherwise much friendlier window. Theme
         # moved into Settings… (the overflow menu, _build_right_panel);
-        # hardware status is now silent during normal operation --
-        # Automatic Processing already just works, nobody needs ambient
-        # reassurance a render node exists. See _maybe_note_no_hardware
-        # (main.py) for the one case it still speaks up: no hardware
-        # acceleration found at all, so Processing will always mean CPU.
+        # hardware status is silent now even when no acceleration exists
+        # at all -- CPU is a completely valid, unremarkable Automatic
+        # outcome, not something worth greeting a non-technical user with
+        # on startup (main.py's __init__ has the fuller reasoning).
         #
         # self.theme_combo is still built here, still populated and set
         # to the current choice exactly as before -- just never added to

@@ -276,7 +276,13 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # rather than hand-setting setVisible(False) per-widget in
         # ui_builder.py at construction time.
         self._apply_run_phase_visuals("idle")
-        self._maybe_note_no_hardware()
+        # Deliberately no "no hardware found" startup notice -- CPU is a
+        # completely valid, silent Automatic outcome (worth knowing about
+        # in a future diagnostics screen, not worth greeting a non-
+        # technical user with something that reads like a problem when
+        # nothing is wrong; Processing's own row already hides itself
+        # entirely on a CPU-only machine for the same reason, see
+        # ui_builder.py's _build_encoding_group).
         self._update_settings_scope_label()
         # Only ever read while something is selected (_sync_settings_to_
         # selected_queue_items) -- this initial value is never actually
@@ -284,19 +290,6 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # but every control already has its real starting value by this
         # point in __init__, so there's no reason to leave it unset.
         self._last_synced_settings = self._current_settings()
-
-    def _maybe_note_no_hardware(self):
-        # Silent when hardware acceleration is available -- Automatic
-        # Processing already just works, nobody needs ambient reassurance
-        # a render node exists (the old persistent footer said so
-        # regardless, reported as the most generic-utility-feeling part
-        # of the window). Only speaks up in the one case that actually
-        # matters to the user: no hardware found at all, so Processing
-        # will always resolve to CPU regardless of which engine button is
-        # picked -- worth knowing once, not worth a permanent status line.
-        engine, _vendor = worker.best_available_engine()
-        if engine != "hevc_vaapi":
-            self._set_status("No hardware acceleration detected — using CPU")
 
     def closeEvent(self, event):
         self._qsettings.setValue("window_geometry", self.saveGeometry())
@@ -523,7 +516,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         available combo (including plain CPU, vendor None) passes through
         unchanged."""
         if engine == "hevc_vaapi" and vendor not in self._available_backend_ids:
-            return worker.best_available_engine()
+            return worker.best_available_engine(self._available_backends)
         return engine, vendor
 
     def _current_encoder_id(self) -> str:
@@ -915,7 +908,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
 
     def _on_processing_choice(self, choice: str):
         if choice == "automatic":
-            engine, vendor = worker.best_available_engine()
+            engine, vendor = worker.best_available_engine(self._available_backends)
         elif choice == "cpu":
             # Whatever Codec (H.265/H.264) already holds -- switching
             # engine back to CPU shouldn't silently change codec too.

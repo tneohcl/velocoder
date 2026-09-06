@@ -3401,14 +3401,13 @@ class TestHideIdleStatus(unittest.TestCase):
     the bare word, not for any other status text."""
 
     def test_idle_status_is_hidden(self):
-        # Pinned to hardware being available (see TestRateControlButtons'
-        # docstring on why this can't rely on the running machine's own
-        # best_available_engine()) -- on a no-GPU box (e.g. CI),
-        # _maybe_note_no_hardware overwrites this status at construction,
-        # which is correct real behavior but not what this test is about.
-        with patch.object(worker, "best_available_engine", return_value=("hevc_vaapi", "intel")):
-            window = main.MainWindow()
-            window.show()
+        # No longer machine-dependent -- __init__ used to also call
+        # _maybe_note_no_hardware(), which overwrote this status on a
+        # no-GPU box (e.g. CI) before that startup notice was removed
+        # entirely (CPU-only Automatic is a silent, valid outcome now,
+        # not something to greet a non-technical user with).
+        window = main.MainWindow()
+        window.show()
         self.assertEqual(window.status_label.text(), "Idle")
         self.assertFalse(window.status_label.isVisible())
 
@@ -3490,19 +3489,23 @@ class TestFinishedSummaryDismissal(unittest.TestCase):
         window._refresh_idle_controls()
         self.assertEqual(window.status_label.text(), "Idle")
 
-    def test_ordinary_idle_mutation_does_not_clobber_the_hardware_notice(self):
+    def test_ordinary_idle_mutation_does_not_clobber_an_unrelated_status(self):
         # The other half of the same fix: unconditionally resetting
         # status_label to "Idle" on every _refresh_idle_controls() call
         # would have its own bug -- adding a file to a never-yet-run queue
-        # also reaches this method, and status_label may legitimately still
-        # hold _maybe_note_no_hardware's one-time startup notice at that
-        # point. Only a genuine finished-summary dismissal should reset it.
+        # also reaches this method, and status_label may legitimately be
+        # holding some other status set independently of the queue's own
+        # empty/non-empty state at that point (an arbitrary example here,
+        # not tied to any one real message -- the no-hardware startup
+        # notice this test used to use as its example was removed
+        # entirely). Only a genuine finished-summary dismissal should
+        # reset it.
         window = main.MainWindow()
         window.show()
-        window._set_status("No hardware acceleration detected — using CPU")
+        window._set_status("Some other status")
         _add_dummy_item(window, "a.mkv")
         window._refresh_idle_controls()
-        self.assertEqual(window.status_label.text(), "No hardware acceleration detected — using CPU")
+        self.assertEqual(window.status_label.text(), "Some other status")
 
 
 class TestQueueDragReorder(unittest.TestCase):
@@ -4310,6 +4313,35 @@ class TestDynamicProcessingButtons(unittest.TestCase):
             window._apply_settings_to_controls(stale_job)
             self.assertEqual(window._current_encoder_id(), "hevc_vaapi")
             self.assertEqual(window._current_gpu_vendor(), "amd")
+
+
+class TestHardwareProbedOnceForTheWholeSession(unittest.TestCase):
+    """detect_available_backends does a real filesystem probe (find_render_
+    node -> /dev/dri/by-path) -- cheap today, but the whole point of
+    caching it once in MainWindow.__init__ (_available_backends) rather
+    than re-detecting per call site is that this stops being true the
+    moment detection means an actual FFmpeg validation encode. Spies on
+    the real function (side_effect=the real thing, not a stub) so this
+    also exercises genuine detection logic, not just a call-count."""
+
+    def test_automatic_and_a_live_correction_both_reuse_the_startup_snapshot(self):
+        real_detect = worker.detect_available_backends
+        with patch.object(worker, "detect_available_backends", side_effect=real_detect) as mock_detect, \
+             patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main.MainWindow()
+            self.assertEqual(mock_detect.call_count, 1)
+
+            window._on_processing_choice("automatic")
+            self.assertEqual(mock_detect.call_count, 1)
+
+            # Forces _resolved_engine_vendor's correction branch (Expert's
+            # combo landing on a vendor this CPU-only mock doesn't have) --
+            # the one other real call site of best_available_engine().
+            intel_index = next(
+                i for i, (e, v, _l) in enumerate(main.ENCODERS) if e == "hevc_vaapi" and v == "intel"
+            )
+            window.encoder_combo.setCurrentIndex(intel_index)
+            self.assertEqual(mock_detect.call_count, 1)
 
 
 class TestUnknownProcessingChoiceRaises(unittest.TestCase):

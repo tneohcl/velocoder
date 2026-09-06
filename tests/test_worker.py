@@ -322,6 +322,66 @@ class TestBuildArgsAudioBitrateReservation(unittest.TestCase):
         self.assertEqual(args[args.index("-b:v") + 1], f"{expected_video_kbps}k")
 
 
+class TestQueueAudioBitrateReservation(unittest.TestCase):
+    """Real, confirmed bug: the class above confirms build_args() itself
+    reserves the real copied-audio source bitrate correctly given
+    probe_audio=True (or a caller-supplied audio_source_bitrate_kbps) --
+    but TranscodeQueue._run_next(), the actual encode path, called
+    build_args() with probe_audio=False and no audio_source_bitrate_kbps
+    at all (it already probes audio_codec/audio_channels itself, just
+    not bitrate), silently falling back to the *configured* audio_
+    bitrate for the real encode regardless of the source track's real
+    bitrate. A direct build_args() test can't catch this -- the bug was
+    in what _run_next() passes it, so this goes through a real
+    TranscodeQueue instead, the same way TestMissingAudioTrackWarning
+    above does to catch bugs specific to that call site."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
+        cls.clip = cls.tmpdir / "clip.mp4"
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error",
+             "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=1",
+             "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+             "-c:v", "libx264", "-c:a", "aac", "-b:a", "256k", "-shortest", str(cls.clip)],
+            check=True, timeout=30,
+        )
+        cls.real_audio_kbps = worker.probe_audio_bitrate_kbps(cls.clip)
+        cls.real_duration = worker.probe_duration(cls.clip)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmpdir, ignore_errors=True)
+
+    def test_real_encode_reserves_the_actual_source_bitrate_not_the_configured_one(self):
+        self.assertIsNotNone(self.real_audio_kbps, "MP4 should report a real per-stream bit_rate")
+        out_dir = self.tmpdir / "out"
+        out_dir.mkdir()
+        job = {
+            "path": self.clip,
+            **x265_settings(rc_mode="bitrate", quality_value=100, audio_bitrate="96k",
+                             audio_copy_if_compatible=True),
+        }
+        queue = worker.TranscodeQueue()
+        log_lines = []
+        loop = QEventLoop()
+        queue.job_log.connect(log_lines.append)
+        queue.all_finished.connect(loop.quit)
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(loop.quit)
+        timer.start(15000)
+        queue.start([job], out_dir)
+        loop.exec()
+
+        ffmpeg_line = next((line for line in log_lines if line.startswith("ffmpeg ")), "")
+        expected_video_kbps = worker.target_size_to_bitrate_kbps(100, self.real_duration, self.real_audio_kbps)
+        wrong_kbps_using_configured_bitrate = worker.target_size_to_bitrate_kbps(100, self.real_duration, 96)
+        self.assertIn(f"-b:v {expected_video_kbps}k", ffmpeg_line, ffmpeg_line)
+        self.assertNotEqual(expected_video_kbps, wrong_kbps_using_configured_bitrate)
+
+
 class TestBuildArgsX265(ClipTestCase):
     def test_crf_uses_crf_flag(self):
         args = worker.build_args(x265_settings(rc_mode="CRF", quality_value=20), self.clip, self.out_path)

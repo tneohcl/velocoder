@@ -751,9 +751,23 @@ class TranscodeQueue(QObject):
                     f"Note: audio track {job['audio_track']} not found on this "
                     f"file -- output will have no audio"
                 )
+            # Real, confirmed bug: probe_audio=False here (audio_codec/
+            # audio_channels are already resolved above, so build_args
+            # doesn't need to re-probe those) also skipped the *bitrate*
+            # probe target-size math needs when Automatic ends up copying
+            # the source through untouched -- the preview
+            # (_update_size_estimate_label) already probes this and
+            # reserves the real figure, but the actual encode fell back
+            # to the configured audio_bitrate regardless, silently
+            # letting the real output exceed the requested Target Size
+            # whenever the copied track's real bitrate was higher.
+            audio_source_bitrate_kbps = None
+            if audio_codec is not None:
+                audio_source_bitrate_kbps = probe_audio_bitrate_kbps(input_path, job["audio_track"])
             args = build_args(
                 job, input_path, temp_output_path, duration_seconds=self._duration,
                 probe_audio=False, audio_codec=audio_codec, audio_channels=audio_channels,
+                audio_source_bitrate_kbps=audio_source_bitrate_kbps,
             )
         except Exception as exc:
             self.job_failed.emit(str(input_path), str(exc))

@@ -407,6 +407,22 @@ class _QueueControllerMixin:
                 self._refresh_video_cell(item)
             if info.get("audio_track_count"):
                 item.setData(VIDEO_COL, AUDIO_TRACK_COUNT_ROLE, info["audio_track_count"])
+                # Real, confirmed bug: _refresh_audio_track_choices below
+                # only narrows the *visible* combo for a currently-
+                # selected row, via blockSignals -- deliberately, so it
+                # doesn't fire the normal control-changed write-back while
+                # just re-populating the list. A job added while a higher
+                # Track index was selected (queue empty, pick Track 4,
+                # then add a 1-track file) keeps that out-of-range index
+                # in its own stored settings regardless of whether this
+                # row is ever selected again -- worker.py degrades that
+                # gracefully at encode time (no crash, just silently no
+                # audio), but the job itself should never be allowed to
+                # stay invalid once the real track count is known.
+                job = item.data(STATUS_COL, Qt.UserRole)
+                if job is not None and job["audio_track"] >= info["audio_track_count"]:
+                    job["audio_track"] = info["audio_track_count"] - 1
+                    item.setData(STATUS_COL, Qt.UserRole, job)
                 # Only worth recomputing Track's own choices if this probe
                 # actually affects what's currently shown -- a background/
                 # mid-run probe for a row the user isn't looking at

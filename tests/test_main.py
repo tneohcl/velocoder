@@ -1107,6 +1107,28 @@ class TestAudioTrackChoices(unittest.TestCase):
         self.assertEqual(window.audio_combo.count(), 1)
         self.assertEqual(window.audio_combo.currentIndex(), 0)
 
+    def test_a_newly_added_jobs_stored_track_is_clamped_once_the_real_count_is_known(self):
+        # Real, confirmed bug: selecting Track 4 while the queue is empty,
+        # then adding a genuinely one-track file, captured audio_track=3
+        # straight into that job's own settings (add_files snapshots
+        # _current_settings() at add time). _refresh_audio_track_choices
+        # only narrows the *visible* combo for a selected row, and does
+        # so via blockSignals specifically so it doesn't also write back
+        # -- so the job itself kept pointing at a track that doesn't
+        # exist even after the real probe landed and revealed the true
+        # count, regardless of whether this row was ever selected.
+        window = main.MainWindow()
+        window.show()
+        window.audio_combo.setCurrentIndex(3)  # Track 4, queue still empty
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            _make_clip(clip, "aac")  # genuinely one audio track
+            window.add_files([clip])
+            _wait_for_detection(window)
+        item = window.queue_list.topLevelItem(0)
+        job = item.data(queue_widget.STATUS_COL, Qt.UserRole)
+        self.assertEqual(job["audio_track"], 0)
+
     def test_deselecting_back_to_nothing_restores_all_four(self):
         window = main.MainWindow()
         window.show()

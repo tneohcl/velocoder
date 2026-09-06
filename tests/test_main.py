@@ -3834,22 +3834,26 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
         # Reported live: collapsing without also shrinking left a
         # visible gap of empty space below the now-short content, the
         # window having grown to fit Expert's expanded content and
-        # simply stayed that size. _empty_qsettings -- needs Expert to
-        # genuinely start collapsed so setChecked(True) below is a real
-        # transition that actually grows the window in the first place.
+        # simply stayed that size. Restores the exact *pre-expand*
+        # height (main.py's own default 820, here, since nothing resized
+        # it before expanding) rather than the bare collapsed floor --
+        # those happen to be different numbers (820 vs 665) whenever the
+        # window didn't start out already at the floor, which is the
+        # ordinary case. _empty_qsettings -- needs Expert to genuinely
+        # start collapsed so setChecked(True) below is a real transition
+        # that actually grows the window in the first place.
         with _empty_qsettings():
             window = main.MainWindow()
         window.show()
         window.processing_cpu_btn.click()
         _app.processEvents()
-        left = window.findChild(QWidget, "leftPanel")
-        floor = left.minimumHeight()
+        pre_expand_height = window.height()
         window.video_expert_group.setChecked(True)
         _app.processEvents()
-        self.assertGreater(window.height(), floor)  # confirm it actually grew first
+        self.assertGreater(window.height(), pre_expand_height)  # confirm it actually grew first
         window.video_expert_group.setChecked(False)
         _app.processEvents()
-        self.assertEqual(window.height(), floor)
+        self.assertEqual(window.height(), pre_expand_height)
 
     def test_re_expanding_after_manually_shrinking_grows_again(self):
         window = main.MainWindow()
@@ -3882,6 +3886,70 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
                 left = window.findChild(QWidget, "leftPanel")
                 self.assertTrue(window.video_expert_group.isChecked())
                 self.assertEqual(left.verticalScrollBar().maximum(), 0)
+
+    def test_a_window_already_tall_enough_is_untouched_by_expanding_or_collapsing(self):
+        # Real, confirmed bug in an earlier version of this same fix:
+        # collapsing always shrank to the bare floor regardless of *why*
+        # the window was its current height -- fine right after this
+        # class's own auto-grow, wrong if the user had simply made the
+        # window tall themselves beforehand (nothing to undo, so nothing
+        # should move).
+        with _empty_qsettings():
+            window = main.MainWindow()
+        window.show()
+        window.resize(window.width(), 1000)
+        _app.processEvents()
+        window.video_expert_group.setChecked(True)
+        _app.processEvents()
+        self.assertEqual(window.height(), 1000)  # already fit -- no grow needed
+        window.video_expert_group.setChecked(False)
+        _app.processEvents()
+        self.assertEqual(window.height(), 1000)  # nothing to undo -- must stay put
+
+    def test_manually_resizing_while_expanded_replaces_the_auto_grown_height(self):
+        # The window auto-grew once, but the user then chose a size of
+        # their own while Expert was still open -- collapsing must
+        # respect *that* choice, not silently snap back to whatever this
+        # class had picked before the user's own resize overrode it.
+        with _empty_qsettings():
+            window = main.MainWindow()
+        window.show()
+        window.processing_cpu_btn.click()
+        _app.processEvents()
+        window.video_expert_group.setChecked(True)
+        _app.processEvents()
+        self.assertNotEqual(window.height(), 1050)  # sanity: not already there by coincidence
+        window.resize(window.width(), 1050)
+        _app.processEvents()
+        window.video_expert_group.setChecked(False)
+        _app.processEvents()
+        self.assertEqual(window.height(), 1050)
+
+    def test_restored_tall_geometry_survives_toggling_expert_via_the_restore_path(self):
+        # Same invariant as the manual-resize case above, but exercised
+        # through _restore_window_state's own restoreGeometry + setChecked
+        # call sequence specifically (a real returning-user startup),
+        # not a live click -- a previous session's tall window (whether
+        # the user resized it or this class had auto-grown it) must
+        # survive Expert's restored state being toggled the same way.
+        # restoreGeometry() itself is mocked rather than fed a real
+        # QByteArray blob -- not what this test is about, and genuine
+        # saveGeometry()/restoreGeometry() round-tripping is Qt's own
+        # concern, not a real bug surface here.
+        fake_settings = {"video_expert_expanded": "true", "window_geometry": b"sentinel"}
+        with patch.object(
+            main.QSettings, "value",
+            side_effect=lambda key, default=None: fake_settings.get(key, default),
+        ):
+            with patch.object(main.MainWindow, "restoreGeometry", lambda self, geo: self.resize(self.width(), 950)):
+                window = main.MainWindow()
+        window.show()
+        _app.processEvents()
+        self.assertTrue(window.video_expert_group.isChecked())
+        self.assertEqual(window.height(), 950)
+        window.video_expert_group.setChecked(False)
+        _app.processEvents()
+        self.assertEqual(window.height(), 950)
 
 
 class TestSegmentedButtonBoldWidth(unittest.TestCase):

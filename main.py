@@ -254,6 +254,11 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # state below re-checks the box and should trigger the same
         # grow-to-fit behavior a live click does, not a silent exception.
         self._pin_left_panel_min_height()
+        # None means "nothing to undo" -- either Expert has never been
+        # expanded yet, or it was expanded without needing a resize (the
+        # window was already tall enough), so a later collapse must
+        # leave the window's height alone either way.
+        self._expert_pre_expand_height = None
         self.video_expert_group.toggled.connect(self._on_expert_toggled)
         self._restore_window_state()
         # Establishes correct starting visibility (progress_bar/eta_label/
@@ -300,41 +305,52 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._left_panel_scroll.setMinimumHeight(self._left_panel_content.sizeHint().height())
 
     def _on_expert_toggled(self, checked):
-        # Symmetric both ways -- reported live: collapsing without also
-        # shrinking left a visible gap of empty space below the now-
-        # short content (the window had grown for Expert's expanded
-        # content and stayed that size). Expanding can likewise reveal
-        # more than the window currently shows without scrolling. One
-        # helper handles both directions -- see its own comment for why
-        # it's deferred a full event-loop turn.
-        QTimer.singleShot(0, lambda: self._fit_window_to_left_panel(checked))
-
-    def _fit_window_to_left_panel(self, expanded):
-        # sizeHint() read synchronously inside the toggled handler still
+        # Deferred a full event-loop turn (QTimer.singleShot, delay 0):
+        # sizeHint() read synchronously inside this handler still
         # reflects the pre-toggle layout every time, confirmed directly
         # -- content.setVisible() inside _make_collapsible_group's own
         # _toggle marks the layout dirty, but Qt only recomputes it
         # lazily once the event loop actually runs, not synchronously
         # within the same call stack as the toggled signal that
-        # triggered it. Hence QTimer.singleShot(0, ...) above rather
-        # than calling this directly.
+        # triggered it.
+        QTimer.singleShot(0, lambda: self._fit_window_to_left_panel(checked))
+
+    def _fit_window_to_left_panel(self, expanded):
+        # Never touches a maximized/full-screen window -- resizing one
+        # of those doesn't mean what it means for a normal window (Qt
+        # either ignores it or silently un-maximizes first), and neither
+        # state has any real gap or overflow to fix in the first place.
+        if self.isMaximized() or self.isFullScreen():
+            return
         if expanded:
             needed = self._left_panel_content.sizeHint().height()
-        else:
-            # Not a fresh sizeHint() read here, unlike the expanded
-            # branch -- confirmed directly that re-measuring the
-            # collapsed content's sizeHint() after a round-trip through
-            # the expanded state under-reports (618px) against the real
-            # collapsed floor (665px, _pin_left_panel_min_height's own
-            # measurement taken once at genuinely fresh construction) --
-            # some Qt layout-cache staleness specific to a *second*
-            # collapse, since the first (fresh) measurement doesn't have
-            # this problem. Reusing that already-correct floor instead
-            # of trusting a fresh read sidesteps it entirely.
-            needed = self._left_panel_scroll.minimumHeight()
-        diff = needed - self._left_panel_scroll.height()
-        if diff != 0:
-            self.resize(self.width(), self.height() + diff)
+            shortfall = needed - self._left_panel_scroll.height()
+            # Reported live: only ever reverse a resize VeloCoder made on
+            # Expert's own behalf, never a size the user chose -- growing
+            # is remembered (pre-expand height, and the exact height
+            # grown *to*) only when a real shortfall actually forced a
+            # resize here; already having enough room (the user had
+            # already made the window tall, or a restored geometry
+            # already fit) leaves nothing to undo later, so collapse
+            # below must never touch the window in that case.
+            if shortfall > 0:
+                self._expert_pre_expand_height = self.height()
+                self.resize(self.width(), self.height() + shortfall)
+                self._expert_auto_grown_height = self.height()
+            else:
+                self._expert_pre_expand_height = None
+            return
+        # Collapsing: restore the exact pre-expand height, but only if
+        # the window is still at the exact height this class grew it to
+        # -- if the user resized it at all in the meantime (even while
+        # Expert was still open), that's their own deliberate choice now,
+        # not leftover auto-grow to clean up, so it must be left alone.
+        if (
+            self._expert_pre_expand_height is not None
+            and self.height() == self._expert_auto_grown_height
+        ):
+            self.resize(self.width(), self._expert_pre_expand_height)
+            self._expert_pre_expand_height = None
 
     def _restore_window_state(self):
         geometry = self._qsettings.value("window_geometry")

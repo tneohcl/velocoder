@@ -1769,11 +1769,20 @@ class TestComboWheelBlockFilter(unittest.TestCase):
     installs its own instance and removes it in tearDown, same scoping
     discipline as TestComboPopupBackgroundFilter above. Reported live:
     scrolling the mouse wheel over a combo box changed its value by
-    accident, more so now that the left panel itself scrolls."""
+    accident, more so now that the left panel itself scrolls.
+
+    Also pins Intel present (same reason TestExpertExpandGrowsWindow/
+    TestLeftPanelScrolling do) -- one of these tests below needs Expert's
+    expanded content to genuinely need scrolling, which a hardware-less
+    machine's now-hidden Processing row can leave enough spare vertical
+    room to no longer be true."""
 
     def setUp(self):
         self.filter = main._ComboWheelBlockFilter()
         _app.installEventFilter(self.filter)
+        patcher = patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         _app.removeEventFilter(self.filter)
@@ -3982,7 +3991,25 @@ class TestLeftPanelScrolling(unittest.TestCase):
     pinned to Expert's *collapsed* height specifically so a user can
     still shrink it back down after expanding (accepting scrolling if
     they do), not because growing was abandoned as the primary
-    behavior."""
+    behavior.
+
+    Pins Intel present (setUp/tearDown below): Processing's own row
+    (ui_builder.py) hides itself entirely on a genuinely hardware-less
+    machine, which frees up enough of #leftPanel's own vertical space
+    that Expert's expanded content can end up fitting within the
+    unchanged 820px default after all -- confirmed as the actual cause
+    of a real CI-only failure (this dev box always has real hardware, so
+    Processing's row is never hidden here, silently masking it locally).
+    These tests are about the scroll/grow *mechanism* specifically, not
+    about whether Processing happens to be visible, so pinning hardware
+    present keeps their vertical-space math the same as before Phase 1's
+    hardware-detection work touched it at all, regardless of whatever
+    font metrics or margins the machine running them happens to have."""
+
+    def setUp(self):
+        patcher = patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_left_panel_is_a_scroll_area(self):
         window = main.MainWindow()
@@ -4049,7 +4076,19 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
     without an extra resize or noticing a scrollbar appeared. The window
     can still be shrunk back down afterward, just never below Expert's
     *collapsed* height (TestLeftPanelScrolling above covers that floor
-    and its scrolling fallback)."""
+    and its scrolling fallback).
+
+    Pins Intel present (setUp/tearDown) for the same reason
+    TestLeftPanelScrolling does now -- Processing's own row hiding
+    itself on a hardware-less machine frees up enough vertical space
+    that these height comparisons can silently stop holding, confirmed
+    as a real CI-only failure this dev box's own real hardware always
+    masked locally."""
+
+    def setUp(self):
+        patcher = patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_expanding_grows_the_window_instead_of_requiring_scrolling(self):
         # CPU processing, not whatever Automatic resolved to -- Expert's

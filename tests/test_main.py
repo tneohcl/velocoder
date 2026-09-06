@@ -3830,20 +3830,26 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
         self.assertGreater(window.height(), collapsed_height)
         self.assertEqual(left.verticalScrollBar().maximum(), 0)
 
-    def test_collapsing_again_leaves_the_grown_size_alone(self):
-        # No auto-shrink-on-collapse -- collapsing just frees up space
-        # inside whatever size the window already is, it doesn't need to
-        # actively resize anything the way expanding does.
-        window = main.MainWindow()
+    def test_collapsing_again_shrinks_the_window_back_down(self):
+        # Reported live: collapsing without also shrinking left a
+        # visible gap of empty space below the now-short content, the
+        # window having grown to fit Expert's expanded content and
+        # simply stayed that size. _empty_qsettings -- needs Expert to
+        # genuinely start collapsed so setChecked(True) below is a real
+        # transition that actually grows the window in the first place.
+        with _empty_qsettings():
+            window = main.MainWindow()
         window.show()
         window.processing_cpu_btn.click()
         _app.processEvents()
+        left = window.findChild(QWidget, "leftPanel")
+        floor = left.minimumHeight()
         window.video_expert_group.setChecked(True)
         _app.processEvents()
-        grown_height = window.height()
+        self.assertGreater(window.height(), floor)  # confirm it actually grew first
         window.video_expert_group.setChecked(False)
         _app.processEvents()
-        self.assertEqual(window.height(), grown_height)
+        self.assertEqual(window.height(), floor)
 
     def test_re_expanding_after_manually_shrinking_grows_again(self):
         window = main.MainWindow()

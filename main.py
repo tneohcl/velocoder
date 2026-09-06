@@ -300,26 +300,41 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._left_panel_scroll.setMinimumHeight(self._left_panel_content.sizeHint().height())
 
     def _on_expert_toggled(self, checked):
-        if not checked:
-            return
-        # Expanding can reveal more than the window currently shows
-        # without scrolling -- grow the window to fit, once, rather than
-        # leaving the user to notice a scrollbar appeared or resize it
-        # themselves. Deferred a full event-loop turn (QTimer.singleShot
-        # with delay 0, not called directly here): sizeHint() read
-        # synchronously inside this same handler still reflects the
-        # pre-toggle (collapsed) layout every time, confirmed directly --
-        # content.setVisible() inside _make_collapsible_group's own
-        # _toggle marks the layout dirty, but Qt only recomputes it lazily
-        # once the event loop actually runs, not synchronously within the
-        # same call stack as the toggled signal that triggered it.
-        QTimer.singleShot(0, self._grow_window_for_expanded_expert)
+        # Symmetric both ways -- reported live: collapsing without also
+        # shrinking left a visible gap of empty space below the now-
+        # short content (the window had grown for Expert's expanded
+        # content and stayed that size). Expanding can likewise reveal
+        # more than the window currently shows without scrolling. One
+        # helper handles both directions -- see its own comment for why
+        # it's deferred a full event-loop turn.
+        QTimer.singleShot(0, lambda: self._fit_window_to_left_panel(checked))
 
-    def _grow_window_for_expanded_expert(self):
-        needed = self._left_panel_content.sizeHint().height()
-        shortfall = needed - self._left_panel_scroll.height()
-        if shortfall > 0:
-            self.resize(self.width(), self.height() + shortfall)
+    def _fit_window_to_left_panel(self, expanded):
+        # sizeHint() read synchronously inside the toggled handler still
+        # reflects the pre-toggle layout every time, confirmed directly
+        # -- content.setVisible() inside _make_collapsible_group's own
+        # _toggle marks the layout dirty, but Qt only recomputes it
+        # lazily once the event loop actually runs, not synchronously
+        # within the same call stack as the toggled signal that
+        # triggered it. Hence QTimer.singleShot(0, ...) above rather
+        # than calling this directly.
+        if expanded:
+            needed = self._left_panel_content.sizeHint().height()
+        else:
+            # Not a fresh sizeHint() read here, unlike the expanded
+            # branch -- confirmed directly that re-measuring the
+            # collapsed content's sizeHint() after a round-trip through
+            # the expanded state under-reports (618px) against the real
+            # collapsed floor (665px, _pin_left_panel_min_height's own
+            # measurement taken once at genuinely fresh construction) --
+            # some Qt layout-cache staleness specific to a *second*
+            # collapse, since the first (fresh) measurement doesn't have
+            # this problem. Reusing that already-correct floor instead
+            # of trusting a fresh read sidesteps it entirely.
+            needed = self._left_panel_scroll.minimumHeight()
+        diff = needed - self._left_panel_scroll.height()
+        if diff != 0:
+            self.resize(self.width(), self.height() + diff)
 
     def _restore_window_state(self):
         geometry = self._qsettings.value("window_geometry")

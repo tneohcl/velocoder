@@ -862,7 +862,25 @@ class _QueueControllerMixin:
         # to check this itself.
         self._base_status_text = text
         if self.pause_after_check.isChecked():
+            # Genuinely informative even at rest (a pending one-shot
+            # intent the user just set) -- shown in full despite the
+            # "Idle" hiding rule right below, which is only about the
+            # bare word carrying no information on its own.
             text = f"{text}  —  will stop after this video"
+            self.status_label.setVisible(True)
+        elif text == "Idle":
+            # Reported live: "Idle" reads as internal state-machine
+            # language, not product language, and permanently occupying
+            # this line gives real status (Preparing/Converting N of M/
+            # Conversion Complete/...) less visual weight than it should
+            # have. Hidden rather than left showing empty text -- this
+            # whole run-status area already collapses to nothing at rest
+            # (progress_bar/eta_label/stats_label, see _apply_run_phase_
+            # visuals's "idle" branch), status_label was the one holdout
+            # still always occupying space here.
+            self.status_label.setVisible(False)
+        else:
+            self.status_label.setVisible(True)
         self.status_label.setText(text)
 
     def _set_queue_editable(self, editable: bool):

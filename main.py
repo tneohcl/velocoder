@@ -268,6 +268,13 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # ui_builder.py at construction time.
         self._apply_run_phase_visuals("idle")
         self._maybe_note_no_hardware()
+        self._update_settings_scope_label()
+        # Only ever read while something is selected (_sync_settings_to_
+        # selected_queue_items) -- this initial value is never actually
+        # consulted before _on_queue_selection_changed sets a real one,
+        # but every control already has its real starting value by this
+        # point in __init__, so there's no reason to leave it unset.
+        self._last_synced_settings = self._current_settings()
 
     def _maybe_note_no_hardware(self):
         # Silent when hardware acceleration is available -- Automatic
@@ -442,8 +449,34 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         label.setStyleSheet(f"font-size: 9pt; color: {rgba};")
 
     def _refresh_fuzzy_caption_style(self):
-        for label in (self.quality_tier_label, self.speed_tier_label, self.audio_bitrate_tier_label):
+        for label in (
+            self.quality_tier_label, self.speed_tier_label, self.audio_bitrate_tier_label,
+            self.video_scope_label, self.audio_scope_label,
+        ):
             self._apply_fuzzy_caption_style(label)
+
+    def _update_settings_scope_label(self, selected=None):
+        # Reported live: nothing distinguished "these controls are about
+        # to become defaults for a newly-added video" from "these controls
+        # are editing whatever's selected right now" -- both are real,
+        # everyday states with identical-looking controls either way.
+        # Takes the already-known selection when the caller has it
+        # (_on_queue_selection_changed) rather than re-querying, since Qt
+        # already handed it over there; falls back to a fresh query for
+        # callers that don't (queue add/remove/clear -- selection itself
+        # didn't necessarily change, but which videos exist to describe
+        # might have).
+        if selected is None:
+            selected = self.queue_list.selectedItems()
+        if not selected:
+            text = "Settings for new videos"
+        elif len(selected) == 1:
+            job = selected[0].data(STATUS_COL, Qt.UserRole)
+            text = f'Settings for "{job["path"].name}"'
+        else:
+            text = f"Settings for {len(selected)} selected videos"
+        self.video_scope_label.setText(text)
+        self.audio_scope_label.setText(text)
 
     def _themed_icon(self, name: str) -> QIcon:
         # Restored -- removed along with save_btn/delete_btn (its only
@@ -896,9 +929,31 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         if self._syncing_controls_from_selection or not self._queue_editable:
             return
         settings = self._current_settings()
-        for item in self.queue_list.selectedItems():
+        selected = self.queue_list.selectedItems()
+        if not selected:
+            return
+        # Real, reported bug: this used to push the *entire* settings dict
+        # onto every selected item on every single control change. Two
+        # files selected together with genuinely different Codec/
+        # Resolution/etc. (the panel only ever shows the first one's, see
+        # _on_queue_selection_changed) -- nudging just the AAC Bitrate
+        # slider silently overwrote the *other* file's Codec/Resolution
+        # too, not only the one control actually touched. Only the keys
+        # that actually changed since the panel last settled (either this
+        # selection's own starting point, or the last time this ran) get
+        # pushed now -- everything else about each selected item's own
+        # settings is left exactly as it was. A handler that legitimately
+        # changes several keys together as one decision (e.g. Quality
+        # tier's rc_mode + quality_value pair) still carries all of them,
+        # since all of them show up as changed here too.
+        changed_keys = {
+            key for key, value in settings.items()
+            if self._last_synced_settings.get(key) != value
+        }
+        for item in selected:
             job = item.data(STATUS_COL, Qt.UserRole)
-            job.update(settings)
+            for key in changed_keys:
+                job[key] = settings[key]
             item.setData(STATUS_COL, Qt.UserRole, job)
             # Otherwise the tooltip goes stale the moment a selected row's
             # settings actually change -- still showing whatever was true
@@ -906,9 +961,11 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             tooltip = self._row_tooltip(job)
             for col in range(len(QUEUE_COLUMN_HEADERS)):
                 item.setToolTip(col, tooltip)
+        self._last_synced_settings = settings
 
     def _on_queue_selection_changed(self):
         selected = self.queue_list.selectedItems()
+        self._update_settings_scope_label(selected)
         if not selected:
             return
         # Before _apply_settings_to_controls below -- Track's own choices
@@ -926,6 +983,12 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             self._apply_settings_to_controls(job)
         finally:
             self._syncing_controls_from_selection = False
+        # Baseline for _sync_settings_to_selected_queue_items' own diff --
+        # a control change from here on is only ever compared against
+        # what the panel showed *for this selection*, not some earlier
+        # selection's settings (which could easily differ in ways that
+        # have nothing to do with anything the user actually touched).
+        self._last_synced_settings = self._current_settings()
 
     def _refresh_audio_track_choices(self):
         """Limits Track's choices to what was actually source-probed for

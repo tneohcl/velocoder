@@ -19,7 +19,19 @@ DARK = {
     "BG_CONTROL_PRESSED": "#23272e",
     "BG_DISABLED": "#1e2127",
     "BORDER": "#333944",
-    "BORDER_STRONG": "#3a4049",
+    # Reported live: BORDER_STRONG (buttons) and the old #tabPageCard
+    # border (plain BORDER) read too close to BG_PANEL/BG_CONTROL to
+    # register as a real edge at normal viewing distance -- three
+    # deliberately distinct levels now: BORDER (quiet, inner section
+    # cards/fields, unchanged), BORDER_OUTER (the main tab card + tab
+    # bar's own structural edge), BORDER_STRONG (ordinary buttons --
+    # interactive controls should read *more* clickable than a container
+    # organizes, not less, hence strongest of the three). BORDER_STRONG's
+    # new value matches BORDER_HOVER almost exactly on purpose -- that
+    # was already the right amount of contrast against BG_PANEL/BG_
+    # CONTROL, just previously reserved for hover-only states.
+    "BORDER_STRONG": "#454c59",
+    "BORDER_OUTER": "#414956",
     "BORDER_HOVER": "#454c59",
     "TEXT_PRIMARY": "#e6e8eb",
     "TEXT_SECONDARY": "#8b93a1",
@@ -50,6 +62,11 @@ LIGHT = {
     "BG_DISABLED": "#f3f4f6",
     "BORDER": "#d1d5db",
     "BORDER_STRONG": "#c3c8d0",
+    # Same as BORDER_STRONG here, deliberately -- light mode's existing
+    # borders already read clearly against white/near-white (reported
+    # live), unlike dark mode's, so this palette doesn't need a separate,
+    # even-stronger tier the way DARK's BORDER_OUTER does.
+    "BORDER_OUTER": "#c3c8d0",
     "BORDER_HOVER": "#a8afb9",
     "TEXT_PRIMARY": "#1a1d23",
     "TEXT_SECONDARY": "#6b7280",

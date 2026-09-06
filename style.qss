@@ -61,7 +61,11 @@ QGroupBox {
        collapsed section: the header text and the thin collapsed strip
        read as two separate elements instead of one. padding-top instead
        reserves the same room for the title *inside* the border. */
-    padding-top: 30px;
+    /* 26, not 30 -- reported live the Normal Video page read as
+       slightly more spacious than it needed to; a modest reduction here
+       (plus ui_builder.py's SECTION_SPACING and form.setVerticalSpacing,
+       ~10% tighter each) was judged enough without a real redesign. */
+    padding-top: 26px;
     font-weight: 600;
 }
 
@@ -140,32 +144,47 @@ QTabWidget::tab-bar {
     left: 10px;
 }
 
+/* Border restored, reported live: briefly dropped (border+radius only,
+   background: $BG_PANEL was always kept -- see git history) on the
+   reasoning that every section already being a real card of its own
+   (Encoding/Quality/Format/Expert on Video, Audio on Audio) made this
+   outer frame one layer of boxing too many. In practice, without it the
+   tab bar read as floating labels with nothing underneath saying "these
+   controls belong to this active tab" -- the fix wasn't removing the
+   frame, it was that $BORDER against $BG_PANEL is too low-contrast to
+   register as a real edge at normal viewing distance in dark mode (see
+   BORDER_OUTER's own comment, themes.py). $BORDER_OUTER instead: still
+   neutral (not $ACCENT -- blue stays reserved for controls/progress/
+   focus/Convert, not chrome), just strong enough to actually read. */
 QWidget#tabPageCard {
-    border: 1px solid $BORDER;
-    border-radius: 8px;
     background: $BG_PANEL;
+    border: 1px solid $BORDER_OUTER;
+    border-radius: 8px;
 }
 
 /* Landed here after several iterations (see git history for the earlier
    attempts and why each was rejected -- a plain underline read as
    floating clickable text, a full-$ACCENT-outline selected state read
    too heavy, etc.): border-bottom stays none on *every* tab (seamless
-   into the pane), remaining three sides $BORDER for both states -- an
-   accent outline was tried and dropped, for the same reason the section-
-   heading color and the outer tab-pane border both are neutral in this
-   app -- blue is reserved for controls/progress/focus/Convert, not
-   chrome. Unselected tabs get a real, fully-outlined border on all four
-   sides like any other control; only the selected tab erases its own
-   bottom edge, by color-matching (border-bottom-color: $BG_PANEL) plus
-   nudging itself down into the pane (margin-bottom: -1px) rather than by
-   removing the border outright. */
+   into the pane), remaining three sides $BORDER_OUTER for both states
+   (strengthened alongside #tabPageCard's own border above -- same
+   structural edge, same weight, so the active tab and the card it sits
+   above genuinely read as one object) -- an accent outline was tried
+   and dropped, for the same reason the section-heading color and the
+   outer tab-pane border both are neutral in this app -- blue is
+   reserved for controls/progress/focus/Convert, not chrome. Unselected
+   tabs get a real, fully-outlined border on all four sides like any
+   other control; only the selected tab erases its own bottom edge, by
+   color-matching (border-bottom-color: $BG_PANEL) plus nudging itself
+   down into the pane (margin-bottom: -1px) rather than by removing the
+   border outright. */
 QTabBar::tab {
     background: $BG_WINDOW;
     color: $TEXT_SECONDARY;
     padding: 6px 18px;
     margin-right: 2px;
     margin-top: 2px;
-    border: 1px solid $BORDER;
+    border: 1px solid $BORDER_OUTER;
     border-top-left-radius: 8px;
     border-top-right-radius: 8px;
 }
@@ -173,7 +192,7 @@ QTabBar::tab {
 QTabBar::tab:selected {
     background: $BG_PANEL;
     color: $TEXT_PRIMARY;
-    border-color: $BORDER;
+    border-color: $BORDER_OUTER;
     border-bottom-color: $BG_PANEL;
     margin-bottom: -1px;
     font-weight: 600;
@@ -296,10 +315,18 @@ QPushButton#segMid[segEnd="true"] {
 /* Without this, a checked segmented button and its unchecked neighbors
    were pixel-for-pixel identical -- confirmed by screenshot, no way to
    tell which of the three was actually selected. font-weight is a second,
-   non-color cue riding along with the fill/text-color change. */
+   non-color cue riding along with the fill/text-color change.
+   border-color deliberately NOT set to $ACCENT here (an earlier version
+   of this rule did) -- reported live as looking like the selected
+   segment's outline was missing entirely, since a same-color border on
+   a solid fill is visually indistinguishable from no border at all.
+   Left unset, this inherits the base QPushButton rule's own neutral
+   $BORDER_STRONG instead, so the selected segment keeps a real, visible
+   edge and the row's overall perimeter reads as one consistent outline
+   regardless of which segment is checked -- only the fill/text/weight
+   change to show selection, not the border. */
 QPushButton#segLeft:checked, QPushButton#segMid:checked, QPushButton#segRight:checked {
     background-color: $ACCENT;
-    border-color: $ACCENT;
     color: $TEXT_ON_ACCENT;
     font-weight: 600;
 }

@@ -1148,6 +1148,168 @@ class TestAudioTrackChoices(unittest.TestCase):
         self.assertEqual(window.audio_combo.count(), 4)
 
 
+class TestSettingsScopeLabel(unittest.TestCase):
+    """Reported live: nothing in the UI said whether the left panel's
+    controls were about to become defaults for a newly-added video, or
+    were editing whatever's currently selected in the queue -- both are
+    real, frequently-used states with identical-looking controls either
+    way. video_scope_label/audio_scope_label (one instance per tab, kept
+    in sync by _update_settings_scope_label) make that state explicit."""
+
+    def test_no_selection_reads_as_settings_for_new_videos(self):
+        window = main.MainWindow()
+        self.assertEqual(window.video_scope_label.text(), "Settings for new videos")
+        self.assertEqual(window.audio_scope_label.text(), "Settings for new videos")
+
+    def test_one_selected_names_the_file(self):
+        window = main.MainWindow()
+        window.show()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "interview_01.mkv"
+            _make_clip(clip, "aac")
+            window.add_files([clip])
+            _wait_for_detection(window)
+        window.queue_list.topLevelItem(0).setSelected(True)
+        window._on_queue_selection_changed()
+        self.assertEqual(window.video_scope_label.text(), 'Settings for "interview_01.mkv"')
+
+    def test_multiple_selected_shows_a_count(self):
+        window = main.MainWindow()
+        window.show()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip_a = Path(tmp) / "a.mkv"
+            clip_b = Path(tmp) / "b.mkv"
+            _make_clip(clip_a, "aac")
+            _make_clip(clip_b, "aac")
+            window.add_files([clip_a, clip_b])
+            _wait_for_detection(window)
+        window.queue_list.topLevelItem(0).setSelected(True)
+        window.queue_list.topLevelItem(1).setSelected(True)
+        window._on_queue_selection_changed()
+        self.assertEqual(window.video_scope_label.text(), "Settings for 2 selected videos")
+
+    def test_deselecting_back_to_nothing_restores_the_new_videos_text(self):
+        window = main.MainWindow()
+        window.show()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            _make_clip(clip, "aac")
+            window.add_files([clip])
+            _wait_for_detection(window)
+        item = window.queue_list.topLevelItem(0)
+        item.setSelected(True)
+        window._on_queue_selection_changed()
+        item.setSelected(False)
+        window._on_queue_selection_changed()
+        self.assertEqual(window.video_scope_label.text(), "Settings for new videos")
+
+
+class TestPartialSettingsSyncOnMultiSelect(unittest.TestCase):
+    """Real, reported bug: _sync_settings_to_selected_queue_items used to
+    push the *entire* current settings dict onto every selected queue
+    item on every single control change. Two files selected together
+    with genuinely different settings (the panel only ever shows the
+    first one's, see _on_queue_selection_changed) -- nudging just one
+    control (AAC Bitrate, say) silently overwrote the *other* file's
+    unrelated settings too, not only the one control actually touched.
+    Now only the keys that actually changed since the panel last settled
+    (this selection's own starting point, tracked in _last_synced_
+    settings) get pushed -- everything else about each selected item's
+    own settings is left alone."""
+
+    def test_changing_one_control_does_not_touch_an_unrelated_setting(self):
+        window = main.MainWindow()
+        window.show()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip_a = Path(tmp) / "a.mkv"
+            clip_b = Path(tmp) / "b.mkv"
+            _make_clip(clip_a, "aac")
+            _make_clip(clip_b, "aac")
+            window.add_files([clip_a, clip_b])
+            _wait_for_detection(window)
+        item_a = window.queue_list.topLevelItem(0)
+        item_b = window.queue_list.topLevelItem(1)
+        job_a = item_a.data(queue_widget.STATUS_COL, Qt.UserRole)
+        job_a["bit_depth"] = 10
+        item_a.setData(queue_widget.STATUS_COL, Qt.UserRole, job_a)
+        job_b = item_b.data(queue_widget.STATUS_COL, Qt.UserRole)
+        job_b["bit_depth"] = 8
+        item_b.setData(queue_widget.STATUS_COL, Qt.UserRole, job_b)
+
+        item_a.setSelected(True)
+        item_b.setSelected(True)
+        window._on_queue_selection_changed()
+        self.assertEqual(window._current_settings()["bit_depth"], 10)  # panel shows the first (A)
+
+        window.audio_bitrate_slider.setValue(window.audio_bitrate_slider.maximum())
+
+        self.assertEqual(item_a.data(queue_widget.STATUS_COL, Qt.UserRole)["bit_depth"], 10)
+        self.assertEqual(item_b.data(queue_widget.STATUS_COL, Qt.UserRole)["bit_depth"], 8)  # untouched
+        expected_bitrate = window._current_settings()["audio_bitrate"]
+        self.assertEqual(item_a.data(queue_widget.STATUS_COL, Qt.UserRole)["audio_bitrate"], expected_bitrate)
+        self.assertEqual(item_b.data(queue_widget.STATUS_COL, Qt.UserRole)["audio_bitrate"], expected_bitrate)
+
+    def test_a_handler_that_changes_two_keys_together_carries_both(self):
+        # Quality tier is a deliberate exception to "only the one control
+        # touched" -- clicking it is a single decision that legitimately
+        # sets both rc_mode and quality_value together, and both must
+        # still propagate as one unit, not just whichever the panel
+        # happened to already differ on.
+        window = main.MainWindow()
+        window.show()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip_a = Path(tmp) / "a.mkv"
+            clip_b = Path(tmp) / "b.mkv"
+            _make_clip(clip_a, "aac")
+            _make_clip(clip_b, "aac")
+            window.add_files([clip_a, clip_b])
+            _wait_for_detection(window)
+        item_a = window.queue_list.topLevelItem(0)
+        item_b = window.queue_list.topLevelItem(1)
+        item_a.setSelected(True)
+        item_b.setSelected(True)
+        window._on_queue_selection_changed()
+
+        window.quality_better_btn.click()
+
+        settings = window._current_settings()
+        for item in (item_a, item_b):
+            job = item.data(queue_widget.STATUS_COL, Qt.UserRole)
+            self.assertEqual(job["rc_mode"], settings["rc_mode"])
+            self.assertEqual(job["quality_value"], settings["quality_value"])
+
+    def test_selecting_a_new_item_resets_the_diff_baseline(self):
+        # A second, later selection's own starting settings must be the
+        # baseline for *that* selection's edits -- not still comparing
+        # against whatever the very first selection happened to show,
+        # which could make an unrelated, already-true value look like a
+        # "change" the moment anything else is edited.
+        window = main.MainWindow()
+        window.show()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip_a = Path(tmp) / "a.mkv"
+            clip_b = Path(tmp) / "b.mkv"
+            _make_clip(clip_a, "aac")
+            _make_clip(clip_b, "aac")
+            window.add_files([clip_a, clip_b])
+            _wait_for_detection(window)
+        item_a = window.queue_list.topLevelItem(0)
+        item_b = window.queue_list.topLevelItem(1)
+        job_b = item_b.data(queue_widget.STATUS_COL, Qt.UserRole)
+        job_b["bit_depth"] = 8
+        item_b.setData(queue_widget.STATUS_COL, Qt.UserRole, job_b)
+
+        item_a.setSelected(True)
+        window._on_queue_selection_changed()
+        item_a.setSelected(False)
+        item_b.setSelected(True)
+        window._on_queue_selection_changed()
+
+        window.audio_bitrate_slider.setValue(window.audio_bitrate_slider.maximum())
+
+        self.assertEqual(item_b.data(queue_widget.STATUS_COL, Qt.UserRole)["bit_depth"], 8)
+
+
 class TestAudioBitrateSlider(unittest.TestCase):
     """Converted from a QComboBox to a slider (matching Quality/Speed on
     the Video tab) -- the slider's value is an *index* into AUDIO_BITRATES,
@@ -3088,6 +3250,11 @@ class TestOnAllFinishedSummary(unittest.TestCase):
         window._on_all_finished()
         self.assertFalse(window.open_folder_btn.isVisible())
         self.assertEqual(window.status_label.text(), "Idle")
+        # Reported live: "Idle" reads as internal state-machine language,
+        # not product language -- hidden rather than shown, same as the
+        # rest of this run-status area already collapses to nothing at
+        # rest (see TestHideIdleStatus below for the dedicated coverage).
+        self.assertFalse(window.status_label.isVisible())
 
     def test_zero_success_cancelled_run_says_stopped_not_idle(self):
         # Real gap: cancelling before the first job finished (or a
@@ -3182,6 +3349,40 @@ class TestOnAllFinishedSummary(unittest.TestCase):
         window._on_all_finished()
         self.assertEqual(window.status_label.text(), "✓ Conversion Complete")
         self.assertEqual(window.eta_label.text(), "4 videos converted")
+
+
+class TestHideIdleStatus(unittest.TestCase):
+    """Reported live: "Idle" reads as internal state-machine language,
+    not product language, and permanently occupying the status line gave
+    real status (Preparing/Converting N of M/Conversion Complete/...)
+    less visual weight than it should have -- especially since this
+    whole run-status area already collapses to nothing else at rest
+    (progress_bar/eta_label/stats_label, _apply_run_phase_visuals's
+    "idle" branch). _set_status now hides status_label specifically for
+    the bare word, not for any other status text."""
+
+    def test_idle_status_is_hidden(self):
+        window = main.MainWindow()
+        window.show()
+        self.assertEqual(window.status_label.text(), "Idle")
+        self.assertFalse(window.status_label.isVisible())
+
+    def test_a_real_status_is_shown(self):
+        window = main.MainWindow()
+        window.show()
+        window._set_status("Queue is empty")
+        self.assertTrue(window.status_label.isVisible())
+
+    def test_idle_with_stop_after_current_video_checked_is_still_shown(self):
+        # Genuinely informative even at rest -- a pending one-shot intent
+        # the user just set -- so the general "Idle" hiding rule must not
+        # apply here.
+        window = main.MainWindow()
+        window.show()
+        window.pause_after_check.setChecked(True)
+        window._set_status("Idle")
+        self.assertTrue(window.status_label.isVisible())
+        self.assertIn("will stop after this video", window.status_label.text())
 
 
 class TestFinishedSummaryDismissal(unittest.TestCase):

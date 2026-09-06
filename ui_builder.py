@@ -38,8 +38,12 @@ PANEL_SPACING = 10
 # to Save-to...), unrelated spacing this constant shouldn't also change.
 # This is specifically the gap between one card (Quality/Format/Expert)
 # and the next, one tier looser than PANEL_SPACING's 10px to read as a
-# real section break rather than just another row.
-SECTION_SPACING = 20
+# real section break rather than just another row. 18, not 20 -- reported
+# live the Normal Video page read as slightly more spacious than it
+# needed to, without wanting a real redesign; a ~10% tightening here
+# (plus form.setVerticalSpacing's own 14->12, and QGroupBox's own
+# padding-top in style.qss) was judged enough on its own.
+SECTION_SPACING = 18
 
 THEME_CHOICES = [("dark", "Dark"), ("light", "Light"), ("system", "Match System")]
 
@@ -336,7 +340,7 @@ class _UiBuilderMixin:
         controls exactly like every other Normal control here."""
         group = QGroupBox("Encoding")
         form = QFormLayout(group)
-        form.setVerticalSpacing(14)
+        form.setVerticalSpacing(12)
 
         processing_row = QHBoxLayout()
         processing_row.setSpacing(6)
@@ -417,7 +421,7 @@ class _UiBuilderMixin:
         tiers, and stays duplicated in Expert for that reason."""
         group = QGroupBox("Quality")
         self.quality_form = form = QFormLayout(group)
-        form.setVerticalSpacing(14)
+        form.setVerticalSpacing(12)
 
         mode_row = QHBoxLayout()
         mode_row.setSpacing(0)
@@ -542,7 +546,7 @@ class _UiBuilderMixin:
         it."""
         group = QGroupBox("Format")
         form = QFormLayout(group)
-        form.setVerticalSpacing(14)
+        form.setVerticalSpacing(12)
 
         self.res_combo = QComboBox()
         for r in RESOLUTIONS:
@@ -603,6 +607,17 @@ class _UiBuilderMixin:
         # another row in the same list.
         outer.setSpacing(SECTION_SPACING)
 
+        # Reported live: nothing in the UI said whether these controls were
+        # about to become defaults for newly-added videos, or were editing
+        # whatever's currently selected in the queue -- both are real,
+        # frequently-used states (see _on_queue_selection_changed/add_files)
+        # with identical-looking controls either way. _update_settings_
+        # scope_label (main.py) keeps this and audio_scope_label below in
+        # sync with the real selection state.
+        self.video_scope_label = QLabel()
+        self._apply_fuzzy_caption_style(self.video_scope_label)
+        outer.addWidget(self.video_scope_label)
+
         outer.addWidget(self._build_encoding_group())
         outer.addWidget(self._build_quality_group())
         outer.addWidget(self._build_format_group())
@@ -624,7 +639,7 @@ class _UiBuilderMixin:
         # Default Fusion spacing reads as cramped once every row has a small
         # secondary line under it (quality/speed tiers, the bit-depth combo's
         # own description) -- confirmed by screenshot, this is the fix.
-        form.setVerticalSpacing(14)
+        form.setVerticalSpacing(12)
 
         # encoder_combo, not shown as its own row anymore -- Processing
         # (Encoding group, above) is now the only user-facing entry point
@@ -831,6 +846,22 @@ class _UiBuilderMixin:
         tab.setObjectName("tabPageCard")
         outer = QVBoxLayout(tab)
         outer.setContentsMargins(12, 12, 12, 12)
+        # SECTION_SPACING, matching _build_video_tab's own outer layout --
+        # reported live, real bug: this was never set here at all, so the
+        # gap between audio_scope_label and the Audio card below it used
+        # Qt's own default spacing instead, however that happened to
+        # compare to SECTION_SPACING -- the Audio card visibly started at
+        # a different height than Encoding did on the Video tab, for a
+        # reason that had nothing to do with either tab's actual content.
+        outer.setSpacing(SECTION_SPACING)
+
+        # See video_scope_label's own comment (_build_video_tab) -- same
+        # label, kept in sync with it by _update_settings_scope_label
+        # (main.py), just a second instance since a widget can't sit in
+        # two tabs' layouts at once.
+        self.audio_scope_label = QLabel()
+        self._apply_fuzzy_caption_style(self.audio_scope_label)
+        outer.addWidget(self.audio_scope_label)
 
         # No Audio Expert section -- every genuine audio setting the
         # backend currently supports (Track, Handling, Channels, AAC
@@ -842,7 +873,7 @@ class _UiBuilderMixin:
         # track mapping, loudness normalization, ...).
         normal_group = QGroupBox("Audio")
         normal_form = QFormLayout(normal_group)
-        normal_form.setVerticalSpacing(14)
+        normal_form.setVerticalSpacing(12)
 
         self.audio_combo = QComboBox()
         self.audio_combo.addItems(AUDIO_TRACK_LABELS)
@@ -980,7 +1011,14 @@ class _UiBuilderMixin:
         # here, or click 'Add Videos...'") already carries that message
         # exactly when it's relevant (queue is empty), and disappears once
         # it isn't needed.
-        layout.addWidget(QLabel("Videos"))
+        #
+        # Not added to layout yet -- Add Videos/the overflow menu (built
+        # below, alongside queue_list) share this same header row now
+        # (reported live: they're operations *on* Videos, so they read
+        # better next to its own heading than sitting below the table,
+        # which is where a per-run detail like Save-to naturally starts
+        # instead). videos_heading is added once that row is assembled.
+        videos_heading = QLabel("Videos")
         self.queue_list = DropTreeWidget(self.add_files, on_reordered=self._push_undo_snapshot)
         # Suppresses the redundant per-cell focus-rect box Fusion draws
         # natively (see _NoItemFocusRectStyle's own docstring for why
@@ -1040,13 +1078,19 @@ class _UiBuilderMixin:
         self.queue_list.itemSelectionChanged.connect(self._on_queue_selection_changed)
         self.queue_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.queue_list.customContextMenuRequested.connect(self._on_queue_context_menu)
-        layout.addWidget(self.queue_list, 1)
+        # Not added to layout yet -- comes after the header row below,
+        # which needs add_files_btn/queue_menu_btn built first.
 
-        q_btns = QHBoxLayout()
+        # header_row, not q_btns -- shares the same row as videos_heading
+        # now (see that label's own comment above for why); the name
+        # stays q_btns below purely so the rest of this block (queue_menu
+        # and its actions) doesn't need touching.
+        q_btns = header_row = QHBoxLayout()
+        header_row.addWidget(videos_heading)
+        header_row.addStretch()
         self.add_files_btn = QPushButton("Add Videos…")
         self.add_files_btn.clicked.connect(self._pick_files)
         q_btns.addWidget(self.add_files_btn)
-        q_btns.addStretch()
         # One overflow menu for everything that isn't the primary, always-
         # needed action (Add Videos) -- Remove Selected/Clear Queue keep
         # their existing Delete-key and right-click-menu entry points
@@ -1090,7 +1134,8 @@ class _UiBuilderMixin:
         queue_menu.addAction(settings_action)
         self.queue_menu_btn.setMenu(queue_menu)
         q_btns.addWidget(self.queue_menu_btn)
-        layout.addLayout(q_btns)
+        layout.addLayout(header_row)
+        layout.addWidget(self.queue_list, 1)
 
         # Output folder is a per-run detail, not the first decision anyone
         # makes -- it lives below the queue, not up with Quality/Format,
@@ -1135,6 +1180,12 @@ class _UiBuilderMixin:
         # nothing to "pause after" while idle or already paused.
 
         self.status_label = QLabel("Idle")
+        # Matches what _set_status("Idle") itself would do (main.py) --
+        # this initial text is set directly here, not through that
+        # method, so the hidden-at-rest state has to be established
+        # here too rather than waiting for the first real _set_status
+        # call to establish it.
+        self.status_label.setVisible(False)
         layout.addWidget(self.status_label)
 
         self.progress_bar = QProgressBar()

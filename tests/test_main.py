@@ -4261,58 +4261,66 @@ class TestDynamicProcessingButtons(unittest.TestCase):
             if encoder == "hevc_vaapi" and vendor == "intel"
         )
 
-    def test_live_pick_of_an_unavailable_vendor_self_corrects_to_cpu(self):
-        # Expert's own encoder_combo (main.py's _current_encoder_id/
-        # _current_gpu_vendor) lists every vendor unconditionally,
-        # unfiltered by real hardware -- picking "Intel" there on a
-        # machine with no Intel render node used to just leave Processing
-        # showing nothing checked while encoder_combo itself still quietly
-        # held "Intel", which build_args would later fail a real job on.
-        # _on_encoder_changed now self-corrects the combo's own selection
-        # immediately, the same resolution Automatic already uses.
+    def test_encoder_combo_itself_is_not_self_corrected(self):
+        # Regression guard: an earlier version of this branch self-
+        # corrected encoder_combo's own selection the moment it landed on
+        # an unavailable vendor, which broke a wide swath of pre-existing
+        # hardware-agnostic UI-cascade tests the instant they ran on a
+        # genuinely hardware-less machine (confirmed directly on CI,
+        # unmasked by this dev box's own real Intel+AMD hardware hiding it
+        # in every prior local run). encoder_combo must stay free-floating
+        # UI state -- correction happens only where a job settings dict
+        # actually gets captured for real use (add_files, below).
         with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
             window = main.MainWindow()
             window.encoder_combo.setCurrentIndex(self._intel_encoder_combo_index())
-            self.assertEqual(window._current_encoder_id(), "libx265")
-            self.assertIsNone(window._current_gpu_vendor())
-            self.assertTrue(window.processing_cpu_btn.isChecked())
+            self.assertEqual(window._current_encoder_id(), "hevc_vaapi")
+            self.assertEqual(window._current_gpu_vendor(), "intel")
 
-    def test_live_pick_of_an_unavailable_vendor_prefers_the_real_gpu_thats_present(self):
+    def test_apply_settings_to_controls_does_not_correct_an_unavailable_vendor(self):
+        # Same regression guard as above, for the settings -> controls
+        # direction -- a great many existing tests apply a hardware-
+        # specific settings dict directly and expect it to stick.
+        with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main.MainWindow()
+            settings = {**main.DEFAULT_SETTINGS, "encoder": "hevc_vaapi", "gpu_vendor": "intel", "speed": "4"}
+            window._apply_settings_to_controls(settings)
+            self.assertEqual(window._current_encoder_id(), "hevc_vaapi")
+            self.assertEqual(window._current_gpu_vendor(), "intel")
+
+    def test_add_files_resolves_an_unavailable_vendor_through_automatic(self):
+        # The realistic way a queue item's settings end up naming an
+        # unavailable vendor at all: Expert's combo was left on "Intel"
+        # (previous two tests) when a video got added -- there's no
+        # preset/save-file feature to bring stale settings in from
+        # elsewhere (presets.py's own docstring). add_files is the one
+        # place this actually gets corrected, since it's the one place a
+        # settings dict becomes a real job that could reach build_args.
+        with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main.MainWindow()
+            window.encoder_combo.setCurrentIndex(self._intel_encoder_combo_index())
+            with tempfile.TemporaryDirectory() as tmp:
+                clip = Path(tmp) / "clip.mkv"
+                clip.touch()  # add_files only needs path.is_file() -- the
+                # correction happens synchronously at job creation, before
+                # any async probe/detection subprocess would need a real,
+                # decodable video.
+                window.add_files([clip])
+                job = window.queue_list.topLevelItem(0).data(queue_widget.STATUS_COL, Qt.UserRole)
+        self.assertEqual(job["encoder"], "libx265")
+        self.assertIsNone(job["gpu_vendor"])
+
+    def test_add_files_prefers_the_real_gpu_thats_present(self):
         with patch.object(main.worker, "find_render_node", side_effect=_find_render_node_for(main.worker.AMD_VENDOR_ID)):
             window = main.MainWindow()
             window.encoder_combo.setCurrentIndex(self._intel_encoder_combo_index())
-            self.assertEqual(window._current_encoder_id(), "hevc_vaapi")
-            self.assertEqual(window._current_gpu_vendor(), "amd")
-            self.assertTrue(window.processing_amd_btn.isChecked())
-
-    def test_applying_a_job_with_an_unavailable_vendor_resolves_through_automatic(self):
-        # The realistic way a queue item's own stored settings end up
-        # naming an unavailable vendor at all: added while Expert's combo
-        # was on "Intel" (previous test), not any preset/save-file feature
-        # -- this fork has none (presets.py's own docstring). speed="4"
-        # here, not DEFAULT_SETTINGS' own "medium" -- a real job that was
-        # genuinely built on hevc_vaapi always carries a compression_level
-        # string, never an x264/x265 preset name; mixing the two is an
-        # invalid settings shape this test has no reason to manufacture.
-        with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
-            window = main.MainWindow()
-            stale_job = {**main.DEFAULT_SETTINGS, "encoder": "hevc_vaapi", "gpu_vendor": "intel", "speed": "4"}
-            window._apply_settings_to_controls(stale_job)  # must not raise
-            self.assertEqual(window._current_encoder_id(), "libx265")
-            self.assertIsNone(window._current_gpu_vendor())
-        # DEFAULT_SETTINGS is one shared module-level dict every
-        # MainWindow reads -- applying a *different* dict's corrected
-        # values must never leak back into it.
-        self.assertEqual(main.DEFAULT_SETTINGS["encoder"], "libx265")
-        self.assertNotIn("gpu_vendor", main.DEFAULT_SETTINGS)
-
-    def test_applying_a_job_with_an_unavailable_vendor_prefers_the_real_gpu_thats_present(self):
-        with patch.object(main.worker, "find_render_node", side_effect=_find_render_node_for(main.worker.AMD_VENDOR_ID)):
-            window = main.MainWindow()
-            stale_job = {**main.DEFAULT_SETTINGS, "encoder": "hevc_vaapi", "gpu_vendor": "intel", "speed": "4"}
-            window._apply_settings_to_controls(stale_job)
-            self.assertEqual(window._current_encoder_id(), "hevc_vaapi")
-            self.assertEqual(window._current_gpu_vendor(), "amd")
+            with tempfile.TemporaryDirectory() as tmp:
+                clip = Path(tmp) / "clip.mkv"
+                clip.touch()
+                window.add_files([clip])
+                job = window.queue_list.topLevelItem(0).data(queue_widget.STATUS_COL, Qt.UserRole)
+        self.assertEqual(job["encoder"], "hevc_vaapi")
+        self.assertEqual(job["gpu_vendor"], "amd")
 
 
 class TestHardwareProbedOnceForTheWholeSession(unittest.TestCase):
@@ -4324,7 +4332,7 @@ class TestHardwareProbedOnceForTheWholeSession(unittest.TestCase):
     the real function (side_effect=the real thing, not a stub) so this
     also exercises genuine detection logic, not just a call-count."""
 
-    def test_automatic_and_a_live_correction_both_reuse_the_startup_snapshot(self):
+    def test_automatic_and_add_files_correction_both_reuse_the_startup_snapshot(self):
         real_detect = worker.detect_available_backends
         with patch.object(worker, "detect_available_backends", side_effect=real_detect) as mock_detect, \
              patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")):
@@ -4334,13 +4342,20 @@ class TestHardwareProbedOnceForTheWholeSession(unittest.TestCase):
             window._on_processing_choice("automatic")
             self.assertEqual(mock_detect.call_count, 1)
 
-            # Forces _resolved_engine_vendor's correction branch (Expert's
-            # combo landing on a vendor this CPU-only mock doesn't have) --
-            # the one other real call site of best_available_engine().
+            # Forces add_files' own _resolved_engine_vendor correction
+            # (Expert's combo landing on a vendor this CPU-only mock
+            # doesn't have) -- the one other real call site of
+            # best_available_engine() now that encoder_combo itself is
+            # deliberately not self-correcting (see TestDynamicProcessing
+            # Buttons' own regression guards on that).
             intel_index = next(
                 i for i, (e, v, _l) in enumerate(main.ENCODERS) if e == "hevc_vaapi" and v == "intel"
             )
             window.encoder_combo.setCurrentIndex(intel_index)
+            with tempfile.TemporaryDirectory() as tmp:
+                clip = Path(tmp) / "clip.mkv"
+                clip.touch()
+                window.add_files([clip])
             self.assertEqual(mock_detect.call_count, 1)
 
 

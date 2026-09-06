@@ -543,33 +543,24 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         return encoder_profile_key(self._current_encoder_id(), self._current_gpu_vendor())
 
     def _on_encoder_changed(self):
-        # encoder_combo just landed on a vendor _resolved_engine_vendor
-        # doesn't consider available (Expert's own combo lists every
-        # vendor unconditionally, unfiltered by real hardware) --
-        # self-correct the combo's own selection to whatever Automatic
-        # would actually resolve to before anything below reads it, same
-        # blockSignals-around-a-self-triggered-setCurrentIndex shape
-        # codec_combo's own forced-H.265 case just below already uses, so
-        # every one of this function's later _current_encoder_id() calls
-        # (and _current_settings(), and anything a new queue item captures
-        # afterward) reads an already-valid state instead of needing its
-        # own separate correction.
-        resolved_engine, resolved_vendor = self._resolved_engine_vendor(
-            self._current_encoder_id(), self._current_gpu_vendor()
-        )
-        if (resolved_engine, resolved_vendor) != (self._current_encoder_id(), self._current_gpu_vendor()):
-            corrected_index = next(
-                i for i, (_enc, vendor, _label) in enumerate(ENCODERS) if vendor == resolved_vendor
-            )
-            self.encoder_combo.blockSignals(True)
-            self.encoder_combo.setCurrentIndex(corrected_index)
-            self.encoder_combo.blockSignals(False)
-
         # Also called from _on_codec_changed below (not wired to codec_
         # combo.currentIndexChanged directly anymore) -- the resolved
         # encoder id depends on both encoder_combo and codec_combo (see
         # _current_encoder_id()), so a codec change needs this same full
         # cascade too, just wrapped with quality-tier preservation first.
+        #
+        # Deliberately does NOT self-correct an unavailable vendor here --
+        # encoder_combo is free-floating UI state (Expert's combo lists
+        # every vendor unconditionally, unfiltered by real hardware), and
+        # a great many existing tests rely on being able to set it to any
+        # of the three rows regardless of what hardware the machine
+        # actually running the suite has (confirmed the hard way: an
+        # earlier version of this correction here broke a wide swath of
+        # pre-existing hardware-agnostic UI-cascade tests on a genuinely
+        # hardware-less CI runner). The one place this actually needs
+        # correcting -- a real queue item that could reach build_args with
+        # an impossible vendor -- is add_files (queue_controller.py),
+        # which is the sole place a job's settings get captured at all.
         encoder = self._current_encoder_id()
         encoder_key = self._current_encoder_key()
         is_vaapi = encoder == "hevc_vaapi"
@@ -1296,21 +1287,13 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # option then), so that's the correct default for anything missing it.
         is_vaapi_settings = settings["encoder"] == "hevc_vaapi"
         wanted_vendor = settings.get("gpu_vendor", "intel") if is_vaapi_settings else None
-        resolved_engine, resolved_vendor = self._resolved_engine_vendor(settings["encoder"], wanted_vendor)
-        if (resolved_engine, resolved_vendor) != (settings["encoder"], wanted_vendor):
-            # A job/settings dict naming a vendor this machine doesn't
-            # actually have -- same resolution _on_encoder_changed's own
-            # self-correction uses, needed here too since this path
-            # (queue-item selection, __init__'s own DEFAULT_SETTINGS)
-            # never fires that signal at all. A local copy, not a
-            # mutation of the caller's own dict -- this can be DEFAULT_
-            # SETTINGS itself (one shared module-level constant every
-            # MainWindow reads) or a queue item's live settings, neither
-            # of which should get silently rewritten just from being
-            # displayed.
-            settings = {**settings, "encoder": resolved_engine, "gpu_vendor": resolved_vendor}
-            is_vaapi_settings = resolved_engine == "hevc_vaapi"
-            wanted_vendor = resolved_vendor
+        # Deliberately does not correct an unavailable vendor here -- see
+        # _on_encoder_changed's own comment on why that check doesn't
+        # belong anywhere in this settings <-> controls round-trip at all
+        # (a wide swath of pre-existing tests apply a hardware-specific
+        # settings dict directly, on whatever hardware happens to be
+        # running the suite). add_files (queue_controller.py) is the one
+        # place this actually needs correcting.
         # Matched by vendor alone, not enc == settings["encoder"] -- the
         # CPU row's own id in ENCODERS is just a placeholder now (see its
         # own comment in constants.py), not necessarily what

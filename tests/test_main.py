@@ -3956,32 +3956,36 @@ class TestLiveAppendDuringRun(unittest.TestCase):
 class TestLeftPanelFixedWidth(unittest.TestCase):
     # Regression guard for the QSplitter -> QHBoxLayout change
     # (ui_builder.py's _build_ui): the left settings panel is a deliberate
-    # design rule now (fixed 430px, right panel absorbs all resizing), not
+    # design rule now (fixed 456px, right panel absorbs all resizing), not
     # incidental sizing -- this exists so a future edit reintroducing
     # splitter-style drag/resize behavior fails a test instead of silently
-    # regressing. 430, not the original 470 -- a later density pass
-    # narrowed it once the panel's own internal padding/spacing shrank
-    # enough that the controls no longer needed the extra room.
-    def test_left_panel_is_fixed_at_430(self):
+    # regressing. 456, not the original 470 -- a density pass tried 410
+    # directly and confirmed real clipping by screenshot (the settings
+    # content's own sizeHint().width() is 450px regardless of hardware,
+    # driven by the Quality-tier row's button labels, not by anything
+    # padding/spacing could shrink); 456 leaves a small margin above that
+    # measured floor. See ui_builder.py's own comment on this same
+    # setFixedWidth call for the full measurement.
+    def test_left_panel_is_fixed_at_456(self):
         window = main.MainWindow()
         left = window.findChild(QWidget, "leftPanel")
         self.assertIsNotNone(left)
-        self.assertEqual(left.minimumWidth(), 430)
-        self.assertEqual(left.maximumWidth(), 430)
+        self.assertEqual(left.minimumWidth(), 456)
+        self.assertEqual(left.maximumWidth(), 456)
 
     def test_widening_the_window_does_not_change_left_panel_width(self):
         window = main.MainWindow()
         window.show()
         left = window.findChild(QWidget, "leftPanel")
         window.resize(1800, 820)
-        self.assertEqual(left.width(), 430)
+        self.assertEqual(left.width(), 456)
 
 
 class TestLeftPanelScrolling(unittest.TestCase):
     """The richer Video tab (Encoding/Quality/Format plus a real,
     reachable Expert section again) can genuinely exceed the window's
     default 820px height once Expert is expanded -- #leftPanel (still
-    fixed at 430px wide, see TestLeftPanelFixedWidth above) is a
+    fixed at 410px wide, see TestLeftPanelFixedWidth above) is a
     QScrollArea now, not a bare QWidget.
 
     Expanding Expert now grows the window to fit instead, when there's a
@@ -4029,7 +4033,7 @@ class TestLeftPanelScrolling(unittest.TestCase):
         # the floor read below is the real collapsed-height one, not
         # whatever this machine's real config last persisted for
         # video_expert_expanded. Asserts against left.minimumHeight()
-        # itself, not the window's starting height (1200x760, main.py's
+        # itself, not the window's starting height (1186x720, main.py's
         # own hardcoded default) -- that default is comfortably taller
         # than the actual floor, so it's the wrong thing to compare a
         # shrink-below-the-floor attempt against.
@@ -4061,7 +4065,7 @@ class TestLeftPanelScrolling(unittest.TestCase):
         self.assertGreater(left.verticalScrollBar().maximum(), 0)
 
     def test_horizontal_scrollbar_is_never_shown(self):
-        # Content is sized for exactly this fixed 430px width by design
+        # Content is sized for exactly this fixed 410px width by design
         # -- only vertical overflow (Expert expanded) is a real concern.
         window = main.MainWindow()
         window.show()
@@ -4107,8 +4111,22 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
         window.show()
         window.processing_cpu_btn.click()
         _app.processEvents()
-        collapsed_height = window.height()
         left = window.findChild(QWidget, "leftPanel")
+        # Real, confirmed regression from a density pass: this used to read
+        # collapsed_height straight off the untouched default-size window,
+        # relying on main.py's own default always being shorter than
+        # Expert's expanded content. That relationship isn't guaranteed --
+        # it silently flipped on CI once the layout got tight enough that
+        # Expert's expanded content fit inside the (still Intel-pinned)
+        # default window without growing at all ("760 not greater than
+        # 760"), even though this dev box's own font metrics still needed
+        # the grow. Pinning the window to left.minimumHeight() (the
+        # collapsed floor) first makes growth necessary by construction --
+        # expanded content is strictly taller than collapsed content,
+        # regardless of what any environment's font metrics happen to be.
+        window.resize(window.width(), left.minimumHeight())
+        _app.processEvents()
+        collapsed_height = window.height()
         window.video_expert_group.setChecked(True)
         # The grow itself is deferred a full event-loop turn (QTimer.
         # singleShot(0, ...) in _on_expert_toggled) -- sizeHint() read
@@ -4124,18 +4142,28 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
         # Reported live: collapsing without also shrinking left a
         # visible gap of empty space below the now-short content, the
         # window having grown to fit Expert's expanded content and
-        # simply stayed that size. Restores the exact *pre-expand*
-        # height (main.py's own default 760, here, since nothing resized
-        # it before expanding) rather than the bare collapsed floor --
-        # those happen to be different numbers (760 vs ~586) whenever the
-        # window didn't start out already at the floor, which is the
-        # ordinary case. _empty_qsettings -- needs Expert to genuinely
-        # start collapsed so setChecked(True) below is a real transition
-        # that actually grows the window in the first place.
+        # simply stayed that size. Restores the exact *pre-expand* height,
+        # whatever it was, rather than the bare collapsed floor -- those
+        # are only different numbers when the window didn't start out
+        # already at the floor. Pinned to left.minimumHeight() before
+        # expanding (same reasoning as test_expanding_grows_the_window_
+        # instead_of_requiring_scrolling above) rather than reading
+        # pre_expand_height off the untouched default window -- a tight
+        # enough layout can make Expert's expanded content fit inside the
+        # default height with no growth at all, which would make the
+        # "confirm it actually grew first" assertion below false on some
+        # environments' font metrics even though this class is about the
+        # collapse behavior, not about whether a grow happened to be
+        # needed at the *default* size specifically. _empty_qsettings --
+        # needs Expert to genuinely start collapsed so setChecked(True)
+        # below is a real transition that actually grows the window.
         with _empty_qsettings():
             window = main.MainWindow()
         window.show()
         window.processing_cpu_btn.click()
+        _app.processEvents()
+        left = window.findChild(QWidget, "leftPanel")
+        window.resize(window.width(), left.minimumHeight())
         _app.processEvents()
         pre_expand_height = window.height()
         window.video_expert_group.setChecked(True)

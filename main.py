@@ -69,14 +69,22 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VeloCoder")
-        self.resize(1200, 760)
-        # Left panel is a fixed 430px inspector now (ui_builder.py's
+        # 1186, not 1140 -- a density pass targeted a 410px inspector and
+        # a 1140px window (leaving 730px for Videos), but 410 clipped in
+        # practice (ui_builder.py's own comment on left.setFixedWidth has
+        # the measured floor: the settings content needs 450px regardless
+        # of hardware, driven by the Quality-tier row's own button labels).
+        # Corrected to 456px, and the window widened by that same 46px
+        # delta (1140+46) so Videos still gets the originally-intended
+        # 730px rather than silently losing width to the correction.
+        self.resize(1186, 720)
+        # Left panel is a fixed 456px inspector now (ui_builder.py's
         # _build_ui), not a resizable pane -- narrowing the window has
         # nowhere left to take width from except Videos, and a saved
         # window_geometry from before this change (or just a user dragging
         # the window edge) could otherwise crush it well past usable.
         # 960 held fixed through the density pass that took the inspector
-        # from 470 to 430 -- left as the first thing to test at, rather
+        # from 470 to 456 -- left as the first thing to test at, rather
         # than tightening it to match, before drawing any conclusion about
         # how the narrower inspector actually behaves at the floor.
         self.setMinimumWidth(960)

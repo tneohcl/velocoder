@@ -443,6 +443,10 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # retroactively touch.
         if getattr(self, "_help_window", None) is not None:
             self._help_window.refresh_theme()
+        # Same reasoning, for a static icon this time rather than rich
+        # text -- setIcon() (ui_builder.py) only ever took a snapshot of
+        # the icon at construction time.
+        self.queue_menu_btn.setIcon(self._themed_icon("more"))
 
     def _open_settings_dialog(self):
         # Lazily built once, reused on every subsequent open -- same
@@ -517,6 +521,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             _load_stylesheet(QApplication.instance(), _resolve_theme("system"))
             if getattr(self, "_help_window", None) is not None:
                 self._help_window.refresh_theme()
+            self.queue_menu_btn.setIcon(self._themed_icon("more"))
 
     def _update_settings_scope_label(self, selected=None):
         # Reported live: nothing distinguished "these controls are about

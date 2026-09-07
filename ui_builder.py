@@ -12,7 +12,7 @@ Mixed in as `class MainWindow(QMainWindow, _UiBuilderMixin)`, not
 in the MRO fine, but multiple-inheriting from two QObject-derived
 classes is a well-known source of real, hard-to-diagnose problems. A
 plain mixin sidesteps that entirely."""
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QAction, QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
@@ -1162,11 +1162,21 @@ class _UiBuilderMixin:
         # call site for these three already uses, so none of that logic
         # needed to change, only how each one is built and wired here.
         self.queue_menu_btn = QToolButton()
-        self.queue_menu_btn.setText("⋯")
+        # A real icon (circled dots), not the literal "⋯" text -- reported
+        # live as reading like three stray characters next to Add Videos
+        # rather than a deliberate control. Refreshed on every theme
+        # change (_apply_theme/_on_system_theme_changed, main.py) since
+        # setIcon() only takes a snapshot at set-icon time -- unlike QSS-
+        # driven appearance, it does not react to _load_stylesheet on its
+        # own.
+        self.queue_menu_btn.setIcon(self._themed_icon("more"))
+        self.queue_menu_btn.setIconSize(QSize(16, 16))
+        self.queue_menu_btn.setFixedSize(32, 32)
         # "More actions", not "More queue actions" -- half of what's in
         # here (Show Conversion Log, Copy FFmpeg Command, Settings…)
         # isn't a queue action at all. Reported live.
         self.queue_menu_btn.setToolTip("More actions")
+        self.queue_menu_btn.setAccessibleName("More actions")
         self.queue_menu_btn.setPopupMode(QToolButton.InstantPopup)
         queue_menu = QMenu(self.queue_menu_btn)
         self.remove_btn = QAction("Remove Selected", self)

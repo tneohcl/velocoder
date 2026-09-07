@@ -20,7 +20,7 @@ below is the only place quality numbers live now, not a preset list.
 # constant existed.
 APP_NAME = "VeloCoder"
 APP_VERSION = "1.0.0"
-APP_ORGANIZATION = "FLY Studio"
+APP_ORGANIZATION = "ODCS App Studio"
 
 VIDEO_FILTER = "Video files (*.mkv *.mp4 *.avi *.mov *.m4v *.ts *.wmv);;All files (*)"
 AUDIO_TRACK_LABELS = ["Track 1", "Track 2", "Track 3", "Track 4"]

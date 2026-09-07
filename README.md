@@ -202,7 +202,7 @@ tests/                unittest suite: test_worker.py, test_presets.py
                       formatting.py/help_window.py/about_dialogs.py's own
                       menu wiring all get exercised through it, via the
                       one real MainWindow instance, rather than one test
-                      file each). ~530 tests total.
+                      file each). ~535 tests total.
 ```
 
 The GUI is a fixed-width (456px) settings inspector on the left, wrapped
@@ -459,7 +459,7 @@ this section.)*
   ...)` under the hood — same function real jobs use, so it can never drift
   from what actually runs) still exists and still updates on every settings
   change; it's just never added to any layout. The only exposed entry point
-  now is **Copy FFmpeg Command** in the **⋯** overflow menu (queue pane,
+  now is **Copy FFmpeg Command** in the **More actions** overflow menu (queue pane,
   see below), which reads the resolved argv list directly
   (`self._last_preview_args`) rather than this widget's own display text —
   `_copy_command_to_clipboard` needs no visible preview to work at all.
@@ -620,8 +620,14 @@ notice on top of it.
   **copy** of the job dict, confirmed empirically — the running queue's
   snapshot, taken at add time, wouldn't otherwise see the async
   interlace-detection result land moments later.
-- **Remove Selected / Clear Queue** live in the **⋯** overflow menu next to
-  **Add Videos…** now, not permanent buttons of their own — Delete-key
+- **Remove Selected / Clear Queue** live in the **More actions** overflow menu next to
+  **Add Videos…** now, not permanent buttons of their own — a circled-dots
+  icon (`assets/more_dark.svg`/`more_light.svg`), not the literal "⋯" text
+  it used to be (reported live as reading like three stray characters
+  rather than a deliberate control); `queue_menu_btn.setIcon(...)` is
+  explicitly refreshed on every theme change (`_apply_theme`/
+  `_on_system_theme_changed`, main.py), since unlike QSS-driven
+  appearance it doesn't react to a stylesheet reload on its own. Delete-key
   (queue focused) and the right-click context menu still reach Remove
   directly either way. Clear Queue still asks for confirmation first
   (skipped entirely if the queue is already empty) — it can discard real
@@ -655,7 +661,7 @@ notice on top of it.
   Preparing shows an indeterminate progress bar (no real fraction exists
   yet during file analysis); Converting/Paused show the full determinate
   telemetry. Checking **Stop After Current Video** (`pause_after_check`, a
-  checkable action in the **⋯** menu) appends "— will stop after this
+  checkable action in the **More actions** menu) appends "— will stop after this
   video" to the status line, centralized through the `_set_status` helper
   every status update goes through.
 - **Convert / Cancel**, bottom-right of the panel, below status/progress/
@@ -696,7 +702,7 @@ notice on top of it.
   one-time no-hardware notice, alone) or another conversion begins,
   whichever comes first.
 - **Log** (raw ffmpeg stderr) has no permanent panel either, collapsed or
-  otherwise — **Show Conversion Log** (the **⋯** menu) opens it in its own
+  otherwise — **Show Conversion Log** (the **More actions** menu) opens it in its own
   small non-modal window, reparenting the real, already-live `log_view`
   widget rather than duplicating it. `queue_list`'s own stretch factor
   simply claims the space Log used to share space with it for.
@@ -705,7 +711,7 @@ notice on top of it.
 
 <img src="screenshots/help_dark.png" alt="Help window" width="380"> <img src="screenshots/about_dark.png" alt="About VeloCoder" width="220"> <img src="screenshots/system_information_dark.png" alt="System Information" width="220">
 
-Reachable from the **⋯** menu (**Help**, **About VeloCoder**) or F1
+Reachable from the **More actions** menu (**Help**, **About VeloCoder**) or F1
 (Help specifically) — no menu bar, no permanent **?** buttons next to
 controls, nothing added to the main window itself.
 

@@ -557,10 +557,10 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # actually running the suite has (confirmed the hard way: an
         # earlier version of this correction here broke a wide swath of
         # pre-existing hardware-agnostic UI-cascade tests on a genuinely
-        # hardware-less CI runner). The one place this actually needs
-        # correcting -- a real queue item that could reach build_args with
-        # an impossible vendor -- is add_files (queue_controller.py),
-        # which is the sole place a job's settings get captured at all.
+        # hardware-less CI runner). _effective_current_settings() is
+        # where this actually gets corrected, used at both real job
+        # boundaries -- add_files (queue_controller.py) and syncing a
+        # selected queue item's settings from the panel.
         encoder = self._current_encoder_id()
         encoder_key = self._current_encoder_key()
         is_vaapi = encoder == "hevc_vaapi"

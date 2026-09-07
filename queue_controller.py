@@ -223,12 +223,17 @@ class _QueueControllerMixin:
                 continue
         if restored:
             self._restore_queue_snapshot(restored)
+        # Same inline plural idiom formatting.format_run_summary already
+        # uses ("N video(s)" reads like internal-tool language, not
+        # something a consumer-facing app should say).
+        restored_word = "video" if len(restored) == 1 else "videos"
+        missing_word = "video" if missing == 1 else "videos"
         if restored and missing:
-            self._set_status(f"Restored {len(restored)} video(s) from your last session ({missing} no longer found)")
+            self._set_status(f"Restored {len(restored)} {restored_word} from your last session ({missing} no longer found)")
         elif restored:
-            self._set_status(f"Restored {len(restored)} video(s) from your last session")
+            self._set_status(f"Restored {len(restored)} {restored_word} from your last session")
         elif missing:
-            self._set_status(f"{missing} video(s) from your last session could no longer be found")
+            self._set_status(f"{missing} {missing_word} from your last session could no longer be found")
 
     def _push_undo_snapshot(self):
         # Disabled entirely during a run, matching every other queue-

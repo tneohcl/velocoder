@@ -658,7 +658,7 @@ class _UiBuilderMixin:
         # scope_label (main.py) keeps this and audio_scope_label below in
         # sync with the real selection state.
         self.video_scope_label = QLabel()
-        self._apply_fuzzy_caption_style(self.video_scope_label)
+        self.video_scope_label.setObjectName("scopeLabel")
         outer.addWidget(self.video_scope_label)
 
         outer.addWidget(self._build_encoding_group())
@@ -747,7 +747,7 @@ class _UiBuilderMixin:
 
         self.quality_tier_label = QLabel()
         self.quality_tier_label.setAlignment(Qt.AlignCenter)
-        self._apply_fuzzy_caption_style(self.quality_tier_label)
+        self.quality_tier_label.setObjectName("captionLabel")
 
         # The slider and its fuzzy caption underneath share one outlined
         # box (objectName carries the QSS rule -- see style.qss's
@@ -824,7 +824,7 @@ class _UiBuilderMixin:
         self.speed_tier_label = QLabel()
         self.speed_tier_label.setAlignment(Qt.AlignCenter)
         self.speed_tier_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self._apply_fuzzy_caption_style(self.speed_tier_label)
+        self.speed_tier_label.setObjectName("captionLabel")
 
         # Same outlined-box grouping as Quality above, same #fuzzyGroup rule.
         speed_group = QWidget()
@@ -913,7 +913,7 @@ class _UiBuilderMixin:
         # (main.py), just a second instance since a widget can't sit in
         # two tabs' layouts at once.
         self.audio_scope_label = QLabel()
-        self._apply_fuzzy_caption_style(self.audio_scope_label)
+        self.audio_scope_label.setObjectName("scopeLabel")
         outer.addWidget(self.audio_scope_label)
 
         # No Audio Expert section -- every genuine audio setting the
@@ -1024,7 +1024,7 @@ class _UiBuilderMixin:
 
         self.audio_bitrate_tier_label = QLabel()
         self.audio_bitrate_tier_label.setAlignment(Qt.AlignCenter)
-        self._apply_fuzzy_caption_style(self.audio_bitrate_tier_label)
+        self.audio_bitrate_tier_label.setObjectName("captionLabel")
 
         # Same slider-plus-fuzzy-caption outlined box as Quality/Speed on
         # the Video tab (#fuzzyGroup in style.qss) -- same reasoning: the

@@ -4867,6 +4867,7 @@ class TestSessionPersistenceRestore(unittest.TestCase):
             self.assertEqual(window.queue_list.topLevelItemCount(), 2)
             self.assertEqual(window.queue_list.topLevelItem(0).text(queue_widget.VIDEO_COL), "a.mkv")
             self.assertEqual(window.queue_list.topLevelItem(1).text(queue_widget.VIDEO_COL), "b.mkv")
+            self.assertEqual(window.status_label.text(), "Restored 2 videos from your last session")
 
     def test_restored_rows_start_ready_not_failed_or_converting(self):
         # This app never attempts partial ffmpeg resume -- a job caught
@@ -4901,7 +4902,21 @@ class TestSessionPersistenceRestore(unittest.TestCase):
             with patch.object(session, "load_session", return_value=fake):
                 window = main.MainWindow()
             self.assertEqual(window.queue_list.topLevelItemCount(), 1)
-            self.assertEqual(window.status_label.text(), "Restored 1 video(s) from your last session (1 no longer found)")
+            self.assertEqual(window.status_label.text(), "Restored 1 video from your last session (1 no longer found)")
+
+    def test_missing_files_message_pluralizes_correctly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clip_a = Path(tmp) / "a.mkv"
+            clip_b = Path(tmp) / "b.mkv"
+            clip_a.touch()
+            clip_b.touch()
+            missing_1 = Path(tmp) / "gone1.mkv"
+            missing_2 = Path(tmp) / "gone2.mkv"
+            fake = self._fake_session(tmp, [clip_a, clip_b, missing_1, missing_2])
+            with patch.object(session, "load_session", return_value=fake):
+                window = main.MainWindow()
+            self.assertEqual(window.queue_list.topLevelItemCount(), 2)
+            self.assertEqual(window.status_label.text(), "Restored 2 videos from your last session (2 no longer found)")
 
     def test_all_files_missing_shows_a_quiet_notice_with_an_empty_queue(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4910,7 +4925,18 @@ class TestSessionPersistenceRestore(unittest.TestCase):
             with patch.object(session, "load_session", return_value=fake):
                 window = main.MainWindow()
             self.assertEqual(window.queue_list.topLevelItemCount(), 0)
-            self.assertEqual(window.status_label.text(), "1 video(s) from your last session could no longer be found")
+            self.assertEqual(window.status_label.text(), "1 video from your last session could no longer be found")
+
+    def test_all_files_missing_message_pluralizes_correctly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_1 = Path(tmp) / "gone1.mkv"
+            missing_2 = Path(tmp) / "gone2.mkv"
+            missing_3 = Path(tmp) / "gone3.mkv"
+            fake = self._fake_session(tmp, [missing_1, missing_2, missing_3])
+            with patch.object(session, "load_session", return_value=fake):
+                window = main.MainWindow()
+            self.assertEqual(window.queue_list.topLevelItemCount(), 0)
+            self.assertEqual(window.status_label.text(), "3 videos from your last session could no longer be found")
 
     def test_restores_the_output_folder(self):
         with tempfile.TemporaryDirectory() as tmp:

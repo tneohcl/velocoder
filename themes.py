@@ -37,6 +37,17 @@ DARK = {
     "TEXT_SECONDARY": "#8b93a1",
     "TEXT_TERTIARY": "#c3c8d1",
     "TEXT_READONLY": "#9aa1ac",
+    # Reported live: the quality/speed/audio-bitrate tier captions ("Balanced",
+    # "Streaming -- efficient") shared TEXT_SECONDARY's own real
+    # QPalette.PlaceholderText-driven treatment (theming._fuzzy_text_color)
+    # with the queue's empty-state hint text -- correct for that hint (pure
+    # decoration), wrong for these, since on a real desktop session
+    # PlaceholderText can be translucent enough to read as almost invisible,
+    # and these captions carry real information. A dedicated, static token
+    # instead: quieter than TEXT_SECONDARY (still clearly a secondary-tier
+    # caption, not body text) but nowhere near as faint as the empty-state
+    # hint, which keeps using the dynamic palette-driven color unchanged.
+    "TEXT_CAPTION": "#737a87",
     "TEXT_DISABLED": "#5a616c",
     "TEXT_ON_ACCENT": "#0d1117",
     "ACCENT": "#4fa8e0",
@@ -72,6 +83,10 @@ LIGHT = {
     "TEXT_SECONDARY": "#6b7280",
     "TEXT_TERTIARY": "#4b5563",
     "TEXT_READONLY": "#6b7280",
+    # See DARK's own comment on this same token -- same reasoning, mirrored
+    # direction (lighter/quieter than TEXT_SECONDARY here, since light mode's
+    # background is light).
+    "TEXT_CAPTION": "#848b98",
     "TEXT_DISABLED": "#9ca3af",
     "TEXT_ON_ACCENT": "#ffffff",
     "ACCENT": "#1c72c4",

@@ -13,7 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QSettings, QProcess, QTimer
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFormLayout, QMainWindow, QTreeWidgetItem, QLabel,
+    QApplication, QDialog, QFormLayout, QMainWindow, QTreeWidgetItem,
     QMessageBox, QVBoxLayout,
 )
 
@@ -32,7 +32,7 @@ from queue_widget import (
 from theming import (
     _current_theme_palette, _system_accent_tokens, _load_stylesheet,
     _ComboPopupBackgroundFilter, _FocusVisibleFilter, _ComboWheelBlockFilter,
-    _validate_theme_choice, _resolve_theme, _fuzzy_text_color,
+    _validate_theme_choice, _resolve_theme,
 )
 from ui_builder import _UiBuilderMixin
 from queue_controller import _QueueControllerMixin
@@ -416,7 +416,6 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._theme_choice = choice
         self._qsettings.setValue("theme_choice", choice)
         _load_stylesheet(QApplication.instance(), _resolve_theme(choice))
-        self._refresh_fuzzy_caption_style()
 
     def _open_settings_dialog(self):
         # Lazily built once, reused on every subsequent open -- same
@@ -465,31 +464,6 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
     def _on_system_theme_changed(self, _scheme):
         if self._theme_choice == "system":
             _load_stylesheet(QApplication.instance(), _resolve_theme("system"))
-            self._refresh_fuzzy_caption_style()
-
-    def _apply_fuzzy_caption_style(self, label: QLabel):
-        # Matches "Drag video files here..." (DropTreeWidget.paintEvent) --
-        # both go through theming._fuzzy_text_color so they stay the same
-        # kind of secondary/explanatory text, and both fall back the same
-        # way if QPalette.PlaceholderText isn't actually distinct from
-        # regular text on this session (see that function's docstring).
-        # Read fresh each call rather than baked in once, so this stays
-        # correct across every theme including "Match System". QSS's
-        # `color:` property does understand rgba() -- unlike QColor's own
-        # string constructor, which is what tripped this up in
-        # queue_widget.py (see _fuzzy_text_color's docstring) -- so
-        # formatting it here, for this one QSS-consuming call site, is
-        # safe.
-        color = _fuzzy_text_color(self)
-        rgba = f"rgba({color.red()}, {color.green()}, {color.blue()}, {color.alphaF():.3f})"
-        label.setStyleSheet(f"font-size: 9pt; color: {rgba};")
-
-    def _refresh_fuzzy_caption_style(self):
-        for label in (
-            self.quality_tier_label, self.speed_tier_label, self.audio_bitrate_tier_label,
-            self.video_scope_label, self.audio_scope_label,
-        ):
-            self._apply_fuzzy_caption_style(label)
 
     def _update_settings_scope_label(self, selected=None):
         # Reported live: nothing distinguished "these controls are about

@@ -1,0 +1,1 @@
+Set Appearance from the **...** menu → **Settings...**. **Match System** follows your desktop's own light/dark setting automatically, including switching live if your desktop switches while VeloCoder is open. **Dark** and **Light** pin one theme regardless of the desktop setting.

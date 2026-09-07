@@ -1,0 +1,1 @@
+**Show Conversion Log** (in the **...** menu) opens a window streaming ffmpeg's own raw output for the currently running conversion. Useful for diagnosing exactly why a video failed; not needed for ordinary use.

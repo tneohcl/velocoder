@@ -32,7 +32,16 @@ QWidget {
     font-size: 10pt;
 }
 
-QMainWindow, QDialog {
+/* QWidget#helpWindow -- HelpWindow (help_window.py) is a plain QWidget
+   (Qt.Window flag), not a QMainWindow/QDialog, so it doesn't match
+   either of those two selectors on its own; without this it fell back
+   to Qt's own unstyled default background regardless of theme
+   (confirmed live: a dark border/gap around an otherwise light-themed
+   window). objectName-scoped rather than adding a bare `QWidget` rule
+   here -- that would repaint every plain QWidget in the app, including
+   ones that need to stay transparent (QLabel already has its own
+   explicit override below for exactly that reason). */
+QMainWindow, QDialog, QWidget#helpWindow {
     background-color: $BG_WINDOW;
 }
 

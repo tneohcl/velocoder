@@ -1,0 +1,1 @@
+VeloCoder detects interlaced source footage automatically and deinterlaces it without asking. This checkbox lets you override that detection by hand -- check it to force deinterlacing on a video VeloCoder didn't flag, or uncheck it to skip deinterlacing a video it did flag, if you know better than the automatic detection for that specific file.

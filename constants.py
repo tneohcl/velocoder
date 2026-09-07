@@ -3,6 +3,25 @@ Quality tier values. This fork has no Presets feature -- QUALITY_TIERS
 below is the only place quality numbers live now, not a preset list.
 """
 
+# The one canonical source for these three -- About/System Information
+# (about_dialogs.py) and future packaging metadata (a .desktop file's
+# Name, an installer's product name, ...) all read from here rather than
+# each hardcoding "VeloCoder" separately.
+#
+# APP_ORGANIZATION is a *display* name only (About's copyright line) --
+# deliberately NOT threaded into QSettings(...)/app.setOrganizationName(...)
+# in main.py. Those two control where this app's config file and
+# session.json (session.py, via QStandardPaths.AppDataLocation) actually
+# live on disk; changing that string would silently orphan every
+# existing user's saved theme/geometry/queue the moment this shipped,
+# since QSettings/QStandardPaths resolve their backing path from the
+# exact (org, app) pair given. Those two keep using APP_NAME, matching
+# the literal "VeloCoder"/"VeloCoder" pair already in use before this
+# constant existed.
+APP_NAME = "VeloCoder"
+APP_VERSION = "1.0.0"
+APP_ORGANIZATION = "FLY Studio"
+
 VIDEO_FILTER = "Video files (*.mkv *.mp4 *.avi *.mov *.m4v *.ts *.wmv);;All files (*)"
 AUDIO_TRACK_LABELS = ["Track 1", "Track 2", "Track 3", "Track 4"]
 

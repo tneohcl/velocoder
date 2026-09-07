@@ -1,0 +1,1 @@
+If a video has more than one audio track (e.g. multiple languages, or a commentary track), the Track dropdown lets you pick which one carries over to the converted file. VeloCoder only keeps one audio track per output video.

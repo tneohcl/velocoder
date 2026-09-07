@@ -1,0 +1,1 @@
+The exact number behind Normal's Quality tier buttons. Lower numbers mean better quality and larger files; higher numbers mean smaller files at lower quality. The useful range is fairly narrow -- a few points either way from the default is already a noticeable difference.

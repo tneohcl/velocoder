@@ -1170,11 +1170,21 @@ class _UiBuilderMixin:
         # driven appearance, it does not react to _load_stylesheet on its
         # own.
         self.queue_menu_btn.setIcon(self._themed_icon("more"))
-        # 18px, not 16 -- reported live against a real 1186x720
-        # screenshot: at 16px the three dots nearly disappeared, reading
-        # as a stray status indicator rather than a deliberate control.
-        # The 32px clickable area (button, not icon) stays unchanged.
-        self.queue_menu_btn.setIconSize(QSize(18, 18))
+        # objectName so style.qss can give this one icon-only button a
+        # tighter padding than the generic QToolButton rule -- that rule
+        # (padding: 6px 10px) is sized for a text+icon tool button, and
+        # left almost no room for an 18px icon inside a fixed 32px
+        # button: reported live (and confirmed by grabbing the button
+        # alone) that the icon rendered noticeably smaller than 18px,
+        # squeezed by its own padding.
+        self.queue_menu_btn.setObjectName("queueMenuButton")
+        # 20px, not 16 -- reported live twice against real screenshots:
+        # first that the three dots nearly disappeared at 16px reading
+        # as a stray status indicator, then that they were still too
+        # small even at 18px once the padding above turned out to be
+        # shrinking it further. The 32px clickable area (button, not
+        # icon) stays unchanged.
+        self.queue_menu_btn.setIconSize(QSize(20, 20))
         self.queue_menu_btn.setFixedSize(32, 32)
         # "More actions", not "More queue actions" -- half of what's in
         # here (Show Conversion Log, Copy FFmpeg Command, Settings…)

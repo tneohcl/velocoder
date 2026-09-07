@@ -1,0 +1,377 @@
+{
+  "categories": [
+    {
+      "name": "Getting Started",
+      "topics": [
+        {
+          "id": "welcome",
+          "title": "Welcome to VeloCoder",
+          "keywords": [
+            "start",
+            "intro",
+            "overview"
+          ],
+          "file": "welcome.md"
+        },
+        {
+          "id": "convert-a-video",
+          "title": "Convert a Video",
+          "keywords": [
+            "convert",
+            "start",
+            "add",
+            "drag",
+            "drop"
+          ],
+          "file": "convert-a-video.md"
+        },
+        {
+          "id": "work-with-several-videos",
+          "title": "Work With Several Videos",
+          "keywords": [
+            "queue",
+            "multiple",
+            "batch",
+            "several",
+            "many"
+          ],
+          "file": "work-with-several-videos.md"
+        }
+      ]
+    },
+    {
+      "name": "Video",
+      "topics": [
+        {
+          "id": "choosing-quality",
+          "title": "Choosing Quality",
+          "keywords": [
+            "quality",
+            "smaller file",
+            "better quality",
+            "balanced",
+            "tier",
+            "hardware",
+            "processing"
+          ],
+          "file": "choosing-quality.md"
+        },
+        {
+          "id": "target-file-size",
+          "title": "Target File Size",
+          "keywords": [
+            "file size",
+            "size",
+            "target size",
+            "mb"
+          ],
+          "file": "target-file-size.md"
+        },
+        {
+          "id": "codec",
+          "title": "Codec",
+          "keywords": [
+            "codec",
+            "h264",
+            "h265",
+            "hevc",
+            "avc",
+            "compatibility"
+          ],
+          "file": "codec.md"
+        },
+        {
+          "id": "resolution",
+          "title": "Resolution",
+          "keywords": [
+            "resolution",
+            "1080p",
+            "720p",
+            "4k",
+            "downscale",
+            "size"
+          ],
+          "file": "resolution.md"
+        },
+        {
+          "id": "file-format",
+          "title": "File Format",
+          "keywords": [
+            "format",
+            "container",
+            "mp4",
+            "mkv"
+          ],
+          "file": "file-format.md"
+        },
+        {
+          "id": "color-depth",
+          "title": "Color Depth",
+          "keywords": [
+            "10 bit",
+            "10-bit",
+            "8 bit",
+            "8-bit",
+            "color",
+            "gradient",
+            "banding"
+          ],
+          "file": "color-depth.md"
+        }
+      ]
+    },
+    {
+      "name": "Audio",
+      "topics": [
+        {
+          "id": "audio-handling",
+          "title": "Audio Handling",
+          "keywords": [
+            "audio",
+            "automatic",
+            "convert to aac",
+            "handling"
+          ],
+          "file": "audio-handling.md"
+        },
+        {
+          "id": "audio-tracks",
+          "title": "Audio Tracks",
+          "keywords": [
+            "track",
+            "audio track",
+            "language",
+            "multiple audio"
+          ],
+          "file": "audio-tracks.md"
+        },
+        {
+          "id": "channels",
+          "title": "Channels",
+          "keywords": [
+            "channels",
+            "stereo",
+            "surround",
+            "downmix",
+            "5.1",
+            "audio"
+          ],
+          "file": "channels.md"
+        },
+        {
+          "id": "aac-bitrate",
+          "title": "AAC Bitrate",
+          "keywords": [
+            "bitrate",
+            "aac",
+            "audio quality"
+          ],
+          "file": "aac-bitrate.md"
+        }
+      ]
+    },
+    {
+      "name": "Using VeloCoder",
+      "topics": [
+        {
+          "id": "videos-queue",
+          "title": "Videos Queue",
+          "keywords": [
+            "queue",
+            "list",
+            "drag",
+            "reorder",
+            "remove"
+          ],
+          "file": "videos-queue.md"
+        },
+        {
+          "id": "settings-for-new-and-selected-videos",
+          "title": "Settings for New and Selected Videos",
+          "keywords": [
+            "settings for new videos",
+            "settings for selected",
+            "scope"
+          ],
+          "file": "settings-for-new-and-selected-videos.md"
+        },
+        {
+          "id": "choosing-where-to-save",
+          "title": "Choosing Where to Save",
+          "keywords": [
+            "save to",
+            "output folder",
+            "destination",
+            "where"
+          ],
+          "file": "choosing-where-to-save.md"
+        },
+        {
+          "id": "continue-where-you-left-off",
+          "title": "Continue Where You Left Off",
+          "keywords": [
+            "restore",
+            "session",
+            "previous session",
+            "unfinished",
+            "crash"
+          ],
+          "file": "continue-where-you-left-off.md"
+        },
+        {
+          "id": "appearance",
+          "title": "Appearance",
+          "keywords": [
+            "theme",
+            "dark",
+            "light",
+            "match system"
+          ],
+          "file": "appearance.md"
+        },
+        {
+          "id": "pause-and-cancel",
+          "title": "Pause and Cancel",
+          "keywords": [
+            "pause",
+            "cancel",
+            "stop",
+            "stop after current"
+          ],
+          "file": "pause-and-cancel.md"
+        }
+      ]
+    },
+    {
+      "name": "Expert",
+      "topics": [
+        {
+          "id": "about-expert-settings",
+          "title": "About Expert Settings",
+          "keywords": [
+            "expert",
+            "advanced",
+            "technical",
+            "hardware"
+          ],
+          "file": "about-expert-settings.md"
+        },
+        {
+          "id": "rate-control",
+          "title": "Rate Control",
+          "keywords": [
+            "rate control",
+            "crf",
+            "icq",
+            "cqp",
+            "vbr",
+            "bitrate mode"
+          ],
+          "file": "rate-control.md"
+        },
+        {
+          "id": "exact-quality",
+          "title": "Exact Quality",
+          "keywords": [
+            "exact quality",
+            "crf value",
+            "quality slider"
+          ],
+          "file": "exact-quality.md"
+        },
+        {
+          "id": "encoding-speed",
+          "title": "Encoding Speed",
+          "keywords": [
+            "speed",
+            "preset",
+            "faster",
+            "slower",
+            "compression level"
+          ],
+          "file": "encoding-speed.md"
+        },
+        {
+          "id": "tune",
+          "title": "Tune",
+          "keywords": [
+            "tune",
+            "film",
+            "animation",
+            "grain"
+          ],
+          "file": "tune.md"
+        },
+        {
+          "id": "force-deinterlace",
+          "title": "Force Deinterlace",
+          "keywords": [
+            "deinterlace",
+            "interlaced",
+            "interlacing"
+          ],
+          "file": "force-deinterlace.md"
+        }
+      ]
+    },
+    {
+      "name": "Troubleshooting",
+      "topics": [
+        {
+          "id": "video-wont-convert",
+          "title": "If a Video Won't Convert",
+          "keywords": [
+            "failed",
+            "error",
+            "won't convert",
+            "problem",
+            "stuck"
+          ],
+          "file": "video-wont-convert.md"
+        },
+        {
+          "id": "preparing",
+          "title": "Preparing",
+          "keywords": [
+            "preparing",
+            "analyzing",
+            "loading"
+          ],
+          "file": "preparing.md"
+        },
+        {
+          "id": "conversion-status",
+          "title": "Conversion Status",
+          "keywords": [
+            "status",
+            "converting",
+            "ready",
+            "progress",
+            "percent"
+          ],
+          "file": "conversion-status.md"
+        },
+        {
+          "id": "conversion-log",
+          "title": "Conversion Log",
+          "keywords": [
+            "log",
+            "conversion log",
+            "output"
+          ],
+          "file": "conversion-log.md"
+        },
+        {
+          "id": "ffmpeg-command",
+          "title": "FFmpeg Command",
+          "keywords": [
+            "ffmpeg command",
+            "copy command",
+            "command line"
+          ],
+          "file": "ffmpeg-command.md"
+        }
+      ]
+    }
+  ]
+}

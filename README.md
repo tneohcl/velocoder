@@ -129,7 +129,25 @@ into a path that was never broken isn't worth the risk. See
 
 ```
 constants.py         Static config: encoders, rate-control modes,
-                      resolutions, quality tiers, audio bitrates.
+                      resolutions, quality tiers, audio bitrates, and
+                      the app-identity constants (APP_NAME/APP_VERSION/
+                      APP_ORGANIZATION -- see that constant block's own
+                      comment for why APP_ORGANIZATION never reaches
+                      QSettings/QStandardPaths).
+session.py            Cross-session queue/output-folder persistence --
+                      a small JSON file (QStandardPaths.AppDataLocation),
+                      deliberately not QSettings (see its own docstring).
+help_content.py       Loads help/index.json + help/*.md, plus plain-
+                      text search and a hand-rolled markdown-subset
+                      renderer (headings/paragraphs/bullets/bold only --
+                      no third-party markdown dependency). No Qt here.
+help_window.py        HelpWindow: the non-modal, searchable built-in
+                      Help window (search field + category/topic tree +
+                      article viewer) -- see Help & About below.
+help/                 Help content: index.json (category/topic/keyword
+                      structure) + one *.md file per topic.
+about_dialogs.py       AboutDialog/SystemInfoDialog/LicensesDialog --
+                      see Help & About below.
 presets.py            Trimmed to just load_builtin_presets() -- this fork
                       has no Presets feature (removed entirely, see
                       Controls below); this loader survives only because
@@ -176,15 +194,18 @@ assets/               SVG glyphs style.qss paints on top of Fusion's
                       suffix).
 tests/                unittest suite: test_worker.py, test_presets.py
                       (just the fixture loader now, see presets.py
-                      above), and test_main.py — the latter covers the
-                      whole assembled GUI (ui_builder.py/queue_
-                      controller.py/queue_widget.py/theming.py/
-                      formatting.py all get exercised through it, via
-                      the one real MainWindow instance, rather than one
-                      test file each). ~390 tests total.
+                      above), test_session.py, test_help_content.py,
+                      test_about_dialogs.py (each mirrors its own small,
+                      Qt-widget-free module), and test_main.py — the
+                      latter covers the whole assembled GUI (ui_builder.py/
+                      queue_controller.py/queue_widget.py/theming.py/
+                      formatting.py/help_window.py/about_dialogs.py's own
+                      menu wiring all get exercised through it, via the
+                      one real MainWindow instance, rather than one test
+                      file each). ~515 tests total.
 ```
 
-The GUI is a fixed-width (470px) settings inspector on the left, wrapped
+The GUI is a fixed-width (456px) settings inspector on the left, wrapped
 in a `QScrollArea` (a vertical scrollbar appears only if Expert's content
 ever exceeds the window height -- none under normal conditions), and a
 flexible workspace on the right, laid out with a plain `QHBoxLayout` (not
@@ -193,7 +214,7 @@ pane). Left pane: a `QTabWidget` (**Video** / **Audio** — see Controls
 below for the current Normal/Expert breakdown of each). Right pane: the
 queue, output folder, run controls, progress bar, a live stats line, and
 the full log. Window geometry (and Expert's own expanded/collapsed state)
-is remembered across launches via `QSettings("VeloCoder", "VeloCoder")` (on
+is remembered across launches via `QSettings(APP_NAME, APP_NAME)` (on
 Linux: `~/.config/VeloCoder/VeloCoder.conf`).
 
 The unfinished queue (path + per-video settings, in order) and the output
@@ -679,6 +700,50 @@ notice on top of it.
   small non-modal window, reparenting the real, already-live `log_view`
   widget rather than duplicating it. `queue_list`'s own stretch factor
   simply claims the space Log used to share space with it for.
+
+## Help & About
+
+Reachable from the **⋯** menu (**Help**, **About VeloCoder**) or F1
+(Help specifically) — no menu bar, no permanent **?** buttons next to
+controls, nothing added to the main window itself.
+
+- **Help** (`help_window.py`'s `HelpWindow`) is a non-modal, resizable
+  window: a search field and category/topic tree on the left, an
+  article viewer on the right. Only one instance ever exists — F1 or
+  the menu action a second time raises/focuses the existing one rather
+  than opening another (same lazy-singleton pattern `_show_log_window`/
+  `_open_settings_dialog` already use). Its own geometry persists across
+  launches (`QSettings` key `help_window_geometry`), independent of the
+  main window's own. It follows the app's Dark/Light/Match System
+  theme choice — ordinary widget chrome (the search field, the tree)
+  inherits the same app-level QSS every other window shares, but the
+  article viewer is rich-text HTML with its own theme-derived colors
+  baked in at render time, explicitly re-rendered on a theme change
+  (`refresh_theme()`) since reloading the stylesheet alone doesn't
+  retroactively touch already-set HTML content.
+- Content lives in `help/index.json` (six categories, thirty topics,
+  each with search keywords) + one `help/<id>.md` file per topic, loaded
+  and searched by `help_content.py` — no Qt there at all, and no
+  third-party markdown dependency (a small hand-rolled subset: headings,
+  paragraphs, bullet lists, `**bold**`, exactly what these articles
+  actually use). Search matches title, keywords, then body text, in
+  that priority order.
+- Every article is short, plain-language, and consequence-first (what
+  choosing an option actually does to your file, not how the encoder
+  implements it) — Expert has its own category for the small minority
+  of users who open that section, without surfacing implementation
+  terms like VAAPI/render nodes/PCI IDs anywhere in ordinary Help.
+- **About VeloCoder** (`about_dialogs.py`'s `AboutDialog`) is a small,
+  fixed-size modal: icon, name, version (from the one canonical
+  `constants.APP_VERSION`), tagline, an FFmpeg credit, and a copyright
+  line. Two buttons open further modals from there: **System
+  Information…** (version/platform/FFmpeg version/the same cached
+  hardware-backend snapshot Processing's own buttons use/current
+  resolved theme name, with a **Copy** button — built only from app
+  constants, `platform.*`, and display names, so there is no path,
+  filename, or username to accidentally leak in the first place) and
+  **Licenses…** (VeloCoder's own provisional license text, FFmpeg
+  attribution, and third-party notices).
 
 ## Theming
 

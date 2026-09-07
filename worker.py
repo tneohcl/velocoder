@@ -111,6 +111,23 @@ def best_available_engine(backends: list[ProcessingBackend] | None = None) -> tu
     return "libx265", None
 
 
+def ffmpeg_version() -> str | None:
+    """Just the version token from ffmpeg's own first output line (e.g.
+    "6.1.1" out of "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) ..."),
+    for System Information (about_dialogs.py) -- None if ffmpeg isn't on
+    PATH, or its output doesn't look like the format above, rather than
+    ever raising into a dialog that's meant to degrade gracefully."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"], capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    first_line = result.stdout.splitlines()[0] if result.stdout else ""
+    match = re.match(r"ffmpeg version (\S+)", first_line)
+    return match.group(1) if match else None
+
+
 def probe_duration(path: Path) -> float:
     """Duration in seconds via ffprobe, or 0.0 if it can't be determined."""
     result = subprocess.run(

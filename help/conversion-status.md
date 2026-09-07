@@ -1,0 +1,1 @@
+Each queue row's Status column tracks that video through the process: **Ready** (waiting to start), **Converting... NN%** (in progress), a size/percentage summary (finished successfully), or **Failed**. The status line above the queue shows the same thing for whichever video is currently running.

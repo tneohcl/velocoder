@@ -1,0 +1,1 @@
+Before a video can convert, VeloCoder briefly examines it (checking for interlacing, and reading its real audio/video properties). **Preparing...** just means that check is still running for one or more videos you've added -- it finishes on its own within a few seconds per video, and Convert starts automatically the moment it's done if you already pressed it.

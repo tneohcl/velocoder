@@ -26,7 +26,7 @@ from PySide6.QtCore import (  # noqa: E402
 )
 from PySide6.QtGui import (  # noqa: E402
     QColor, QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QFocusEvent, QFont,
-    QFontMetrics, QPainter, QPalette, QPixmap, QWheelEvent,
+    QFontMetrics, QKeySequence, QPainter, QPalette, QPixmap, QShortcut, QWheelEvent,
 )
 from PySide6.QtWidgets import QApplication, QScrollArea, QStyleOptionViewItem, QTabWidget, QWidget  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
@@ -5014,6 +5014,135 @@ class TestSessionPersistenceRestore(unittest.TestCase):
         with patch.object(session, "load_session", return_value=None):
             window = main.MainWindow()
         self.assertEqual(window.queue_list.topLevelItemCount(), 0)
+
+
+def _menu_actions(window) -> dict:
+    return {a.text(): a for a in window.queue_menu_btn.menu().actions() if not a.isSeparator()}
+
+
+class TestHelpMenuAndShortcut(unittest.TestCase):
+    def test_help_action_exists_and_triggers_show_help_window(self):
+        window = main.MainWindow()
+        actions = _menu_actions(window)
+        self.assertIn("Help", actions)
+        with patch.object(window, "_show_help_window") as mock_show:
+            actions["Help"].trigger()
+        mock_show.assert_called_once()
+
+    def test_about_action_exists_and_triggers_show_about_dialog(self):
+        window = main.MainWindow()
+        actions = _menu_actions(window)
+        self.assertIn("About VeloCoder", actions)
+        with patch.object(window, "_show_about_dialog") as mock_show:
+            actions["About VeloCoder"].trigger()
+        mock_show.assert_called_once()
+
+    def test_menu_order_matches_spec(self):
+        # Remove Selected / Clear Queue -- Stop After Current Video --
+        # Settings.../Help/About VeloCoder -- Show Conversion Log/Copy
+        # FFmpeg Command, exactly, including the separators' positions.
+        window = main.MainWindow()
+        entries = [
+            a.text() if not a.isSeparator() else "---"
+            for a in window.queue_menu_btn.menu().actions()
+        ]
+        self.assertEqual(entries, [
+            "Remove Selected", "Clear Queue", "---",
+            "Stop After Current Video", "---",
+            "Settings…", "Help", "About VeloCoder", "---",
+            "Show Conversion Log", "Copy FFmpeg Command",
+        ])
+
+    def test_f1_is_bound_to_show_help_window(self):
+        # Fires the QShortcut's own activated signal directly rather
+        # than a real QTest.keyClick -- a window-wide (default
+        # Qt.WindowShortcut context) shortcut needs this window to
+        # actually be the active one to receive a real key event, which
+        # offscreen/headless test runs can't reliably guarantee. This
+        # still genuinely verifies F1 is bound to the right slot, not
+        # just that the slot works if called directly.
+        window = main.MainWindow()
+        f1_shortcuts = [
+            s for s in window.findChildren(QShortcut)
+            if s.key() == QKeySequence(Qt.Key_F1)
+        ]
+        self.assertEqual(len(f1_shortcuts), 1)
+        with patch.object(window, "_show_help_window") as mock_show:
+            f1_shortcuts[0].activated.emit()
+        mock_show.assert_called_once()
+
+    def test_ctrl_q_closes_the_window(self):
+        # Verified behaviorally (does the window actually end up closed),
+        # not via patch.object(window, "close") -- unlike a pure-Python
+        # method (_show_help_window above), close() is a native QWidget
+        # slot; the QShortcut's connection was already made against the
+        # real bound method at construction time, and confirmed directly
+        # that a later patch.object(window, "close") does not retroactively
+        # redirect it.
+        window = main.MainWindow()
+        window.show()
+        ctrl_q_shortcuts = [
+            s for s in window.findChildren(QShortcut)
+            if s.key() == QKeySequence("Ctrl+Q")
+        ]
+        self.assertEqual(len(ctrl_q_shortcuts), 1)
+        ctrl_q_shortcuts[0].activated.emit()
+        self.assertFalse(window.isVisible())
+
+
+class TestHelpWindow(unittest.TestCase):
+    def test_show_help_window_is_non_modal(self):
+        window = main.MainWindow()
+        window._show_help_window()
+        self.assertEqual(window._help_window.windowModality(), Qt.NonModal)
+        # Non-modal in practice, not just by declared modality -- the
+        # main window must stay interactive with Help open.
+        self.assertTrue(window.isEnabled())
+
+    def test_opening_help_twice_reuses_the_same_window(self):
+        window = main.MainWindow()
+        window._show_help_window()
+        first = window._help_window
+        window._show_help_window()
+        self.assertIs(window._help_window, first)
+
+    def test_search_field_filters_the_topic_tree(self):
+        window = main.MainWindow()
+        window._show_help_window()
+        help_win = window._help_window
+        full_count = help_win.topic_tree.topLevelItemCount()
+        help_win.search_field.setText("10 bit")
+        # One category (Video), holding just Color Depth -- a real
+        # narrowing, not a no-op.
+        self.assertLess(help_win.topic_tree.topLevelItemCount(), full_count)
+        help_win.search_field.setText("")
+        self.assertEqual(help_win.topic_tree.topLevelItemCount(), full_count)
+
+    def test_help_follows_theme_changes(self):
+        window = main.MainWindow()
+        window._show_help_window()
+        window._apply_theme("dark")
+        dark_html = window._help_window.article_view.toHtml()
+        window._apply_theme("light")
+        light_html = window._help_window.article_view.toHtml()
+        self.assertNotEqual(dark_html, light_html)
+
+    def test_theme_change_is_a_no_op_when_help_was_never_opened(self):
+        # getattr(..., None) guards in _apply_theme/_on_system_theme_
+        # changed -- must not raise just because Help was never opened
+        # this session.
+        window = main.MainWindow()
+        window._apply_theme("light")  # must not raise
+        window._on_system_theme_changed(Qt.ColorScheme.Dark)  # must not raise
+
+    def test_help_window_geometry_persists_across_instances(self):
+        window = main.MainWindow()
+        window._show_help_window()
+        window._help_window.resize(900, 640)
+        with patch.object(window._help_window._qsettings, "setValue") as mock_set:
+            window._help_window.close()
+        mock_set.assert_called_once()
+        self.assertEqual(mock_set.call_args[0][0], "help_window_geometry")
 
 
 if __name__ == "__main__":

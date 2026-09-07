@@ -626,6 +626,13 @@ class _UiBuilderMixin:
         self.bitdepth_combo = QComboBox()
         self.bitdepth_combo.addItem("10-bit — smoother gradients", userData=10)
         self.bitdepth_combo.addItem("8-bit — maximum compatibility", userData=8)
+        self.bitdepth_combo.setToolTip(
+            "10-bit: smoother gradients and finer color precision (skies,\n"
+            "shadows) with less visible banding. May be less compatible\n"
+            "with older devices or software.\n"
+            "8-bit: the traditional standard, with the widest possible\n"
+            "compatibility."
+        )
         self.bitdepth_combo.currentIndexChanged.connect(self._on_control_changed)
         form.addRow("Color Depth:", self.bitdepth_combo)
 
@@ -1175,16 +1182,26 @@ class _UiBuilderMixin:
         self.pause_after_check.toggled.connect(self._on_pause_after_toggled)
         queue_menu.addAction(self.pause_after_check)
         queue_menu.addSeparator()
+        settings_action = QAction("Settings…", self)
+        settings_action.triggered.connect(self._open_settings_dialog)
+        queue_menu.addAction(settings_action)
+        # F1 is the primary way into Help (main.py) -- this entry exists
+        # so it's discoverable without knowing that shortcut, same
+        # reasoning as every other action here also being reachable
+        # without memorizing one.
+        help_action = QAction("Help", self)
+        help_action.triggered.connect(self._show_help_window)
+        queue_menu.addAction(help_action)
+        about_action = QAction("About VeloCoder", self)
+        about_action.triggered.connect(self._show_about_dialog)
+        queue_menu.addAction(about_action)
+        queue_menu.addSeparator()
         show_log_action = QAction("Show Conversion Log", self)
         show_log_action.triggered.connect(self._show_log_window)
         queue_menu.addAction(show_log_action)
         copy_command_action = QAction("Copy FFmpeg Command", self)
         copy_command_action.triggered.connect(self._copy_command_to_clipboard)
         queue_menu.addAction(copy_command_action)
-        queue_menu.addSeparator()
-        settings_action = QAction("Settings…", self)
-        settings_action.triggered.connect(self._open_settings_dialog)
-        queue_menu.addAction(settings_action)
         self.queue_menu_btn.setMenu(queue_menu)
         q_btns.addWidget(self.queue_menu_btn)
         layout.addLayout(header_row)

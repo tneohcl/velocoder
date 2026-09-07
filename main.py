@@ -22,9 +22,11 @@ import formatting
 from constants import (
     ENCODERS, RC_MODES, RC_MODE_FRIENDLY, QUALITY_TIERS,
     encoder_profile_key, QUALITY_RANGES, X265_PRESETS, X265_TUNES, X264_TUNES, RESOLUTIONS,
-    AUDIO_BITRATES, AUDIO_TRACK_LABELS,
+    AUDIO_BITRATES, AUDIO_TRACK_LABELS, APP_NAME,
 )
 from worker import TranscodeQueue, BITRATE_RC_MODES
+from about_dialogs import AboutDialog
+from help_window import HelpWindow
 from queue_widget import (
     VIDEO_COL, DURATION_COL, SIZE_COL,
     RESULT_COL, STATUS_COL, AUDIO_TRACK_COUNT_ROLE, QUEUE_COLUMN_HEADERS,
@@ -68,7 +70,7 @@ DEFAULT_SETTINGS = {
 class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("VeloCoder")
+        self.setWindowTitle(APP_NAME)
         # 1186, not 1140 -- a density pass targeted a 410px inspector and
         # a 1140px window (leaving 730px for Videos), but 410 clipped in
         # practice (ui_builder.py's own comment on left.setFixedWidth has
@@ -171,7 +173,14 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # resolves its backing file purely from this pair, so sharing it
         # would mean the two apps clobbered each other's window geometry,
         # theme, and expanded-section state every time either one closed.
-        self._qsettings = QSettings("VeloCoder", "VeloCoder")
+        # APP_NAME for both positions, not constants.APP_ORGANIZATION --
+        # that constant is a *display* name only (About's copyright
+        # line); see its own comment in constants.py for why it must
+        # never reach here or app.setOrganizationName below, on pain of
+        # every existing user's saved settings and session.json (session.py,
+        # resolved via QStandardPaths using that same organization
+        # name) silently going missing the moment this shipped.
+        self._qsettings = QSettings(APP_NAME, APP_NAME)
 
         # "system" (not "dark") -- this fork's whole premise is following
         # OS/Mac-style conventions by default rather than an app-specific
@@ -232,6 +241,15 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # queue_controller.py.
         QShortcut(QKeySequence("Ctrl+Z"), self, self._undo)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self, self._redo)
+        # Default Qt.WindowShortcut context, same as the two above --
+        # F1 for Help should work regardless of which control has focus.
+        QShortcut(QKeySequence(Qt.Key_F1), self, self._show_help_window)
+        # self.close(), not QApplication.quit() directly -- routes
+        # through this window's own closeEvent (session flush, geometry/
+        # theme persistence) exactly like clicking the window's real
+        # close button would, rather than a shortcut-specific shutdown
+        # path that could skip it.
+        QShortcut(QKeySequence("Ctrl+Q"), self, self.close)
         # Delete removes the selected queue row(s) -- scoped to queue_list
         # itself (Qt.WidgetWithChildrenShortcut, not the window-wide
         # default above) so Delete/Backspace still edits text normally
@@ -416,6 +434,15 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._theme_choice = choice
         self._qsettings.setValue("theme_choice", choice)
         _load_stylesheet(QApplication.instance(), _resolve_theme(choice))
+        # _load_stylesheet alone re-themes ordinary widget chrome (the
+        # Help window's search field/topic tree included) via the same
+        # app-level QSS every other window already shares -- but the
+        # currently displayed article is QTextBrowser rich-text HTML
+        # with its own theme-derived colors baked in at render time
+        # (help_window.py), which reloading the stylesheet doesn't
+        # retroactively touch.
+        if getattr(self, "_help_window", None) is not None:
+            self._help_window.refresh_theme()
 
     def _open_settings_dialog(self):
         # Lazily built once, reused on every subsequent open -- same
@@ -461,9 +488,35 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._log_window.raise_()
         self._log_window.activateWindow()
 
+    def _show_help_window(self):
+        # Same lazy-singleton shape as _show_log_window above, and the
+        # same reason the spec calls for it: "only one Help window
+        # instance should exist" -- a second F1 press, or a second
+        # click on the menu action, must raise/focus the existing one
+        # rather than opening another.
+        if not hasattr(self, "_help_window") or self._help_window is None:
+            self._help_window = HelpWindow(self)
+        self._help_window.show()
+        self._help_window.raise_()
+        self._help_window.activateWindow()
+
+    def _show_about_dialog(self):
+        # Built fresh every open, unlike Settings/Log/Help above -- About
+        # has no shared live widget to reparent and no state worth
+        # preserving between opens (hardware/theme/ffmpeg version could
+        # all genuinely have changed since the last time it was shown),
+        # so there's no caching benefit and a real cost to it (stale
+        # System Information until the next full restart).
+        AboutDialog(
+            self, self._themed_icon("video"), self._available_backends,
+            _resolve_theme(self._theme_choice).capitalize(), worker.ffmpeg_version(),
+        ).exec()
+
     def _on_system_theme_changed(self, _scheme):
         if self._theme_choice == "system":
             _load_stylesheet(QApplication.instance(), _resolve_theme("system"))
+            if getattr(self, "_help_window", None) is not None:
+                self._help_window.refresh_theme()
 
     def _update_settings_scope_label(self, selected=None):
         # Reported live: nothing distinguished "these controls are about
@@ -1486,10 +1539,12 @@ def main():
     # session_file_path) to resolve to a real, sensible per-app directory
     # -- unset, Qt falls back to deriving it from the executable name,
     # which for a plain "python3 main.py" invocation is "python3", not
-    # anything VeloCoder-specific. Matches QSettings("VeloCoder",
-    # "VeloCoder")'s own naming below (MainWindow.__init__).
-    app.setOrganizationName("VeloCoder")
-    app.setApplicationName("VeloCoder")
+    # anything VeloCoder-specific. Matches QSettings(APP_NAME, APP_NAME)'s
+    # own naming below (MainWindow.__init__) -- APP_NAME specifically,
+    # not constants.APP_ORGANIZATION; see that constant's own comment
+    # for why.
+    app.setOrganizationName(APP_NAME)
+    app.setApplicationName(APP_NAME)
     # Fusion is the style QSS was written against -- native styles (Breeze,
     # Windows) silently ignore some of the subcontrols the theme relies on,
     # e.g. the slider groove/handle and the combobox popup background.

@@ -1,0 +1,1 @@
+Rate Control chooses how quality and file size trade off against each other. **Quality-based modes** (CRF for CPU, ICQ/CQP for Intel/AMD) target a consistent look and let file size vary. **File-size modes** target a specific output size and let quality vary. This is the same choice Normal's Mode buttons make, just named with each encoder's own real terms.

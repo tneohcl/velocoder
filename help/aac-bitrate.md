@@ -1,0 +1,1 @@
+Higher bitrate means better audio quality and a larger audio stream within the file. 160k (the default) is a solid, transparent-sounding choice for most content; going lower saves a little extra space at some cost to fidelity, most noticeable on music-heavy audio.

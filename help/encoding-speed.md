@@ -1,0 +1,1 @@
+Trades encoding time for compression efficiency. **Slower** spends more time finding a better way to compress the same quality, producing a smaller file for the same visual result. **Faster** finishes sooner but compresses less efficiently at that same quality -- a larger file for the same look, not a worse-looking one.

@@ -1,0 +1,1 @@
+A small set of encoder presets tuned for specific kinds of source material (e.g. animation, grainy film) that adjust how the encoder treats detail and motion. Leave this on **None** unless you know your source specifically benefits from one of the named options -- it only applies to the CPU engine.

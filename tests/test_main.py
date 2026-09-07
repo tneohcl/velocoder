@@ -4502,7 +4502,7 @@ class TestHardwareProbedOnceForTheWholeSession(unittest.TestCase):
     the real function (side_effect=the real thing, not a stub) so this
     also exercises genuine detection logic, not just a call-count."""
 
-    def test_automatic_and_add_files_correction_both_reuse_the_startup_snapshot(self):
+    def test_automatic_and_both_job_boundary_corrections_reuse_the_startup_snapshot(self):
         real_detect = worker.detect_available_backends
         with patch.object(worker, "detect_available_backends", side_effect=real_detect) as mock_detect, \
              patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")):
@@ -4512,12 +4512,13 @@ class TestHardwareProbedOnceForTheWholeSession(unittest.TestCase):
             window._on_processing_choice("automatic")
             self.assertEqual(mock_detect.call_count, 1)
 
-            # Forces add_files' own _resolved_engine_vendor correction
-            # (Expert's combo landing on a vendor this CPU-only mock
-            # doesn't have) -- the one other real call site of
-            # best_available_engine() now that encoder_combo itself is
-            # deliberately not self-correcting (see TestDynamicProcessing
-            # Buttons' own regression guards on that).
+            # Forces add_files' own _effective_current_settings()
+            # correction (Expert's combo landing on a vendor this CPU-
+            # only mock doesn't have) -- one of the two real job
+            # boundaries that call best_available_engine() now that
+            # encoder_combo itself is deliberately not self-correcting
+            # (see TestDynamicProcessingButtons' own regression guards on
+            # that).
             intel_index = next(
                 i for i, (e, v, _l) in enumerate(main.ENCODERS) if e == "hevc_vaapi" and v == "intel"
             )
@@ -4526,6 +4527,15 @@ class TestHardwareProbedOnceForTheWholeSession(unittest.TestCase):
                 clip = Path(tmp) / "clip.mkv"
                 clip.touch()
                 window.add_files([clip])
+            self.assertEqual(mock_detect.call_count, 1)
+
+            # The other real job boundary: syncing a selected queue
+            # item's settings from the panel also runs through
+            # _effective_current_settings() -- must reuse the same
+            # snapshot too, not re-probe.
+            item = window.queue_list.topLevelItem(0)
+            item.setSelected(True)
+            window.encoder_combo.setCurrentIndex(intel_index)
             self.assertEqual(mock_detect.call_count, 1)
 
 

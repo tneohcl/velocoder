@@ -727,16 +727,46 @@ controls, nothing added to the main window itself.
   topics, each with search keywords) + one `help/<id>.md` file per
   topic, loaded and searched by `help_content.py` — no Qt there at
   all, and no third-party markdown dependency (a small hand-rolled
-  subset: headings, paragraphs, bullet lists, `**bold**`, exactly what
-  these articles actually use). Search matches title, keywords, then
-  body text, in that priority order. Typing a search always keeps the
-  article pane synchronized with the tree: the current topic stays
-  selected if it's still a match, otherwise the first match is shown
-  automatically, and a query with no matches shows a clean "No Help
-  topics found" message rather than leaving whatever was on screen
-  before. Clearing the search restores the full tree and the topic
-  that was showing (or the Welcome topic, if the last thing on screen
-  was that no-results message).
+  subset: headings, paragraphs, bullet lists, `**bold**`, deck text,
+  callouts, and images, exactly what these articles actually use).
+  Search matches title, keywords, then body text, in that priority
+  order. Typing a search always keeps the article pane synchronized
+  with the tree: the current topic stays selected if it's still a
+  match, otherwise the first match is shown automatically, and a query
+  with no matches shows a clean "No Help topics found" message rather
+  than leaving whatever was on screen before. Clearing the search
+  restores the full tree and the topic that was showing (or the
+  Welcome topic, if the last thing on screen was that no-results
+  message).
+- An article's first paragraph becomes a larger, muted "deck" line
+  under its title when (and only when) that whole paragraph is a
+  single `**bold**` span — the article's own one-line summary, not a
+  separate syntax. `> **Label**` / `> body text` lines become a
+  rounded callout card (`> **Recommended**`, `> **Tip**`, `>
+  **Note**`, ...), and `![alt](name.png "caption")` embeds one of the
+  five screenshots that illustrate the Quick Start flow, the Video
+  tab's settings, a queue selection, the Audio tab, and Expert —
+  each shipped as a dark/light pair (`help/images/*-dark.png` /
+  `*-light.png`) and picked automatically for whichever theme is
+  active. Screenshots establish visual context; the article's own
+  text still carries the actual instruction, so a small control
+  relabel or reflow doesn't make a screenshot the only thing conveying
+  a step.
+- The topic tree's own look is scoped to Help alone (`style.qss`'s
+  `QTreeWidget#helpTopicTree` rules), not the app's general
+  `QTreeWidget` styling every other tree still uses: category headings
+  are smaller, muted, bold, and shown in upper case; there's no
+  separator line under every topic; and the selected/hovered row is a
+  genuinely rounded highlight, painted by a small custom
+  `QStyledItemDelegate` (`_RoundedSelectionDelegate`) rather than
+  QSS — Fusion's own native item-selection painting keeps a hard
+  square corner regardless of any `border-radius` QSS gives it. The
+  tree runs at `indentation()==0` for the same reason: Qt paints its
+  own accent-colored current-item indicator inside any nonzero
+  per-depth indent column, via a native code path nothing short of
+  removing the column itself can intercept; a topic still reads as
+  nested under its category through a plain text-position offset
+  instead.
 - Every article is short, plain-language, and consequence-first (what
   choosing an option actually does to your file, not how the encoder
   implements it) — Expert has its own category for the small minority

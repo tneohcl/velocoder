@@ -162,5 +162,103 @@ class TestRenderMarkdownSubset(unittest.TestCase):
             self.assertNotIn("\n- ", html)
 
 
+class TestDeckText(unittest.TestCase):
+    def test_leading_bold_only_paragraph_becomes_deck(self):
+        html = help_content.render_markdown_subset("**A one-line summary.**\n\nMore detail here.")
+        self.assertIn('<p class="deck">A one-line summary.</p>', html)
+        self.assertIn("<p>More detail here.</p>", html)
+
+    def test_bold_paragraph_with_trailing_text_is_not_a_deck(self):
+        # The whole paragraph has to be the bold span -- "**Bold** and
+        # more" is an ordinary paragraph that happens to start bold, not
+        # a one-line summary.
+        html = help_content.render_markdown_subset("**Bold** and more text.")
+        self.assertNotIn('class="deck"', html)
+        self.assertIn("<p><b>Bold</b> and more text.</p>", html)
+
+    def test_only_the_first_paragraph_can_become_a_deck(self):
+        # A later paragraph that happens to also be a single bold span
+        # stays a plain paragraph -- deck text is specifically the
+        # article's own opening summary, not "any lone bold paragraph".
+        html = help_content.render_markdown_subset("First paragraph.\n\n**Second, all bold.**")
+        self.assertNotIn('class="deck"', html)
+        self.assertIn("<p><b>Second, all bold.</b></p>", html)
+
+    def test_real_articles_with_deck_text_render_it(self):
+        # A few real articles were given deck text as part of the Help
+        # visual-upgrade pass -- confirms the syntax survives all the
+        # way from the shipped .md file through to real HTML output.
+        topics = {t.id: t for t in help_content.load_topics()}
+        html = help_content.render_markdown_subset(topics["welcome"].body)
+        self.assertIn('<p class="deck">', html)
+
+
+class TestCallouts(unittest.TestCase):
+    def test_callout_label_and_body(self):
+        html = help_content.render_markdown_subset("> **Recommended**\n> Balanced works well.")
+        self.assertIn('<div class="callout">', html)
+        self.assertIn('<div class="callout-label"><b>Recommended</b></div>', html)
+        self.assertIn('<div class="callout-body">Balanced works well.</div>', html)
+
+    def test_callout_label_only_has_no_empty_body_div(self):
+        html = help_content.render_markdown_subset("> **Note**")
+        self.assertIn('<div class="callout-label"><b>Note</b></div>', html)
+        self.assertNotIn("callout-body", html)
+
+    def test_callout_is_distinct_from_a_following_paragraph(self):
+        html = help_content.render_markdown_subset("> **Tip**\n> Do the thing.\n\nOrdinary paragraph.")
+        self.assertIn('<div class="callout">', html)
+        self.assertIn("<p>Ordinary paragraph.</p>", html)
+        # The plain paragraph must land outside the callout div, not
+        # merged into callout-body.
+        self.assertNotIn("Ordinary paragraph.</div>", html)
+
+    def test_real_articles_with_callouts_render_them(self):
+        topics = {t.id: t for t in help_content.load_topics()}
+        html = help_content.render_markdown_subset(topics["choosing-quality"].body)
+        self.assertIn('<div class="callout">', html)
+
+
+class TestImages(unittest.TestCase):
+    def test_image_resolves_to_the_dark_variant_by_default(self):
+        html = help_content.render_markdown_subset("![alt text](quick-start.png)")
+        self.assertIn("quick-start-dark.png", html)
+        self.assertIn('<img class="help-image"', html)
+        self.assertIn('alt="alt text"', html)
+
+    def test_image_resolves_to_the_light_variant_when_asked(self):
+        html = help_content.render_markdown_subset("![alt text](quick-start.png)", dark=False)
+        self.assertIn("quick-start-light.png", html)
+        self.assertNotIn("quick-start-dark.png", html)
+
+    def test_image_with_caption_renders_a_caption_div(self):
+        html = help_content.render_markdown_subset('![alt](video-settings.png "A helpful caption")')
+        self.assertIn('<div class="help-image-caption">A helpful caption</div>', html)
+
+    def test_image_without_caption_has_no_caption_div(self):
+        html = help_content.render_markdown_subset("![alt](video-settings.png)")
+        self.assertNotIn("help-image-caption", html)
+
+    def test_unknown_base_name_falls_back_to_the_literal_filename(self):
+        # No "-dark"/"-light" variant exists for this name -- falls back
+        # to the bare filename as given, for any image that only ever
+        # ships one variant.
+        html = help_content.render_markdown_subset("![alt](some-unthemed-icon.png)")
+        self.assertIn("some-unthemed-icon.png", html)
+
+    def test_image_path_never_escapes_images_dir(self):
+        # A filename with directory components can never point outside
+        # IMAGES_DIR -- Path(filename).name strips everything but the
+        # bare name before it's ever joined to IMAGES_DIR.
+        html = help_content.render_markdown_subset("![alt](../../etc/passwd)")
+        self.assertIn(help_content.IMAGES_DIR.as_uri(), html)
+        self.assertNotIn("etc/passwd", html)
+
+    def test_real_articles_with_images_render_them(self):
+        topics = {t.id: t for t in help_content.load_topics()}
+        html = help_content.render_markdown_subset(topics["welcome"].body)
+        self.assertIn('<img class="help-image"', html)
+
+
 if __name__ == "__main__":
     unittest.main()

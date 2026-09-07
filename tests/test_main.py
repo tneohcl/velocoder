@@ -5020,6 +5020,40 @@ def _menu_actions(window) -> dict:
     return {a.text(): a for a in window.queue_menu_btn.menu().actions() if not a.isSeparator()}
 
 
+class TestMoreActionsIcon(unittest.TestCase):
+    # Reported live: the literal "⋯" text read as three stray characters
+    # next to Add Videos, not a deliberate control -- replaced with a
+    # real icon (assets/more_dark.svg / more_light.svg).
+    def test_button_has_a_real_icon_not_text(self):
+        window = main.MainWindow()
+        self.assertFalse(window.queue_menu_btn.icon().isNull())
+        self.assertEqual(window.queue_menu_btn.text(), "")
+
+    def test_button_has_an_accessible_name(self):
+        window = main.MainWindow()
+        self.assertEqual(window.queue_menu_btn.accessibleName(), "More actions")
+
+    def test_icon_refreshes_on_theme_change(self):
+        # setIcon() only ever takes a snapshot at set-icon time -- unlike
+        # QSS-driven appearance, it doesn't react to _load_stylesheet on
+        # its own, so _apply_theme must explicitly refresh it.
+        window = main.MainWindow()
+        with patch.object(window, "_themed_icon", wraps=window._themed_icon) as mock_themed_icon:
+            window._apply_theme("light")
+        self.assertIn(
+            "more", [call.args[0] for call in mock_themed_icon.call_args_list],
+        )
+
+    def test_icon_refreshes_on_system_theme_change_while_following_system(self):
+        window = main.MainWindow()
+        window._theme_choice = "system"
+        with patch.object(window, "_themed_icon", wraps=window._themed_icon) as mock_themed_icon:
+            window._on_system_theme_changed(Qt.ColorScheme.Dark)
+        self.assertIn(
+            "more", [call.args[0] for call in mock_themed_icon.call_args_list],
+        )
+
+
 class TestHelpMenuAndShortcut(unittest.TestCase):
     def test_help_action_exists_and_triggers_show_help_window(self):
         window = main.MainWindow()

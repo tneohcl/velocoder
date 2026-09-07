@@ -26,7 +26,7 @@ from PySide6.QtTest import QTest  # noqa: E402
 _app = QApplication.instance() or QApplication([])
 
 import about_dialogs  # noqa: E402
-from constants import APP_NAME, APP_VERSION  # noqa: E402
+from constants import APP_NAME, APP_ORGANIZATION, APP_VERSION  # noqa: E402
 from worker import ProcessingBackend  # noqa: E402
 
 
@@ -112,6 +112,14 @@ class TestAboutDialog(unittest.TestCase):
         labels_text = " ".join(label.text() for label in dialog.findChildren(QLabel))
         self.assertIn(APP_VERSION, labels_text)
         self.assertIn(APP_NAME, labels_text)
+
+    def test_shows_the_central_app_organization_in_the_copyright_line(self):
+        dialog = about_dialogs.AboutDialog(
+            None, QIcon(), [ProcessingBackend("cpu", "CPU")], "Dark", "7.0",
+        )
+        from PySide6.QtWidgets import QLabel
+        labels_text = " ".join(label.text() for label in dialog.findChildren(QLabel))
+        self.assertIn(APP_ORGANIZATION, labels_text)
 
     def test_is_a_compact_fixed_size_dialog(self):
         dialog = about_dialogs.AboutDialog(

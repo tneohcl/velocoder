@@ -38,8 +38,41 @@ import main  # noqa: E402
 import presets  # noqa: E402
 import queue_controller  # noqa: E402
 import queue_widget  # noqa: E402
+import session  # noqa: E402
 import theming  # noqa: E402
 import worker  # noqa: E402
+
+_session_patches = []
+
+
+def setUpModule():
+    # Every bare MainWindow() construction in this whole file now calls
+    # _restore_session (main.py.__init__), which calls session.
+    # load_session() -- and every queue mutation schedules session.
+    # save_session() a moment later. Unlike QSettings' own scalar keys
+    # (theme/geometry/expert-state, tolerated ambient real values
+    # elsewhere in this file -- see _empty_qsettings' own docstring), a
+    # REAL session.json actually populating the queue on construction
+    # would break a huge fraction of this suite's own row-count
+    # assertions, not just a handful of "what's the default" tests -- and
+    # unlike QSettings, this file has no reason to ever accumulate real
+    # ambient state on a dev box that runs the real app for manual
+    # verification (screenshots, smoke tests, ...) alongside this suite.
+    # So: patched to a safe no-op for every test in this module by
+    # default, the same way _app itself is a single shared instance for
+    # the whole module -- individual tests that actually exercise this
+    # feature override these locally (see TestSessionPersistence below),
+    # which cleanly shadows this default just for their own scope.
+    _session_patches.append(patch.object(session, "load_session", return_value=None))
+    _session_patches.append(patch.object(session, "save_session"))
+    for p in _session_patches:
+        p.start()
+
+
+def tearDownModule():
+    for p in _session_patches:
+        p.stop()
+    _session_patches.clear()
 
 
 @contextmanager
@@ -4632,6 +4665,329 @@ class TestSegmentedButtonBoldWidth(unittest.TestCase):
                 btn.width(), needed,
                 f"{btn.text()!r} is {btn.width()}px, needs {needed}px for its bold state",
             )
+
+
+class TestSessionPersistenceSave(unittest.TestCase):
+    """Cross-session queue persistence (session.py): session.save_session
+    scheduled, debounced, after every real queue/output-folder mutation.
+    Restore-on-startup is TestSessionPersistenceRestore below -- this
+    class is the save side only. setUpModule's own module-wide patch
+    (session.load_session -> None, session.save_session -> a no-op Mock)
+    already keeps every *other* test in this file from touching a real
+    session.json at all; these tests locally re-patch session.save_session
+    with their own Mock to actually inspect what gets written."""
+
+    def test_add_files_schedules_a_debounced_save(self):
+        window = main.MainWindow()
+        with patch.object(session, "save_session") as mock_save:
+            with tempfile.TemporaryDirectory() as tmp:
+                clip = Path(tmp) / "clip.mkv"
+                clip.touch()
+                window.add_files([clip])
+            # Debounced -- scheduled, but not yet written.
+            self.assertTrue(window._session_save_timer.isActive())
+            mock_save.assert_not_called()
+            window._session_save_timer.timeout.emit()
+        mock_save.assert_called_once()
+        jobs, output_dir = mock_save.call_args[0]
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(output_dir, window.output_dir)
+
+    def test_remove_selected_schedules_a_save(self):
+        window = main.MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            clip.touch()
+            window.add_files([clip])
+        window.queue_list.topLevelItem(0).setSelected(True)
+        with patch.object(session, "save_session") as mock_save:
+            window._remove_selected()
+            window._session_save_timer.timeout.emit()
+        jobs, _ = mock_save.call_args[0]
+        self.assertEqual(jobs, [])
+
+    def test_clear_queue_schedules_a_save(self):
+        window = main.MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            clip.touch()
+            window.add_files([clip])
+        with patch.object(session, "save_session") as mock_save, \
+             patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
+            window._clear_queue()
+            window._session_save_timer.timeout.emit()
+        jobs, _ = mock_save.call_args[0]
+        self.assertEqual(jobs, [])
+
+    def test_reorder_schedules_a_save(self):
+        # queue_widget.py's _reorder_rows calls exactly this (on_reordered)
+        # before moving anything -- see _push_undo_snapshot's own comment
+        # on why hooking the save there is still correct despite firing
+        # pre-mutation.
+        window = main.MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            clip.touch()
+            window.add_files([clip])
+        with patch.object(session, "save_session") as mock_save:
+            window._push_undo_snapshot()
+            window._session_save_timer.timeout.emit()
+        mock_save.assert_called_once()
+
+    def test_output_folder_picker_schedules_a_save(self):
+        window = main.MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(session, "save_session") as mock_save, \
+                 patch.object(queue_controller.QFileDialog, "getExistingDirectory", return_value=tmp):
+                window._pick_output_dir()
+                window._session_save_timer.timeout.emit()
+        _, output_dir = mock_save.call_args[0]
+        self.assertEqual(output_dir, Path(tmp))
+
+    def test_typing_a_new_output_path_schedules_a_save(self):
+        window = main.MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(session, "save_session") as mock_save:
+                window.output_edit.setText(tmp)
+                window._on_output_edit_changed()
+                window._session_save_timer.timeout.emit()
+        mock_save.assert_called_once()
+
+    def test_editing_a_selected_items_settings_schedules_a_save(self):
+        window = main.MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            clip.touch()
+            window.add_files([clip])
+        window.queue_list.topLevelItem(0).setSelected(True)
+        with patch.object(session, "save_session") as mock_save:
+            window.quality_smaller_btn.click()
+            window._session_save_timer.timeout.emit()
+        mock_save.assert_called_once()
+
+    def test_a_completed_job_is_excluded_from_the_snapshot(self):
+        window = main.MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            clip.touch()
+            window.add_files([clip])
+        item = window.queue_list.topLevelItem(0)
+        job = item.data(queue_widget.STATUS_COL, Qt.UserRole)
+        job["_completed_output_path"] = "/videos/out.mp4"
+        item.setData(queue_widget.STATUS_COL, Qt.UserRole, job)
+        self.assertEqual(window._unfinished_queue_snapshot(), [])
+
+    def test_a_job_finishing_schedules_a_save(self):
+        window = main.MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            clip.touch()
+            out = Path(tmp) / "out.mkv"
+            out.write_bytes(b"x")
+            clip.write_bytes(b"xx")
+            window.add_files([clip])
+            window._current_running_item = window.queue_list.topLevelItem(0)
+            with patch.object(session, "save_session") as mock_save:
+                window._on_job_finished(str(clip), str(out))
+                window._session_save_timer.timeout.emit()
+        mock_save.assert_called_once()
+        jobs, _ = mock_save.call_args[0]
+        self.assertEqual(jobs, [])  # the just-finished job is now excluded
+
+    def test_a_job_failing_schedules_a_save(self):
+        window = main.MainWindow()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            clip.touch()
+            window.add_files([clip])
+            window._current_running_item = window.queue_list.topLevelItem(0)
+            with patch.object(session, "save_session") as mock_save:
+                window._on_job_failed(str(clip), "boom")
+                window._session_save_timer.timeout.emit()
+        mock_save.assert_called_once()
+
+    def test_all_finished_schedules_a_save(self):
+        window = main.MainWindow()
+        with patch.object(session, "save_session") as mock_save:
+            window._on_all_finished()
+            window._session_save_timer.timeout.emit()
+        mock_save.assert_called_once()
+
+    def test_debounce_only_writes_once_for_a_rapid_burst(self):
+        window = main.MainWindow()
+        with patch.object(session, "save_session") as mock_save:
+            window._schedule_session_save()
+            window._schedule_session_save()
+            window._schedule_session_save()
+            window._session_save_timer.timeout.emit()
+        mock_save.assert_called_once()
+
+    def test_close_event_flushes_synchronously_and_stops_the_timer(self):
+        window = main.MainWindow()
+        window.show()
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.mkv"
+            clip.touch()
+            with patch.object(session, "save_session") as mock_save:
+                window.add_files([clip])
+                self.assertTrue(window._session_save_timer.isActive())
+                window.close()
+        mock_save.assert_called_once()
+        self.assertFalse(window._session_save_timer.isActive())
+
+
+class TestSessionPersistenceRestore(unittest.TestCase):
+    """The other half (session.load_session, consulted once in main.py's
+    __init__ via _restore_session) -- rebuilds the queue through the same
+    _restore_queue_snapshot undo/redo already uses. See
+    TestSessionPersistenceSave above for the save side."""
+
+    def _fake_session(self, tmp, paths, output_dir=None, extra=None):
+        jobs = []
+        for p in paths:
+            job = {**main.DEFAULT_SETTINGS, "path": str(p), "gpu_vendor": None}
+            if extra:
+                job.update(extra)
+            jobs.append(job)
+        return {
+            "version": session.SESSION_VERSION,
+            "output_dir": output_dir or tmp,
+            "jobs": jobs,
+        }
+
+    def test_restores_unfinished_jobs_in_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clip_a = Path(tmp) / "a.mkv"
+            clip_b = Path(tmp) / "b.mkv"
+            clip_a.touch()
+            clip_b.touch()
+            fake = self._fake_session(tmp, [clip_a, clip_b])
+            with patch.object(session, "load_session", return_value=fake):
+                window = main.MainWindow()
+            self.assertEqual(window.queue_list.topLevelItemCount(), 2)
+            self.assertEqual(window.queue_list.topLevelItem(0).text(queue_widget.VIDEO_COL), "a.mkv")
+            self.assertEqual(window.queue_list.topLevelItem(1).text(queue_widget.VIDEO_COL), "b.mkv")
+
+    def test_restored_rows_start_ready_not_failed_or_converting(self):
+        # This app never attempts partial ffmpeg resume -- a job caught
+        # mid-convert or already marked Failed when the app closed comes
+        # back as a fresh "Ready" row, same as _make_queue_row always
+        # writes regardless of the persisted dict's own history (there is
+        # no persisted status text at all -- only path + settings).
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "a.mkv"
+            clip.touch()
+            fake = self._fake_session(tmp, [clip])
+            with patch.object(session, "load_session", return_value=fake):
+                window = main.MainWindow()
+            self.assertEqual(window.queue_list.topLevelItem(0).text(queue_widget.RESULT_COL), "Ready")
+
+    def test_a_stray_completed_output_path_is_stripped_not_trusted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "a.mkv"
+            clip.touch()
+            fake = self._fake_session(tmp, [clip], extra={"_completed_output_path": "/x.mp4"})
+            with patch.object(session, "load_session", return_value=fake):
+                window = main.MainWindow()
+            job = window.queue_list.topLevelItem(0).data(queue_widget.STATUS_COL, Qt.UserRole)
+            self.assertNotIn("_completed_output_path", job)
+
+    def test_missing_files_are_dropped_and_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clip_a = Path(tmp) / "a.mkv"
+            clip_a.touch()
+            missing = Path(tmp) / "gone.mkv"  # never created
+            fake = self._fake_session(tmp, [clip_a, missing])
+            with patch.object(session, "load_session", return_value=fake):
+                window = main.MainWindow()
+            self.assertEqual(window.queue_list.topLevelItemCount(), 1)
+            self.assertEqual(window.status_label.text(), "Restored 1 video(s) from your last session (1 no longer found)")
+
+    def test_all_files_missing_shows_a_quiet_notice_with_an_empty_queue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "gone.mkv"
+            fake = self._fake_session(tmp, [missing])
+            with patch.object(session, "load_session", return_value=fake):
+                window = main.MainWindow()
+            self.assertEqual(window.queue_list.topLevelItemCount(), 0)
+            self.assertEqual(window.status_label.text(), "1 video(s) from your last session could no longer be found")
+
+    def test_restores_the_output_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "custom_output"
+            fake = self._fake_session(tmp, [], output_dir=str(out_dir))
+            with patch.object(session, "load_session", return_value=fake):
+                window = main.MainWindow()
+            self.assertEqual(window.output_dir, out_dir)
+
+    def test_no_session_data_leaves_a_fresh_empty_queue(self):
+        # The module-wide default (setUpModule) already returns None for
+        # every other test in this file -- this test just makes that
+        # explicit and documents the "nothing to restore" path directly.
+        with patch.object(session, "load_session", return_value=None):
+            window = main.MainWindow()
+        self.assertEqual(window.queue_list.topLevelItemCount(), 0)
+        # "Idle" is status_label's own construction-time default
+        # (ui_builder.py) -- _restore_session returns immediately with
+        # nothing to restore, so nothing here ever calls _set_status to
+        # change it.
+        self.assertEqual(window.status_label.text(), "Idle")
+
+    def test_sanitizes_an_unavailable_vendor_through_effective_current_settings(self):
+        # The same correction every other real job boundary already goes
+        # through (add_files, syncing a selected queue item's settings) --
+        # a job saved against last session's Intel hardware can't be
+        # trusted blindly if this session's machine no longer has it.
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "a.mkv"
+            clip.touch()
+            fake = self._fake_session(tmp, [clip], extra={
+                "encoder": "hevc_vaapi", "gpu_vendor": "intel", "rc_mode": "ICQ", "quality_value": 26,
+            })
+            with patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.AMD_VENDOR_ID)):
+                with patch.object(session, "load_session", return_value=fake):
+                    window = main.MainWindow()
+            job = window.queue_list.topLevelItem(0).data(queue_widget.STATUS_COL, Qt.UserRole)
+        self.assertEqual(job["encoder"], "hevc_vaapi")
+        self.assertEqual(job["gpu_vendor"], "amd")
+
+    def test_a_malformed_job_missing_a_required_key_is_skipped_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clip_a = Path(tmp) / "a.mkv"
+            clip_b = Path(tmp) / "b.mkv"
+            clip_a.touch()
+            clip_b.touch()
+            fake = {
+                "version": session.SESSION_VERSION,
+                "output_dir": tmp,
+                "jobs": [
+                    {"path": str(clip_a)},  # missing encoder/rc_mode/etc entirely
+                    {**main.DEFAULT_SETTINGS, "path": str(clip_b), "gpu_vendor": None},
+                ],
+            }
+            with patch.object(session, "load_session", return_value=fake):
+                window = main.MainWindow()
+            # The one genuinely complete job still restores.
+            self.assertEqual(window.queue_list.topLevelItemCount(), 1)
+            self.assertEqual(window.queue_list.topLevelItem(0).text(queue_widget.VIDEO_COL), "b.mkv")
+
+    def test_an_unexpected_error_during_restore_never_crashes_startup(self):
+        # The broad top-level guard in _restore_session -- deliberately
+        # not narrowed to a specific exception type, since the whole
+        # point is that losing an unfinished queue is a recoverable
+        # disappointment and failing to launch at all over it would not
+        # be, regardless of what actually goes wrong.
+        with patch.object(session, "load_session", side_effect=RuntimeError("disk on fire")):
+            window = main.MainWindow()  # must not raise
+        self.assertEqual(window.queue_list.topLevelItemCount(), 0)
+
+    def test_unrecognized_session_version_is_treated_as_nothing_to_restore(self):
+        # load_session() itself already refuses a version mismatch (see
+        # test_session.py) -- this just confirms _restore_session doesn't
+        # need its own separate check on top of that contract.
+        with patch.object(session, "load_session", return_value=None):
+            window = main.MainWindow()
+        self.assertEqual(window.queue_list.topLevelItemCount(), 0)
 
 
 if __name__ == "__main__":

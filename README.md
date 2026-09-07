@@ -196,6 +196,26 @@ the full log. Window geometry (and Expert's own expanded/collapsed state)
 is remembered across launches via `QSettings("VeloCoder", "VeloCoder")` (on
 Linux: `~/.config/VeloCoder/VeloCoder.conf`).
 
+The unfinished queue (path + per-video settings, in order) and the output
+folder also survive a restart — a separate mechanism from the `QSettings`
+scalars above, since this is a structured, growing list rather than a
+handful of preferences: see `session.py` for the small JSON file
+(`session.json`, under `QStandardPaths.AppDataLocation`) and
+`queue_controller.py`'s `_schedule_session_save`/`_restore_session` for
+when it's written (debounced, after every real queue/output-folder
+change, and force-flushed on close) and read (once at startup, right
+after `_restore_window_state`). Already-completed videos are never
+persisted; a video that was still `Converting…`, `Failed`, or plain
+`Ready` when the app closed comes back next launch as a fresh `Ready`
+row — this app never attempts partial ffmpeg resume, so there's nothing
+else to restore it *to*. A restored job's hardware selection is
+sanitized through the same `_effective_current_settings` machinery any
+other real job boundary uses, in case the machine's available GPUs
+changed since the session was saved. A path that no longer resolves to a
+real file (moved, deleted, or on a drive that isn't connected) is
+silently dropped, with a one-line status notice if anything was actually
+lost this way.
+
 The settings dict that flows from the GUI into `build_args()`:
 
 ```python

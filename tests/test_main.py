@@ -4332,9 +4332,12 @@ class TestDynamicProcessingButtons(unittest.TestCase):
         # unavailable vendor at all: Expert's combo was left on "Intel"
         # (previous two tests) when a video got added -- there's no
         # preset/save-file feature to bring stale settings in from
-        # elsewhere (presets.py's own docstring). add_files is the one
-        # place this actually gets corrected, since it's the one place a
-        # settings dict becomes a real job that could reach build_args.
+        # elsewhere (presets.py's own docstring). add_files is one of the
+        # real boundaries where that gets corrected (via _effective_
+        # current_settings), since it's a place a settings dict becomes a
+        # real job that could reach build_args -- editing an already-
+        # queued item's settings is the other one, covered separately
+        # below (test_editing_a_queued_items_settings_...).
         with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
             window = main.MainWindow()
             window.encoder_combo.setCurrentIndex(self._intel_encoder_combo_index())
@@ -4399,6 +4402,95 @@ class TestDynamicProcessingButtons(unittest.TestCase):
                 job = item.data(queue_widget.STATUS_COL, Qt.UserRole)
         self.assertEqual(job["encoder"], "hevc_vaapi")
         self.assertEqual(job["gpu_vendor"], "amd")
+
+
+class TestSettingsForEngineVendorRcModeTranslation(unittest.TestCase):
+    """_settings_for_engine_vendor's rc_mode handling used to only
+    translate the Quality-tier case (ICQ/CQP/CRF), leaving the comment
+    "File Size... left untouched above" -- true for quality_value (a
+    target MB means the same thing on any encoder) but not for rc_mode
+    itself, which is a different *name* per family ("VBR" for VAAPI,
+    "bitrate" for software). A settings dict corrected from Intel/VBR to
+    CPU used to keep rc_mode="VBR" verbatim -- worker.build_args' own
+    software-path if/elif only recognizes "CRF"/"bitrate", so neither
+    -crf nor -b:v got emitted, silently falling back to libx265's own
+    default instead of the requested target size. Confirmed directly
+    (see test_reproduces_the_pre_fix_silent_rate_control_drop below)
+    before writing the fix these tests otherwise cover."""
+
+    def setUp(self):
+        self.window = main.MainWindow()
+
+    def _settings(self, encoder, vendor, rc_mode, quality_value, speed):
+        return {**main.DEFAULT_SETTINGS, "encoder": encoder, "gpu_vendor": vendor,
+                "rc_mode": rc_mode, "quality_value": quality_value, "speed": speed}
+
+    def test_file_size_mode_name_translates_intel_to_cpu(self):
+        settings = self._settings("hevc_vaapi", "intel", "VBR", 500, "4")
+        result = self.window._settings_for_engine_vendor(settings, "libx265", None)
+        self.assertEqual(result["rc_mode"], "bitrate")
+        self.assertEqual(result["quality_value"], 500)  # the MB target itself needs no translation
+
+    def test_file_size_mode_name_translates_cpu_to_intel(self):
+        settings = self._settings("libx265", None, "bitrate", 500, "medium")
+        result = self.window._settings_for_engine_vendor(settings, "hevc_vaapi", "intel")
+        self.assertEqual(result["rc_mode"], "VBR")
+        self.assertEqual(result["quality_value"], 500)
+
+    def test_file_size_mode_name_is_unchanged_switching_between_two_vaapi_vendors(self):
+        # Intel and AMD both call it "VBR" -- no rename needed, just the
+        # vendor itself changes.
+        settings = self._settings("hevc_vaapi", "intel", "VBR", 500, "4")
+        result = self.window._settings_for_engine_vendor(settings, "hevc_vaapi", "amd")
+        self.assertEqual(result["rc_mode"], "VBR")
+        self.assertEqual(result["quality_value"], 500)
+
+    def test_expert_only_mode_with_no_equivalent_falls_back_to_quality_balanced(self):
+        # CQP (Intel's Advanced-only mode) has no libx265 equivalent at
+        # all -- build_args' software if/elif doesn't recognize "CQP"
+        # either, so carrying it forward would be exactly the same class
+        # of silent-rate-control-drop bug as the File Size case.
+        settings = self._settings("hevc_vaapi", "intel", "CQP", 30, "4")
+        result = self.window._settings_for_engine_vendor(settings, "libx265", None)
+        self.assertEqual(result["rc_mode"], "CRF")
+        self.assertEqual(result["quality_value"], main.QUALITY_TIERS["libx265"]["balanced"])
+
+    def test_expert_only_mode_is_preserved_when_the_new_backend_genuinely_supports_it(self):
+        # CQP is Intel's *and* AMD's Advanced mode (constants.RC_MODES) --
+        # switching between them shouldn't reinterpret it as a quality
+        # tier it was never meant to be.
+        settings = self._settings("hevc_vaapi", "intel", "CQP", 30, "4")
+        result = self.window._settings_for_engine_vendor(settings, "hevc_vaapi", "amd")
+        self.assertEqual(result["rc_mode"], "CQP")
+        self.assertEqual(result["quality_value"], 30)
+
+    def test_reproduces_the_pre_fix_silent_rate_control_drop(self):
+        # Direct proof of the actual symptom, not just the settings dict:
+        # the exact pre-fix bug (rc_mode left as "VBR" on a libx265 job)
+        # fed straight to build_args emits neither -crf nor -b:v at all.
+        buggy_settings = self._settings("libx265", None, "VBR", 500, "medium")
+        args = worker.build_args(
+            buggy_settings, Path("input.mkv"), Path("output.mp4"),
+            probe_audio=False, audio_codec=None, duration_seconds=600.0,
+        )
+        self.assertNotIn("-crf", args)
+        self.assertNotIn("-b:v", args)  # the actual bug: silently drops rate control entirely
+
+    def test_translated_file_size_settings_produce_a_real_bitrate_argument(self):
+        # The fix, verified the same way: translated rc_mode reaches
+        # build_args as "bitrate", which it does recognize.
+        settings = self._settings("hevc_vaapi", "intel", "VBR", 500, "4")
+        translated = self.window._settings_for_engine_vendor(settings, "libx265", None)
+        args = worker.build_args(
+            translated, Path("input.mkv"), Path("output.mp4"),
+            probe_audio=False, audio_codec=None, duration_seconds=600.0,
+        )
+        self.assertIn("-b:v", args)
+        self.assertNotIn("-crf", args)
+        # -preset must be a real x265 preset name, not a leftover VAAPI
+        # compression_level digit -- ffmpeg would reject "-preset 4" for
+        # libx265 outright.
+        self.assertIn(translated["speed"], main.X265_PRESETS)
 
 
 class TestHardwareProbedOnceForTheWholeSession(unittest.TestCase):

@@ -936,24 +936,58 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             settings["speed"] = "4" if now_vaapi else "medium"
 
         new_key = encoder_profile_key(engine, vendor)
-        if old_key != new_key and settings["rc_mode"] == RC_MODE_FRIENDLY[old_key]["quality"]:
-            # Same problem one level down: a quality-family value only
-            # means something within one engine's own scale (CRF 23 and
-            # ICQ 23 aren't remotely the same quality) -- carrying the raw
-            # number across a Processing switch left it matching none of
-            # QUALITY_TIERS' three named tiers (confirmed live: switching
-            # CPU's default CRF 23 to Intel left Quality showing no
-            # selection at all). Carries the *tier* across instead, when
-            # the old value matched one; falls back to "balanced" when it
-            # didn't (e.g. after an Expert-mode slider drag). Bitrate-
-            # family selections (File Size) are left untouched above --
-            # a target output size doesn't need this kind of translation.
-            old_tier = next(
-                (tier for tier, value in QUALITY_TIERS.get(old_key, {}).items()
-                 if value == settings["quality_value"]), "balanced"
-            )
-            settings["rc_mode"] = RC_MODE_FRIENDLY[new_key]["quality"]
-            settings["quality_value"] = QUALITY_TIERS[new_key][old_tier]
+        if old_key != new_key:
+            old_rc = settings["rc_mode"]
+            old_friendly = RC_MODE_FRIENDLY[old_key]
+            new_friendly = RC_MODE_FRIENDLY[new_key]
+            if old_rc == old_friendly["quality"]:
+                # A quality-family value only means something within one
+                # engine's own scale (CRF 23 and ICQ 23 aren't remotely
+                # the same quality) -- carrying the raw number across a
+                # Processing switch left it matching none of QUALITY_
+                # TIERS' three named tiers (confirmed live: switching
+                # CPU's default CRF 23 to Intel left Quality showing no
+                # selection at all). Carries the *tier* across instead,
+                # when the old value matched one; falls back to
+                # "balanced" when it didn't (e.g. after an Expert-mode
+                # slider drag).
+                old_tier = next(
+                    (tier for tier, value in QUALITY_TIERS.get(old_key, {}).items()
+                     if value == settings["quality_value"]), "balanced"
+                )
+                settings["rc_mode"] = new_friendly["quality"]
+                settings["quality_value"] = QUALITY_TIERS[new_key][old_tier]
+            elif old_rc == old_friendly["file_size"]:
+                # Real, confirmed gap: a target output size in MB means
+                # the same thing regardless of encoder (quality_value
+                # itself needs no translation), but the *mode name* each
+                # family uses for "target a size" still differs --
+                # Intel/AMD call it "VBR", the software encoders call it
+                # "bitrate". Leaving the old name in place after crossing
+                # families left a real, ordinary File-Size job holding a
+                # rc_mode build_args' new encoder branch doesn't
+                # recognize at all (its own if/elif only matches "CRF"/
+                # "bitrate" for software, "ICQ"/"CQP"/"VBR" for VAAPI) --
+                # neither -crf nor -b:v got emitted, silently encoding at
+                # the new encoder's own default instead of the requested
+                # size.
+                settings["rc_mode"] = new_friendly["file_size"]
+            elif old_rc == old_friendly.get("advanced") and old_rc in {mode for mode, _label in RC_MODES[new_key]}:
+                # An Expert-only mode (Intel's CQP) that happens to be
+                # genuinely valid on the new backend too (e.g. switching
+                # Intel -> AMD, which also supports CQP) -- carry it
+                # through completely unchanged rather than reinterpreting
+                # it as a quality/file-size tier it was never meant to be.
+                pass
+            else:
+                # An Expert-only mode with no equivalent on the new
+                # backend at all (Intel's CQP has nothing to carry over
+                # to a CPU/libx265 job, which build_args' own if/elif
+                # doesn't recognize "CQP" for at all) -- falls back to
+                # the new backend's own Quality/Balanced default rather
+                # than carrying an invalid mode forward.
+                settings["rc_mode"] = new_friendly["quality"]
+                settings["quality_value"] = QUALITY_TIERS[new_key]["balanced"]
         return settings
 
     def _on_processing_choice(self, choice: str):
@@ -1332,8 +1366,9 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # belong anywhere in this settings <-> controls round-trip at all
         # (a wide swath of pre-existing tests apply a hardware-specific
         # settings dict directly, on whatever hardware happens to be
-        # running the suite). add_files (queue_controller.py) is the one
-        # place this actually needs correcting.
+        # running the suite). _effective_current_settings() is where that
+        # correction actually lives, used at both real job boundaries
+        # (add_files, syncing a selected queue item's settings).
         # Matched by vendor alone, not enc == settings["encoder"] -- the
         # CPU row's own id in ENCODERS is just a placeholder now (see its
         # own comment in constants.py), not necessarily what

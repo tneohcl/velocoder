@@ -5039,8 +5039,8 @@ class TestHelpMenuAndShortcut(unittest.TestCase):
 
     def test_menu_order_matches_spec(self):
         # Remove Selected / Clear Queue -- Stop After Current Video --
-        # Settings.../Help/About VeloCoder -- Show Conversion Log/Copy
-        # FFmpeg Command, exactly, including the separators' positions.
+        # Show Conversion Log/Copy FFmpeg Command -- Settings.../Help/
+        # About VeloCoder, exactly, including the separators' positions.
         window = main.MainWindow()
         entries = [
             a.text() if not a.isSeparator() else "---"
@@ -5049,8 +5049,8 @@ class TestHelpMenuAndShortcut(unittest.TestCase):
         self.assertEqual(entries, [
             "Remove Selected", "Clear Queue", "---",
             "Stop After Current Video", "---",
-            "Settings…", "Help", "About VeloCoder", "---",
-            "Show Conversion Log", "Copy FFmpeg Command",
+            "Show Conversion Log", "Copy FFmpeg Command", "---",
+            "Settings…", "Help", "About VeloCoder",
         ])
 
     def test_f1_is_bound_to_show_help_window(self):

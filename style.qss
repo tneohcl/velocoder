@@ -61,11 +61,12 @@ QGroupBox {
        collapsed section: the header text and the thin collapsed strip
        read as two separate elements instead of one. padding-top instead
        reserves the same room for the title *inside* the border. */
-    /* 26, not 30 -- reported live the Normal Video page read as
-       slightly more spacious than it needed to; a modest reduction here
-       (plus ui_builder.py's SECTION_SPACING and form.setVerticalSpacing,
-       ~10% tighter each) was judged enough without a real redesign. */
-    padding-top: 26px;
+    /* 19, not 26 -- two rounds of density tightening (26->21->19) once
+       ui_builder.py's SECTION_SPACING and form.setVerticalSpacing had
+       already shrunk enough that the header reserve was the next-most
+       visible source of bulk; the title's own top offset below was
+       pulled in to match, so it doesn't collide with the border. */
+    padding-top: 19px;
     font-weight: 600;
 }
 
@@ -75,7 +76,7 @@ QGroupBox::title {
     subcontrol-origin: padding;
     subcontrol-position: top left;
     left: 6px;
-    top: 6px;
+    top: 3px;
     padding: 0 6px;
     /* Neutral, not accent -- blue is reserved for selected controls/
        active progress/focus/Convert now, not section chrome. This one
@@ -181,7 +182,7 @@ QWidget#tabPageCard {
 QTabBar::tab {
     background: $BG_WINDOW;
     color: $TEXT_SECONDARY;
-    padding: 6px 18px;
+    padding: 4px 12px;
     margin-right: 2px;
     margin-top: 2px;
     border: 1px solid $BORDER_OUTER;
@@ -207,7 +208,7 @@ QPushButton {
     background-color: $BG_CONTROL;
     border: 1px solid $BORDER_STRONG;
     border-radius: 6px;
-    padding: 6px 14px;
+    padding: 4px 10px;
     color: $TEXT_PRIMARY;
 }
 
@@ -339,7 +340,7 @@ QComboBox, QLineEdit, QSpinBox, QPlainTextEdit {
     background-color: $BG_FIELD;
     border: 1px solid $BORDER;
     border-radius: 6px;
-    padding: 4px 8px;
+    padding: 3px 7px;
     selection-background-color: $ACCENT;
     selection-color: $TEXT_ON_ACCENT;
 }
@@ -674,7 +675,7 @@ QTreeWidget {
 }
 
 QTreeWidget::item {
-    padding: 5px 6px;
+    padding: 3px 6px;
     border-bottom: 1px solid $BORDER;
 }
 
@@ -715,7 +716,7 @@ QTreeWidget[dragActive="true"] {
 QHeaderView::section {
     background-color: $BG_PANEL;
     color: $TEXT_SECONDARY;
-    padding: 5px 6px;
+    padding: 3px 6px;
     border: none;
     border-right: 1px solid $BORDER;
     border-bottom: 1px solid $BORDER_STRONG;

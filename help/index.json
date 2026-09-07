@@ -43,6 +43,23 @@
       "name": "Video",
       "topics": [
         {
+          "id": "processing",
+          "title": "Processing",
+          "keywords": [
+            "processing",
+            "automatic",
+            "hardware",
+            "acceleration",
+            "cpu",
+            "gpu",
+            "graphics",
+            "intel",
+            "amd",
+            "speed"
+          ],
+          "file": "processing.md"
+        },
+        {
           "id": "choosing-quality",
           "title": "Choosing Quality",
           "keywords": [
@@ -50,9 +67,7 @@
             "smaller file",
             "better quality",
             "balanced",
-            "tier",
-            "hardware",
-            "processing"
+            "tier"
           ],
           "file": "choosing-quality.md"
         },
@@ -251,8 +266,7 @@
           "keywords": [
             "expert",
             "advanced",
-            "technical",
-            "hardware"
+            "technical"
           ],
           "file": "about-expert-settings.md"
         },

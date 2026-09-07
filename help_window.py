@@ -42,6 +42,11 @@ class HelpWindow(QWidget):
         self._qsettings = QSettings(APP_NAME, APP_NAME)
         self._topics = help_content.load_topics()
         self._current_topic_id: str | None = None
+        # Set only while the article pane is showing the "no results"
+        # message instead of a real topic -- refresh_theme needs to know
+        # which of the two to re-render, since only one of
+        # _current_topic_id/_no_results_query is ever meaningful at a time.
+        self._no_results_query: str | None = None
 
         self.search_field = QLineEdit()
         self.search_field.setPlaceholderText("Search Help")
@@ -116,8 +121,34 @@ class HelpWindow(QWidget):
         self.topic_tree.expandAll()
 
     def _on_search_changed(self, text: str):
+        # Reported live, twice: filtering the tree left the article pane
+        # showing whatever was selected *before* the search, since
+        # _populate_tree's own topic_tree.clear() drops the previous
+        # selection without ever choosing a new one -- nothing then
+        # fires itemSelectionChanged to re-render anything. A search
+        # narrowing to zero matches was the worse version of the same
+        # gap: an unrelated old article stayed on screen with nothing on
+        # screen explaining why.
         matches = help_content.search_topics(self._topics, text)
         self._populate_tree(matches)
+        match_ids = {topic.id for topic in matches}
+        if self._current_topic_id in match_ids:
+            # Still a real match -- re-select it in the freshly rebuilt
+            # tree (its previous QTreeWidgetItem no longer exists) rather
+            # than re-rendering, since nothing about the article itself
+            # needs to change.
+            self._select_topic(self._current_topic_id)
+        elif matches:
+            self._select_topic(matches[0].id)
+        else:
+            self._render_no_results(text)
+
+    def _render_no_results(self, query: str):
+        self._current_topic_id = None
+        self._no_results_query = query
+        self.article_view.setHtml(self._wrap_html(
+            "No Results", f"<p>No Help topics found for “{query}”.</p>",
+        ))
 
     def _on_topic_selected(self):
         items = self.topic_tree.selectedItems()
@@ -126,6 +157,7 @@ class HelpWindow(QWidget):
         topic_id = items[0].data(0, _TOPIC_ID_ROLE)
         if topic_id:
             self._current_topic_id = topic_id
+            self._no_results_query = None
             self._render_article(topic_id)
 
     def _select_topic(self, topic_id: str):
@@ -166,11 +198,15 @@ class HelpWindow(QWidget):
     def refresh_theme(self):
         # Called from main.py's _apply_theme/_on_system_theme_changed --
         # _load_stylesheet reloading the app-level QSS alone doesn't
-        # touch already-rendered rich-text HTML content, so the
-        # currently displayed article needs an explicit re-render to
-        # pick up the new theme's colors.
+        # touch already-rendered rich-text HTML content, so whatever's
+        # currently displayed -- a real article, or the no-results
+        # message (they're mutually exclusive, see __init__'s own
+        # comment) -- needs an explicit re-render to pick up the new
+        # theme's colors.
         if self._current_topic_id is not None:
             self._render_article(self._current_topic_id)
+        elif self._no_results_query is not None:
+            self._render_no_results(self._no_results_query)
 
     def _restore_geometry(self):
         geometry = self._qsettings.value("help_window_geometry")

@@ -5037,6 +5037,21 @@ class TestHelpMenuAndShortcut(unittest.TestCase):
             actions["About VeloCoder"].trigger()
         mock_show.assert_called_once()
 
+    def test_show_about_dialog_constructs_a_real_dialog_with_the_apps_own_data(self):
+        # The real _show_about_dialog call chain (not a manually built
+        # AboutDialog elsewhere) -- patches AboutDialog's class in main's
+        # own namespace so .exec() never runs a real blocking modal loop,
+        # while still confirming it's constructed with this window's
+        # actual hardware-backend snapshot and resolved theme name.
+        window = main.MainWindow()
+        with patch.object(main, "AboutDialog") as mock_cls:
+            window._show_about_dialog()
+        mock_cls.assert_called_once()
+        args = mock_cls.call_args[0]
+        self.assertEqual(args[0], window)
+        self.assertEqual(args[2], window._available_backends)
+        mock_cls.return_value.exec.assert_called_once()
+
     def test_menu_order_matches_spec(self):
         # Remove Selected / Clear Queue -- Stop After Current Video --
         # Show Conversion Log/Copy FFmpeg Command -- Settings.../Help/
@@ -5117,6 +5132,78 @@ class TestHelpWindow(unittest.TestCase):
         self.assertLess(help_win.topic_tree.topLevelItemCount(), full_count)
         help_win.search_field.setText("")
         self.assertEqual(help_win.topic_tree.topLevelItemCount(), full_count)
+
+    def test_ctrl_f_focuses_the_search_field(self):
+        window = main.MainWindow()
+        window._show_help_window()
+        help_win = window._help_window
+        help_win.show()
+        # activateWindow() + processEvents() first -- offscreen/headless
+        # Qt doesn't reliably deliver real focus without the window
+        # actually being made active first (confirmed directly: without
+        # this, hasFocus() reads back False even though setFocus() was
+        # genuinely called).
+        help_win.activateWindow()
+        _app.processEvents()
+        ctrl_f_shortcuts = [
+            s for s in help_win.findChildren(QShortcut)
+            if s.key() == QKeySequence("Ctrl+F")
+        ]
+        self.assertEqual(len(ctrl_f_shortcuts), 1)
+        ctrl_f_shortcuts[0].activated.emit()
+        _app.processEvents()
+        self.assertTrue(help_win.search_field.hasFocus())
+
+    def test_search_auto_selects_the_first_match_when_current_topic_drops_out(self):
+        # Reported live: filtering the tree left the article pane
+        # showing whatever was selected before the search, since
+        # nothing re-selected anything in the freshly rebuilt tree.
+        window = main.MainWindow()
+        window._show_help_window()
+        help_win = window._help_window
+        self.assertEqual(help_win._current_topic_id, "welcome")
+        help_win.search_field.setText("10 bit")
+        self.assertEqual(help_win._current_topic_id, "color-depth")
+        self.assertIn("Color Depth", help_win.article_view.toPlainText())
+
+    def test_search_keeps_the_current_topic_selected_when_it_still_matches(self):
+        window = main.MainWindow()
+        window._show_help_window()
+        help_win = window._help_window
+        help_win._select_topic("color-depth")
+        self.assertEqual(help_win._current_topic_id, "color-depth")
+        help_win.search_field.setText("color")
+        self.assertEqual(help_win._current_topic_id, "color-depth")
+
+    def test_no_match_search_shows_a_clean_empty_state_not_the_old_article(self):
+        window = main.MainWindow()
+        window._show_help_window()
+        help_win = window._help_window
+        self.assertIn("Welcome to VeloCoder", help_win.article_view.toPlainText())
+        help_win.search_field.setText("xyzzy_no_such_topic")
+        text = help_win.article_view.toPlainText()
+        self.assertNotIn("Welcome to VeloCoder", text)
+        self.assertIn("No Help topics found", text)
+        self.assertIn("xyzzy_no_such_topic", text)
+        self.assertIsNone(help_win._current_topic_id)
+
+    def test_clearing_search_after_no_match_falls_back_to_welcome(self):
+        window = main.MainWindow()
+        window._show_help_window()
+        help_win = window._help_window
+        help_win.search_field.setText("xyzzy_no_such_topic")
+        self.assertIsNone(help_win._current_topic_id)
+        help_win.search_field.setText("")
+        self.assertEqual(help_win._current_topic_id, "welcome")
+        self.assertIn("Welcome to VeloCoder", help_win.article_view.toPlainText())
+
+    def test_hardware_search_selects_the_processing_topic(self):
+        window = main.MainWindow()
+        window._show_help_window()
+        help_win = window._help_window
+        help_win.search_field.setText("hardware")
+        self.assertEqual(help_win._current_topic_id, "processing")
+        self.assertIn("Processing", help_win.article_view.toPlainText())
 
     def test_help_follows_theme_changes(self):
         window = main.MainWindow()

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QFileDialog, QMenu, QMessageBox, QTreeWidgetItem
 
 import worker
 import formatting
+import session
 from constants import VIDEO_FILTER
 from queue_widget import (
     VIDEO_COL, DURATION_COL, SIZE_COL, RESULT_COL,
@@ -24,6 +25,13 @@ from queue_widget import (
 # without needing to know what the other two already contributed.
 _RAW_VIDEO_LABEL_ROLE = Qt.UserRole + 2
 _RAW_AUDIO_LABEL_ROLE = Qt.UserRole + 3
+
+# Debounced, not written on every call -- a slider drag alone can fire
+# this dozens of times a second (_sync_settings_to_selected_queue_items),
+# and this is a real disk write, not an in-memory update. Restarting a
+# single-shot QTimer on every call (see _schedule_session_save) means only
+# the last call in any burst shorter than this actually reaches disk.
+_SESSION_SAVE_DEBOUNCE_MS = 400
 
 
 class _QueueControllerMixin:
@@ -121,6 +129,106 @@ class _QueueControllerMixin:
         self._update_command_preview()
         self._refresh_idle_controls()
         self._reconcile_pending_start_after_mutation()
+        self._schedule_session_save()
+
+    # --- cross-session persistence (the unfinished queue + output
+    # folder survive an app restart, see session.py) ---
+    def _unfinished_queue_snapshot(self) -> list[dict]:
+        # job.get("_completed_output_path") is the one job-dict-level
+        # marker a job was ever actually finished (set only in
+        # _on_job_finished, on a confirmed success) -- everything else
+        # (Ready, still Converting when the app closes, Failed) counts as
+        # "unfinished" and gets persisted. A job caught mid-convert comes
+        # back next launch as a fresh "Ready" row, not a resumed one --
+        # _make_queue_row always writes "Ready" regardless of what this
+        # dict's own history was, and this app never attempts partial
+        # ffmpeg resume, so there is nothing else to restore it *to*.
+        return [job for job in self._queue_snapshot() if job.get("_completed_output_path") is None]
+
+    def _schedule_session_save(self):
+        # Restarting an already-running QTimer (Qt's own documented
+        # behavior) is exactly the debounce this needs -- only the last
+        # call in any burst shorter than _SESSION_SAVE_DEBOUNCE_MS actually
+        # reaches disk. self._session_save_timer is constructed once in
+        # MainWindow.__init__, before anything that could call this.
+        self._session_save_timer.start(_SESSION_SAVE_DEBOUNCE_MS)
+
+    def _save_session_now(self):
+        # The forced, synchronous flush closeEvent uses (after first
+        # stopping the debounce timer, so a just-scheduled save doesn't
+        # fire a second time after the window is already gone) -- every
+        # other caller goes through the debounced _schedule_session_save
+        # above instead.
+        session.save_session(self._unfinished_queue_snapshot(), self.output_dir)
+
+    def _restore_session(self):
+        # Called once, in __init__ right after _restore_window_state --
+        # never crashes startup regardless of what's on disk (a missing
+        # or corrupt file is already just "nothing to restore" per
+        # session.load_session's own contract; this method's own broad
+        # except below additionally covers anything unexpected in the
+        # restore logic itself, e.g. a hand-edited session.json missing a
+        # key some job needs). Losing an unfinished queue is a real but
+        # recoverable disappointment; failing to launch at all over it
+        # would not be.
+        try:
+            self._restore_session_unguarded()
+        except Exception:
+            pass
+
+    def _restore_session_unguarded(self):
+        data = session.load_session()
+        if data is None:
+            return
+        output_dir = data.get("output_dir")
+        if output_dir:
+            self.output_dir = Path(output_dir)
+            self.output_edit.setText(formatting.display_path(self.output_dir))
+        restored = []
+        missing = 0
+        for raw_job in data.get("jobs", []):
+            raw_path = raw_job.get("path")
+            if not raw_path:
+                continue
+            path = Path(raw_path)
+            if not path.is_file():
+                missing += 1
+                continue
+            try:
+                job = dict(raw_job)
+                job["path"] = path
+                # Defensive, matching session.py's own _job_to_json on
+                # the save side -- a real save never persists a completed
+                # job in the first place (_unfinished_queue_snapshot's own
+                # filter), so this key shouldn't be here at all. Stripped
+                # rather than trusted: a restored job carrying this would
+                # otherwise show as an active "Ready" row (correct) but
+                # then get silently dropped from the *next* save (since
+                # _unfinished_queue_snapshot checks this same key) --
+                # exactly the "still needs work" item this whole feature
+                # exists to not lose.
+                job.pop("_completed_output_path", None)
+                # _effective_current_settings(), not the raw persisted
+                # dict -- the same sanitization every other real job
+                # boundary already goes through (add_files, syncing a
+                # selected queue item's settings): a job saved against
+                # last session's hardware (e.g. AMD) can't just be
+                # trusted blindly if this session's machine no longer has
+                # it, or never did.
+                restored.append(self._effective_current_settings(job))
+            except (KeyError, TypeError):
+                # One malformed job (e.g. hand-edited session.json missing
+                # a required key) shouldn't sink the rest of a genuinely
+                # restorable queue.
+                continue
+        if restored:
+            self._restore_queue_snapshot(restored)
+        if restored and missing:
+            self._set_status(f"Restored {len(restored)} video(s) from your last session ({missing} no longer found)")
+        elif restored:
+            self._set_status(f"Restored {len(restored)} video(s) from your last session")
+        elif missing:
+            self._set_status(f"{missing} video(s) from your last session could no longer be found")
 
     def _push_undo_snapshot(self):
         # Disabled entirely during a run, matching every other queue-
@@ -133,6 +241,19 @@ class _QueueControllerMixin:
         self._undo_stack.append(self._queue_snapshot())
         del self._undo_stack[:-50]  # cap -- keep only the most recent 50
         self._redo_stack.clear()  # any new action invalidates redo history
+        # This is the only hook reorder has at all (queue_widget.py's
+        # _reorder_rows calls this, and only this, before moving anything)
+        # -- also covers add_files/_remove_selected/_clear_queue, which
+        # all call this too, redundantly with their own explicit calls
+        # below (harmless: _schedule_session_save just restarts the same
+        # debounce timer again). Called *before* the mutation, unlike
+        # every other _schedule_session_save call site -- safe only
+        # because the save itself is debounced, so by the time the timer
+        # actually fires (_SESSION_SAVE_DEBOUNCE_MS later), the reorder/
+        # add/remove/clear this was called from has already completed
+        # (all synchronous, all long since finished within the same
+        # event-loop turn).
+        self._schedule_session_save()
 
     def _undo(self):
         if not self._queue_editable or not self._undo_stack:
@@ -193,6 +314,13 @@ class _QueueControllerMixin:
         # goes through this same reconciliation now -- Add included, not
         # just Remove/Clear/Undo/Redo.
         self._reconcile_pending_start_after_mutation()
+        # Explicit here, not left to _push_undo_snapshot's own trailing
+        # call above -- that one silently no-ops mid-run (_queue_editable
+        # False), but a file added mid-run still really is added to
+        # queue_list right above and deserves to survive a crash just the
+        # same as any other queue change.
+        if real_paths:
+            self._schedule_session_save()
 
     def _note_probe_finished(self, item: QTreeWidgetItem):
         # Purely for the "Preparing -- analyzing N video(s)…" count (see
@@ -452,6 +580,7 @@ class _QueueControllerMixin:
         if d:
             self.output_dir = Path(d)
             self.output_edit.setText(formatting.display_path(self.output_dir))
+            self._schedule_session_save()
 
     def _on_output_edit_changed(self):
         text = self.output_edit.text().strip()
@@ -469,6 +598,7 @@ class _QueueControllerMixin:
             # (_pick_output_dir above) already does after a selection.
             self.output_dir = Path(text).expanduser().resolve()
             self.output_edit.setText(formatting.display_path(self.output_dir))
+            self._schedule_session_save()
 
     def _open_output_dir(self):
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1002,6 +1132,11 @@ class _QueueControllerMixin:
             job = self._current_running_item.data(STATUS_COL, Qt.UserRole)
             job["_completed_output_path"] = output_path
             self._current_running_item.setData(STATUS_COL, Qt.UserRole, job)
+            # This is the one moment a job's own persisted-eligibility
+            # actually changes (see _unfinished_queue_snapshot) -- from
+            # here on it's excluded from the saved session, so a crash
+            # right after doesn't leave it queued to redo on next launch.
+            self._schedule_session_save()
 
     def _on_job_failed(self, path: str, reason: str):
         self.log_view.appendPlainText(f"=== FAILED: {path}: {reason} ===")
@@ -1013,6 +1148,7 @@ class _QueueControllerMixin:
             # (a raw ffmpeg error line) and already lives in the tooltip
             # just set above, and in the log.
             self._current_running_item.setText(RESULT_COL, "Failed")
+            self._schedule_session_save()
 
     @staticmethod
     def _append_result_size(item: QTreeWidgetItem, input_path: Path, output_path: Path) -> tuple[int, int] | None:
@@ -1076,6 +1212,13 @@ class _QueueControllerMixin:
                 self._set_status("Conversion Failed")
             else:
                 self._set_status("Idle")
+        # A safety-net flush for "job stops" in general -- a cancel mid-run
+        # leaves some items still unconverted, and _on_job_finished/_on_job_
+        # failed above already schedule a save per item, but this covers
+        # the run ending for any other reason too (e.g. it was paused and
+        # then stopped between jobs, which per-item handlers never fired
+        # for).
+        self._schedule_session_save()
 
     def _on_paused(self):
         # The run halted between jobs (request_pause armed, the job that

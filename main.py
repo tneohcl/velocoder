@@ -156,6 +156,16 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._redo_stack: list[list[dict]] = []
         self._detection_processes: list[QProcess] = []  # keep references alive; Qt won't
         self.output_dir = Path.home() / "Videos" / "transcoded"
+        # Debounced cross-session queue/output-folder persistence (see
+        # session.py and queue_controller.py's _schedule_session_save/
+        # _save_session_now/_restore_session) -- singleShot so each call
+        # restarts the same timer instead of stacking up separate ones;
+        # closeEvent below stops this and flushes synchronously instead,
+        # so a save already in flight when the window closes doesn't fire
+        # a fraction of a second too late against an already-gone window.
+        self._session_save_timer = QTimer(self)
+        self._session_save_timer.setSingleShot(True)
+        self._session_save_timer.timeout.connect(self._save_session_now)
         # Deliberately a different (org, app) pair than the sibling
         # TITAN-i Transcoder app ("TITAN-i", "Transcoder") -- QSettings
         # resolves its backing file purely from this pair, so sharing it
@@ -278,6 +288,14 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._expert_pre_expand_height = None
         self.video_expert_group.toggled.connect(self._on_expert_toggled)
         self._restore_window_state()
+        # After _restore_window_state, not before: queue_list/output_edit/
+        # status_label (ui_builder.py's _build_ui) all already exist by
+        # this point, and _apply_run_phase_visuals("idle") right below
+        # deliberately never touches status_label's own text (see that
+        # method's own comment in queue_controller.py), so a "Restored N
+        # video(s)..." notice set here survives it rather than getting
+        # immediately overwritten back to "Idle".
+        self._restore_session()
         # Establishes correct starting visibility (progress_bar/eta_label/
         # stats_label/stop_btn/open_folder_btn hidden while idle) -- one
         # call through the same function every later phase transition uses,
@@ -300,6 +318,14 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._last_synced_settings = self._current_settings()
 
     def closeEvent(self, event):
+        # Stop the debounce timer first, then flush synchronously --
+        # otherwise a save already scheduled (e.g. from a control change
+        # in the last 400ms) would still be pending when the window
+        # closes, and firing after that point is both pointless and
+        # (per Qt's own docs on timers outliving their parent's usual
+        # lifetime assumptions) not something to rely on at all.
+        self._session_save_timer.stop()
+        self._save_session_now()
         self._qsettings.setValue("window_geometry", self.saveGeometry())
         self._qsettings.setValue("video_expert_expanded", self.video_expert_group.isChecked())
         super().closeEvent(event)
@@ -1020,20 +1046,28 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         settings = self._settings_for_engine_vendor(self._current_settings(), engine, vendor)
         self._apply_settings_to_controls(settings)
 
-    def _effective_current_settings(self) -> dict:
-        """_current_settings(), corrected for a vendor that isn't
-        actually there. Expert's own encoder_combo isn't filtered by
-        real hardware (deliberately -- see _resolved_engine_vendor's own
-        docstring, and _on_encoder_changed's on why that correction
-        doesn't belong there), so the raw settings can name a vendor
-        build_args would fail a real job trying to open. Every boundary
-        where UI state becomes a real, executable job -- add_files,
-        syncing a queue item's settings from the panel -- should read
-        this instead of _current_settings() directly. The many hardware-
-        agnostic UI-cascade tests that deliberately rely on
+    def _effective_current_settings(self, settings: dict | None = None) -> dict:
+        """settings (default: _current_settings()), corrected for a
+        vendor that isn't actually there. Expert's own encoder_combo
+        isn't filtered by real hardware (deliberately -- see
+        _resolved_engine_vendor's own docstring, and _on_encoder_
+        changed's on why that correction doesn't belong there), so the
+        raw settings can name a vendor build_args would fail a real job
+        trying to open. Every boundary where UI state becomes a real,
+        executable job -- add_files, syncing a queue item's settings from
+        the panel, restoring a persisted job from a previous session
+        (session.py/_restore_session in queue_controller.py) -- should
+        read this instead of _current_settings() directly. The many
+        hardware-agnostic UI-cascade tests that deliberately rely on
         _current_settings() staying a literal, uncorrected read of the
-        controls are exactly why this lives here instead."""
-        settings = self._current_settings()
+        controls are exactly why this lives here instead.
+
+        Takes an explicit settings dict, not just the live controls,
+        because a restored job's settings never touched encoder_combo/
+        codec_combo/etc. at all -- there's no live UI state to read for
+        it, only the dict itself."""
+        if settings is None:
+            settings = self._current_settings()
         engine, vendor = self._resolved_engine_vendor(settings["encoder"], settings.get("gpu_vendor"))
         if (engine, vendor) == (settings["encoder"], settings.get("gpu_vendor")):
             return settings
@@ -1101,6 +1135,12 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             for col in range(len(QUEUE_COLUMN_HEADERS)):
                 item.setToolTip(col, tooltip)
         self._last_synced_settings = settings
+        # A per-item settings change (Quality tier, Speed, ...) applied
+        # here doesn't go through _push_undo_snapshot/_restore_queue_
+        # snapshot at all -- neither of this method's own callers is a
+        # queue-structure mutation, so this is its own, separate save
+        # trigger rather than something the other hooks happen to cover.
+        self._schedule_session_save()
 
     def _on_queue_selection_changed(self):
         selected = self.queue_list.selectedItems()
@@ -1468,6 +1508,14 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
 
 def main():
     app = QApplication(sys.argv)
+    # Needed for QStandardPaths.AppDataLocation (session.py's
+    # session_file_path) to resolve to a real, sensible per-app directory
+    # -- unset, Qt falls back to deriving it from the executable name,
+    # which for a plain "python3 main.py" invocation is "python3", not
+    # anything VeloCoder-specific. Matches QSettings("VeloCoder",
+    # "VeloCoder")'s own naming below (MainWindow.__init__).
+    app.setOrganizationName("VeloCoder")
+    app.setApplicationName("VeloCoder")
     # Fusion is the style QSS was written against -- native styles (Breeze,
     # Windows) silently ignore some of the subcontrols the theme relies on,
     # e.g. the slider groove/handle and the combobox popup background.

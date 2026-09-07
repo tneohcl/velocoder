@@ -604,6 +604,32 @@ QLineEdit#outputPathField {
     color: $TEXT_READONLY;
 }
 
+/* Settings-scope labels ("Settings for new videos" / "Settings for
+   'clip.mov'" / "Settings for 3 selected videos", main.py's
+   _update_settings_scope_label) -- tells the user whether they're
+   editing defaults for new videos or an already-queued selection, real
+   information, not decoration. Plain $TEXT_SECONDARY, not the dynamic
+   palette-driven _fuzzy_text_color these used to share with the queue's
+   empty-state hint text -- reported live as reading almost invisible on
+   a real desktop session where QPalette.PlaceholderText renders
+   translucent. objectName, not a Python-side setStyleSheet call (see
+   ui_builder.py) -- this app's own theme-token substitution already
+   reruns on every theme change, so no separate refresh call is needed
+   the way the dynamic version required. */
+QLabel#scopeLabel {
+    font-size: 9pt;
+    color: $TEXT_SECONDARY;
+}
+
+/* Quality/speed/audio-bitrate tier captions ("Balanced", "Streaming --
+   efficient") -- see TEXT_CAPTION's own comment in themes.py for why
+   these get their own token instead of either scopeLabel's full
+   $TEXT_SECONDARY or the queue's genuinely-fuzzy empty-state hint. */
+QLabel#captionLabel {
+    font-size: 9pt;
+    color: $TEXT_CAPTION;
+}
+
 QSlider {
     min-height: 26px;
 }

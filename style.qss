@@ -265,6 +265,17 @@ QToolButton:disabled {
     color: $TEXT_DISABLED;
 }
 
+/* The generic QToolButton padding above (6px 10px) is sized for a
+   text+icon tool button -- on this fixed 32px icon-only button it left
+   almost no room for the icon itself, which rendered visibly smaller
+   than its own setIconSize (confirmed by grabbing the button alone).
+   A small, even padding instead, scoped to just this one button by
+   objectName (ui_builder.py) so the generic rule is free to stay as-is
+   for any future text-carrying QToolButton. */
+QToolButton#queueMenuButton {
+    padding: 2px;
+}
+
 /* The little dropdown-indicator arrow InstantPopup mode would otherwise
    draw next to the "⋯" glyph -- redundant on a button whose entire
    purpose is opening that same menu, and visually competed with the

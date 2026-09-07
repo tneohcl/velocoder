@@ -3956,30 +3956,32 @@ class TestLiveAppendDuringRun(unittest.TestCase):
 class TestLeftPanelFixedWidth(unittest.TestCase):
     # Regression guard for the QSplitter -> QHBoxLayout change
     # (ui_builder.py's _build_ui): the left settings panel is a deliberate
-    # design rule now (fixed 470px, right panel absorbs all resizing), not
+    # design rule now (fixed 430px, right panel absorbs all resizing), not
     # incidental sizing -- this exists so a future edit reintroducing
     # splitter-style drag/resize behavior fails a test instead of silently
-    # regressing.
-    def test_left_panel_is_fixed_at_470(self):
+    # regressing. 430, not the original 470 -- a later density pass
+    # narrowed it once the panel's own internal padding/spacing shrank
+    # enough that the controls no longer needed the extra room.
+    def test_left_panel_is_fixed_at_430(self):
         window = main.MainWindow()
         left = window.findChild(QWidget, "leftPanel")
         self.assertIsNotNone(left)
-        self.assertEqual(left.minimumWidth(), 470)
-        self.assertEqual(left.maximumWidth(), 470)
+        self.assertEqual(left.minimumWidth(), 430)
+        self.assertEqual(left.maximumWidth(), 430)
 
     def test_widening_the_window_does_not_change_left_panel_width(self):
         window = main.MainWindow()
         window.show()
         left = window.findChild(QWidget, "leftPanel")
         window.resize(1800, 820)
-        self.assertEqual(left.width(), 470)
+        self.assertEqual(left.width(), 430)
 
 
 class TestLeftPanelScrolling(unittest.TestCase):
     """The richer Video tab (Encoding/Quality/Format plus a real,
     reachable Expert section again) can genuinely exceed the window's
     default 820px height once Expert is expanded -- #leftPanel (still
-    fixed at 470px wide, see TestLeftPanelFixedWidth above) is a
+    fixed at 430px wide, see TestLeftPanelFixedWidth above) is a
     QScrollArea now, not a bare QWidget.
 
     Expanding Expert now grows the window to fit instead, when there's a
@@ -4027,7 +4029,7 @@ class TestLeftPanelScrolling(unittest.TestCase):
         # the floor read below is the real collapsed-height one, not
         # whatever this machine's real config last persisted for
         # video_expert_expanded. Asserts against left.minimumHeight()
-        # itself, not the window's starting height (1240x820, main.py's
+        # itself, not the window's starting height (1200x760, main.py's
         # own hardcoded default) -- that default is comfortably taller
         # than the actual floor, so it's the wrong thing to compare a
         # shrink-below-the-floor attempt against.
@@ -4059,7 +4061,7 @@ class TestLeftPanelScrolling(unittest.TestCase):
         self.assertGreater(left.verticalScrollBar().maximum(), 0)
 
     def test_horizontal_scrollbar_is_never_shown(self):
-        # Content is sized for exactly this fixed 470px width by design
+        # Content is sized for exactly this fixed 430px width by design
         # -- only vertical overflow (Expert expanded) is a real concern.
         window = main.MainWindow()
         window.show()
@@ -4123,9 +4125,9 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
         # visible gap of empty space below the now-short content, the
         # window having grown to fit Expert's expanded content and
         # simply stayed that size. Restores the exact *pre-expand*
-        # height (main.py's own default 820, here, since nothing resized
+        # height (main.py's own default 760, here, since nothing resized
         # it before expanding) rather than the bare collapsed floor --
-        # those happen to be different numbers (820 vs 665) whenever the
+        # those happen to be different numbers (760 vs ~586) whenever the
         # window didn't start out already at the floor, which is the
         # ordinary case. _empty_qsettings -- needs Expert to genuinely
         # start collapsed so setChecked(True) below is a real transition

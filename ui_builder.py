@@ -31,19 +31,20 @@ from queue_widget import (
 )
 from theming import _NoItemFocusRectStyle
 
-PANEL_MARGIN = 12
-PANEL_SPACING = 10
+PANEL_MARGIN = 10
+PANEL_SPACING = 8
 # Distinct from PANEL_SPACING -- that one governs the left/right panels'
 # own outer layouts (Presets group to tab widget, queue list to buttons
 # to Save-to...), unrelated spacing this constant shouldn't also change.
 # This is specifically the gap between one card (Quality/Format/Expert)
-# and the next, one tier looser than PANEL_SPACING's 10px to read as a
-# real section break rather than just another row. 18, not 20 -- reported
-# live the Normal Video page read as slightly more spacious than it
-# needed to, without wanting a real redesign; a ~10% tightening here
-# (plus form.setVerticalSpacing's own 14->12, and QGroupBox's own
-# padding-top in style.qss) was judged enough on its own.
-SECTION_SPACING = 18
+# and the next, one tier looser than PANEL_SPACING's 8px to read as a
+# real section break rather than just another row. 13, not 18 -- a
+# density pass judged the interface still read ~10-15% oversized for
+# 1080p even after the previous 20->18 tightening; the card outlines
+# (QGroupBox border) now carry part of the grouping job whitespace used
+# to carry alone, so the gap could safely shrink further without cards
+# reading as merged together.
+SECTION_SPACING = 13
 
 THEME_CHOICES = [("dark", "Dark"), ("light", "Light"), ("system", "Match System")]
 
@@ -63,13 +64,14 @@ class _UiBuilderMixin:
         # silently restored on every future launch. This panel isn't a
         # sidebar with variable-width content the way a file browser's is
         # -- it's a settings inspector with deliberately fixed-width
-        # controls, so the left panel is now genuinely fixed (470px,
-        # matching the splitter's own original default split against this
-        # window's default resize(1240, 820) in main.py -- the interface
-        # has effectively been designed around that width throughout every
-        # iteration since) and 100% of window resizing goes to Videos,
-        # where extra width actually does something useful (longer
-        # filenames, longer Save-to paths, more queue-row breathing room).
+        # controls, so the left panel is now genuinely fixed (430px, a
+        # density-pass tightening from the original 470 -- narrowed once
+        # the panel's own internal padding/spacing shrank enough that the
+        # controls no longer needed the extra room, matching main.py's
+        # smaller default resize(1200, 760)) and 100% of window resizing
+        # goes to Videos, where extra width actually does something useful
+        # (longer filenames, longer Save-to paths, more queue-row breathing
+        # room).
         central = QWidget()
         self.setCentralWidget(central)
         layout = QHBoxLayout(central)
@@ -77,7 +79,7 @@ class _UiBuilderMixin:
         layout.setSpacing(0)
 
         left = self._build_left_panel()
-        left.setFixedWidth(470)
+        left.setFixedWidth(430)
         left.setObjectName("leftPanel")
         layout.addWidget(left)
         layout.addWidget(self._build_right_panel(), 1)
@@ -122,7 +124,7 @@ class _UiBuilderMixin:
         # Qt's own default) once it genuinely can't fit, rather than
         # letting Expert's bottom rows get compressed/clipped or forcing
         # the whole window taller just to accommodate its one tallest
-        # possible state. setFixedWidth(470) (in _build_ui) still applies
+        # possible state. setFixedWidth(430) (in _build_ui) still applies
         # to this outer scroll area, so the fixed-width contract is
         # unaffected -- only vertical overflow ever scrolls.
         content = QWidget()
@@ -190,7 +192,7 @@ class _UiBuilderMixin:
         # #leftPanel's QSS border-right (style.qss), doubling up as two
         # visibly different border treatments on the same edge.
         scroll.setFrameShape(QFrame.NoFrame)
-        # Never horizontal -- content already fits the fixed 470px width
+        # Never horizontal -- content already fits the fixed 430px width
         # by design (every row/card in it is sized for exactly this
         # panel); only vertical overflow (Expert expanded) is the real
         # concern here.
@@ -339,7 +341,7 @@ class _UiBuilderMixin:
         controls exactly like every other Normal control here."""
         group = QGroupBox("Encoding")
         form = QFormLayout(group)
-        form.setVerticalSpacing(12)
+        form.setVerticalSpacing(8)
 
         processing_row = QHBoxLayout()
         processing_row.setSpacing(6)
@@ -454,7 +456,7 @@ class _UiBuilderMixin:
         tiers, and stays duplicated in Expert for that reason."""
         group = QGroupBox("Quality")
         self.quality_form = form = QFormLayout(group)
-        form.setVerticalSpacing(12)
+        form.setVerticalSpacing(8)
 
         mode_row = QHBoxLayout()
         mode_row.setSpacing(0)
@@ -579,7 +581,7 @@ class _UiBuilderMixin:
         it."""
         group = QGroupBox("Format")
         form = QFormLayout(group)
-        form.setVerticalSpacing(12)
+        form.setVerticalSpacing(8)
 
         self.res_combo = QComboBox()
         for r in RESOLUTIONS:
@@ -672,7 +674,7 @@ class _UiBuilderMixin:
         # Default Fusion spacing reads as cramped once every row has a small
         # secondary line under it (quality/speed tiers, the bit-depth combo's
         # own description) -- confirmed by screenshot, this is the fix.
-        form.setVerticalSpacing(12)
+        form.setVerticalSpacing(8)
 
         # encoder_combo, not shown as its own row anymore -- Processing
         # (Encoding group, above) is now the only user-facing entry point
@@ -916,7 +918,7 @@ class _UiBuilderMixin:
         # track mapping, loudness normalization, ...).
         normal_group = QGroupBox("Audio")
         normal_form = QFormLayout(normal_group)
-        normal_form.setVerticalSpacing(12)
+        normal_form.setVerticalSpacing(8)
 
         self.audio_combo = QComboBox()
         self.audio_combo.addItems(AUDIO_TRACK_LABELS)
@@ -1262,7 +1264,7 @@ class _UiBuilderMixin:
         self.start_btn = QPushButton("Convert")
         self.start_btn.setObjectName("startButton")
         self.start_btn.setDefault(True)
-        self.start_btn.setMinimumHeight(36)
+        self.start_btn.setMinimumHeight(34)
         # A capped max width, not just a stretch ratio -- 3:1 alone still
         # let the primary action grow to whatever width a wide window
         # happened to give this row, reported live as reading as an
@@ -1274,7 +1276,7 @@ class _UiBuilderMixin:
         self.start_btn.setMaximumWidth(280)
         self.start_btn.clicked.connect(self._start)
         self.stop_btn = QPushButton("Stop")
-        self.stop_btn.setMinimumHeight(36)
+        self.stop_btn.setMinimumHeight(34)
         self.stop_btn.setMaximumWidth(110)
         self.stop_btn.clicked.connect(self._stop)
         self.stop_btn.setEnabled(False)
@@ -1287,7 +1289,7 @@ class _UiBuilderMixin:
         # destructive override is gone -- QSS properties merge, not reset,
         # so this needed no replacement rule, just deleting the old one.
         self.open_folder_btn = QPushButton("Open Folder")
-        self.open_folder_btn.setMinimumHeight(36)
+        self.open_folder_btn.setMinimumHeight(34)
         self.open_folder_btn.clicked.connect(self._open_output_dir)
         # Right-anchored, Convert rightmost -- the leading stretch absorbs
         # all the extra width instead of the buttons (both already capped

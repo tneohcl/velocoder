@@ -17,7 +17,7 @@ import help_content  # noqa: E402
 class TestLoadTopics(unittest.TestCase):
     def test_loads_the_real_shipped_content(self):
         topics = help_content.load_topics()
-        self.assertEqual(len(topics), 30)
+        self.assertEqual(len(topics), 31)
         ids = [t.id for t in topics]
         self.assertEqual(len(ids), len(set(ids)), "topic ids must be unique")
 
@@ -77,12 +77,16 @@ class TestSearchTopics(unittest.TestCase):
             "quality": "choosing-quality",
             "smaller file": "choosing-quality",
             "audio": "audio-handling",
-            "hardware": "choosing-quality",
             "failed": "video-wont-convert",
             "h264": "codec",
             "h265": "codec",
             "size": "target-file-size",
             "stereo": "channels",
+            "cpu": "processing",
+            "automatic": "processing",
+            "intel": "processing",
+            "amd": "processing",
+            "processing": "processing",
         }
         for query, expected_id in expected_hit.items():
             hits = help_content.search_topics(self.topics, query)
@@ -90,6 +94,41 @@ class TestSearchTopics(unittest.TestCase):
                 expected_id, [t.id for t in hits],
                 f"query {query!r} should find topic {expected_id!r}, got {[t.id for t in hits]}",
             )
+
+    def test_hardware_strongly_ranks_processing_not_just_incidentally_finds_it(self):
+        # Previously this only worked because choosing-quality happened
+        # to mention "hardware" in passing -- now Processing (Video
+        # category, dedicated topic) is the actual home for this query,
+        # and must rank first, not just appear somewhere in the results.
+        hits = help_content.search_topics(self.topics, "hardware")
+        self.assertTrue(hits)
+        self.assertEqual(hits[0].id, "processing")
+
+    def test_processing_topic_exists_in_the_video_category(self):
+        topics = help_content.load_topics()
+        processing = next((t for t in topics if t.id == "processing"), None)
+        self.assertIsNotNone(processing)
+        self.assertEqual(processing.category, "Video")
+        self.assertEqual(processing.title, "Processing")
+
+    def test_processing_topic_avoids_low_level_implementation_terms(self):
+        # The Help system describes what the user needs to know, not
+        # backend architecture -- VAAPI/render nodes/PCI IDs belong in
+        # code comments, never in a help article a non-technical user
+        # might actually read.
+        processing = next(t for t in help_content.load_topics() if t.id == "processing")
+        lowered = processing.body.lower()
+        for forbidden in ("vaapi", "render node", "pci id", "drm"):
+            self.assertNotIn(forbidden, lowered)
+
+    def test_codec_help_no_longer_names_a_specific_backend_limitation(self):
+        # Reported live: the old wording ("Intel and AMD hardware
+        # encoding here always produces H.265") was tied to today's
+        # specific backend implementation and would go stale the moment
+        # that changes (e.g. a future h264_vaapi). The replacement talks
+        # about what VeloCoder offers, not which vendor does what.
+        codec = next(t for t in help_content.load_topics() if t.id == "codec")
+        self.assertNotIn("Intel and AMD hardware encoding", codec.body)
 
 
 class TestRenderMarkdownSubset(unittest.TestCase):

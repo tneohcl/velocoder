@@ -202,7 +202,7 @@ tests/                unittest suite: test_worker.py, test_presets.py
                       formatting.py/help_window.py/about_dialogs.py's own
                       menu wiring all get exercised through it, via the
                       one real MainWindow instance, rather than one test
-                      file each). ~515 tests total.
+                      file each). ~530 tests total.
 ```
 
 The GUI is a fixed-width (456px) settings inspector on the left, wrapped
@@ -703,6 +703,8 @@ notice on top of it.
 
 ## Help & About
 
+<img src="screenshots/help_dark.png" alt="Help window" width="380"> <img src="screenshots/about_dark.png" alt="About VeloCoder" width="220"> <img src="screenshots/system_information_dark.png" alt="System Information" width="220">
+
 Reachable from the **⋯** menu (**Help**, **About VeloCoder**) or F1
 (Help specifically) — no menu bar, no permanent **?** buttons next to
 controls, nothing added to the main window itself.
@@ -721,13 +723,20 @@ controls, nothing added to the main window itself.
   baked in at render time, explicitly re-rendered on a theme change
   (`refresh_theme()`) since reloading the stylesheet alone doesn't
   retroactively touch already-set HTML content.
-- Content lives in `help/index.json` (six categories, thirty topics,
-  each with search keywords) + one `help/<id>.md` file per topic, loaded
-  and searched by `help_content.py` — no Qt there at all, and no
-  third-party markdown dependency (a small hand-rolled subset: headings,
-  paragraphs, bullet lists, `**bold**`, exactly what these articles
-  actually use). Search matches title, keywords, then body text, in
-  that priority order.
+- Content lives in `help/index.json` (six categories, thirty-one
+  topics, each with search keywords) + one `help/<id>.md` file per
+  topic, loaded and searched by `help_content.py` — no Qt there at
+  all, and no third-party markdown dependency (a small hand-rolled
+  subset: headings, paragraphs, bullet lists, `**bold**`, exactly what
+  these articles actually use). Search matches title, keywords, then
+  body text, in that priority order. Typing a search always keeps the
+  article pane synchronized with the tree: the current topic stays
+  selected if it's still a match, otherwise the first match is shown
+  automatically, and a query with no matches shows a clean "No Help
+  topics found" message rather than leaving whatever was on screen
+  before. Clearing the search restores the full tree and the topic
+  that was showing (or the Welcome topic, if the last thing on screen
+  was that no-results message).
 - Every article is short, plain-language, and consequence-first (what
   choosing an option actually does to your file, not how the encoder
   implements it) — Expert has its own category for the small minority

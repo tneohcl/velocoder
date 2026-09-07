@@ -18,8 +18,10 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QIcon  # noqa: E402
 from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
 
@@ -139,6 +141,34 @@ class TestAboutDialog(unittest.TestCase):
             btn = next(b for b in dialog.findChildren(QPushButton) if b.text() == "Licenses…")
             btn.click()
         mock_cls.return_value.exec.assert_called_once()
+
+    def test_escape_closes_the_dialog(self):
+        # QDialog's own default keyPressEvent handles this (reject() on
+        # Escape) -- nothing in AboutDialog overrides it, so this locks
+        # the behavior in rather than trusting it stays that way by
+        # accident through a future change.
+        dialog = about_dialogs.AboutDialog(
+            None, QIcon(), [ProcessingBackend("cpu", "CPU")], "Dark", "7.0",
+        )
+        dialog.show()
+        QTest.keyClick(dialog, Qt.Key_Escape)
+        self.assertFalse(dialog.isVisible())
+
+
+class TestEscapeClosesChildDialogs(unittest.TestCase):
+    def test_escape_closes_system_info_dialog(self):
+        dialog = about_dialogs.SystemInfoDialog(
+            None, [ProcessingBackend("cpu", "CPU")], "Dark", "7.0",
+        )
+        dialog.show()
+        QTest.keyClick(dialog, Qt.Key_Escape)
+        self.assertFalse(dialog.isVisible())
+
+    def test_escape_closes_licenses_dialog(self):
+        dialog = about_dialogs.LicensesDialog(None)
+        dialog.show()
+        QTest.keyClick(dialog, Qt.Key_Escape)
+        self.assertFalse(dialog.isVisible())
 
 
 if __name__ == "__main__":

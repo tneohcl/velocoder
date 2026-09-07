@@ -6,7 +6,7 @@ The Quality row gives you three plain choices:
 - **Balanced** -- a sensible default for most videos.
 - **Better Quality** -- closer to the original, at a larger file size.
 
-![The Quality and Format groups on the Video tab](video-settings.png)
+![The Encoding, Quality, and Format groups on the Video tab](video-settings.png)
 
 > **Recommended**
 > Balanced works well for most videos -- reach for Smaller File or Better Quality only once you know you want the tradeoff.

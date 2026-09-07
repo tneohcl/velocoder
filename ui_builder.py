@@ -1170,7 +1170,11 @@ class _UiBuilderMixin:
         # driven appearance, it does not react to _load_stylesheet on its
         # own.
         self.queue_menu_btn.setIcon(self._themed_icon("more"))
-        self.queue_menu_btn.setIconSize(QSize(16, 16))
+        # 18px, not 16 -- reported live against a real 1186x720
+        # screenshot: at 16px the three dots nearly disappeared, reading
+        # as a stray status indicator rather than a deliberate control.
+        # The 32px clickable area (button, not icon) stays unchanged.
+        self.queue_menu_btn.setIconSize(QSize(18, 18))
         self.queue_menu_btn.setFixedSize(32, 32)
         # "More actions", not "More queue actions" -- half of what's in
         # here (Show Conversion Log, Copy FFmpeg Command, Settings…)

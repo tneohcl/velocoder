@@ -734,6 +734,35 @@ QTreeWidget::item:hover:!selected {
     background-color: $HOVER_BG;
 }
 
+/* Help's own topic sidebar (help_window.py) -- more specific than the
+   plain QTreeWidget::item rule above, so this can drop what that rule
+   forces on every tree (queue_list included, unaffected by this).
+   Reported live: a border under every single topic made the sidebar
+   read like a property/table widget, not a Help navigation pane -- the
+   category headings' own extra top padding (setSizeHint, help_window.py)
+   already carries the section-break job whitespace/lines used to.
+   Deliberately no :selected/:hover background rules here at all --
+   border-radius on this native subcontrol silently loses to Fusion's
+   own flat-cornered selection painting (confirmed via pixel scan, not
+   just assumed), so _RoundedSelectionDelegate (help_window.py) paints
+   selection/hover entirely itself instead. A QSS background rule here
+   would just be a second, square-cornered paint underneath that one. */
+QTreeWidget#helpTopicTree::item {
+    border-bottom: none;
+}
+
+/* QTreeView::drawBranches() paints this indent/decoration gutter
+   separately from itemDelegate()->paint() -- confirmed live: with no
+   rule here, a selected row showed a second, square-cornered
+   highlight box in the gutter, on top of _RoundedSelectionDelegate's
+   own rounded fill (which already extends into this exact region).
+   Blanking it lets the delegate's paint be the only thing visible
+   there. */
+QTreeWidget#helpTopicTree::branch {
+    background: transparent;
+    border: none;
+}
+
 QTreeWidget::branch {
     border: none;
 }

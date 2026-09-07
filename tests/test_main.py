@@ -34,6 +34,7 @@ from PySide6.QtTest import QTest  # noqa: E402
 _app = QApplication.instance() or QApplication([])
 
 import formatting  # noqa: E402
+import help_window  # noqa: E402
 import main  # noqa: E402
 import presets  # noqa: E402
 import queue_controller  # noqa: E402
@@ -5264,6 +5265,55 @@ class TestHelpWindow(unittest.TestCase):
             window._help_window.close()
         mock_set.assert_called_once()
         self.assertEqual(mock_set.call_args[0][0], "help_window_geometry")
+
+    def test_topic_tree_has_zero_indentation(self):
+        # Regression guard: nonzero indentation makes Qt paint its own
+        # accent-colored current-item indicator inside the reserved
+        # column, a native artifact _RoundedSelectionDelegate cannot
+        # suppress (see that class's own docstring for the full
+        # investigation) -- confirmed the only real fix is removing the
+        # column outright.
+        window = main.MainWindow()
+        window._show_help_window()
+        self.assertEqual(window._help_window.topic_tree.indentation(), 0)
+
+    def test_topic_tree_uses_the_rounded_selection_delegate(self):
+        window = main.MainWindow()
+        window._show_help_window()
+        delegate = window._help_window.topic_tree.itemDelegate()
+        self.assertIsInstance(delegate, help_window._RoundedSelectionDelegate)
+
+    def test_category_headings_display_uppercase(self):
+        window = main.MainWindow()
+        window._show_help_window()
+        tree = window._help_window.topic_tree
+        category_item = tree.topLevelItem(0)
+        self.assertEqual(category_item.text(0), category_item.text(0).upper())
+        # topic.category itself (grouping/lookup) is untouched -- only
+        # the display text is uppercased.
+        self.assertNotEqual(category_item.text(0), "")
+
+    def test_category_headings_are_not_selectable(self):
+        window = main.MainWindow()
+        window._show_help_window()
+        category_item = window._help_window.topic_tree.topLevelItem(0)
+        self.assertFalse(category_item.flags() & Qt.ItemIsSelectable)
+
+    def test_article_image_picks_the_dark_variant_in_dark_theme(self):
+        window = main.MainWindow()
+        window._show_help_window()
+        window._apply_theme("dark")
+        window._help_window._select_topic("welcome")
+        html = window._help_window.article_view.toHtml()
+        self.assertIn("quick-start-dark.png", html)
+
+    def test_article_image_picks_the_light_variant_in_light_theme(self):
+        window = main.MainWindow()
+        window._show_help_window()
+        window._apply_theme("light")
+        window._help_window._select_topic("welcome")
+        html = window._help_window.article_view.toHtml()
+        self.assertIn("quick-start-light.png", html)
 
 
 if __name__ == "__main__":

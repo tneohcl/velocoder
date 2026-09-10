@@ -512,7 +512,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # so there's no caching benefit and a real cost to it (stale
         # System Information until the next full restart).
         AboutDialog(
-            self, self._themed_icon("video"), self._available_backends,
+            self, _app_icon(), self._available_backends,
             _resolve_theme(self._theme_choice).capitalize(), worker.ffmpeg_version(),
         ).exec()
 
@@ -1538,6 +1538,18 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._update_command_preview()
 
 
+def _app_icon() -> QIcon:
+    # VeloCoder's own icon (assets/app_icon.svg) -- a fixed, full-color
+    # brand mark, not part of the light/dark themed icon family
+    # _themed_icon draws from, so it's loaded directly rather than going
+    # through that helper. Used both for the application's own window/
+    # taskbar icon (main(), below) and for About's icon_label, which
+    # used to fall back to the generic video/play glyph
+    # (_themed_icon("video")) as a placeholder until a real app icon
+    # existed.
+    return QIcon(str(Path(__file__).parent / "assets" / "app_icon.svg"))
+
+
 def main():
     app = QApplication(sys.argv)
     # Needed for QStandardPaths.AppDataLocation (session.py's
@@ -1550,6 +1562,11 @@ def main():
     # for why.
     app.setOrganizationName(APP_NAME)
     app.setApplicationName(APP_NAME)
+    # The default icon for every top-level window that doesn't set its
+    # own (MainWindow, HelpWindow, every dialog) -- also what the
+    # taskbar/alt-tab/window-switcher actually show, since those read
+    # this rather than any one window's icon specifically.
+    app.setWindowIcon(_app_icon())
     # Fusion is the style QSS was written against -- native styles (Breeze,
     # Windows) silently ignore some of the subcontrols the theme relies on,
     # e.g. the slider groove/handle and the combobox popup background.

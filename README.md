@@ -781,7 +781,14 @@ controls, nothing added to the main window itself.
 - **About VeloCoder** (`about_dialogs.py`'s `AboutDialog`) is a small,
   fixed-size modal: icon, name, version (from the one canonical
   `constants.APP_VERSION`), tagline, an FFmpeg credit, and a copyright
-  line. Two buttons open further modals from there: **System
+  line. The icon (`main.py`'s `_app_icon()`, reading `assets/app_icon.svg`)
+  is VeloCoder's own real app icon, not part of the light/dark themed
+  icon family the rest of the UI draws from — a fixed, full-color mark
+  that replaced an earlier generic play-glyph placeholder. The same
+  icon is set as `QApplication`'s own `setWindowIcon()` (`main()`), so
+  it's also what the taskbar/alt-tab/window switcher show for every
+  VeloCoder window, not just About's. Two buttons open further modals
+  from there: **System
   Information…** (version/platform/FFmpeg version/the same cached
   hardware-backend snapshot Processing's own buttons use/current
   resolved theme name, with a **Copy** button — built only from app

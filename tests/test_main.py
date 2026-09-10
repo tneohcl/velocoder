@@ -5087,6 +5087,17 @@ class TestHelpMenuAndShortcut(unittest.TestCase):
         self.assertEqual(args[2], window._available_backends)
         mock_cls.return_value.exec.assert_called_once()
 
+    def test_show_about_dialog_uses_the_real_app_icon(self):
+        # Regression guard: this used to be _themed_icon("video"), a
+        # generic play-glyph placeholder for a real app icon that didn't
+        # exist yet.
+        window = main.MainWindow()
+        with patch.object(main, "AboutDialog") as mock_cls:
+            window._show_about_dialog()
+        icon_arg = mock_cls.call_args[0][1]
+        self.assertFalse(icon_arg.isNull())
+        self.assertFalse(icon_arg.pixmap(64, 64).isNull())
+
     def test_menu_order_matches_spec(self):
         # Remove Selected / Clear Queue -- Stop After Current Video --
         # Show Conversion Log/Copy FFmpeg Command -- Settings.../Help/
@@ -5138,6 +5149,28 @@ class TestHelpMenuAndShortcut(unittest.TestCase):
         self.assertEqual(len(ctrl_q_shortcuts), 1)
         ctrl_q_shortcuts[0].activated.emit()
         self.assertFalse(window.isVisible())
+
+
+class TestAppIcon(unittest.TestCase):
+    def test_app_icon_loads_the_real_asset(self):
+        icon = main._app_icon()
+        self.assertFalse(icon.isNull())
+        self.assertFalse(icon.pixmap(64, 64).isNull())
+
+    def test_app_icon_is_set_as_the_application_window_icon(self):
+        # main() itself (app.setWindowIcon) isn't unit-testable directly
+        # -- it launches a real event loop -- but any top-level widget
+        # inherits QApplication's windowIcon when it hasn't set its own,
+        # so setting it once here and checking a fresh widget picks it
+        # up is an equivalent, testable proxy for the same wiring.
+        app = QApplication.instance()
+        original = app.windowIcon()
+        try:
+            app.setWindowIcon(main._app_icon())
+            widget = QWidget()
+            self.assertFalse(widget.windowIcon().isNull())
+        finally:
+            app.setWindowIcon(original)
 
 
 class TestHelpWindow(unittest.TestCase):

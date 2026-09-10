@@ -1,0 +1,30 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#171B22"/>
+      <stop offset="100%" stop-color="#232B38"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="46%" r="55%">
+      <stop offset="0%" stop-color="#3B4657" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#3B4657" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="0" y="0" width="512" height="512" rx="115" ry="115" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="195" fill="url(#glow)"/>
+
+  <!-- single bold wheel ring -->
+  <circle cx="256" cy="256" r="175" fill="none" stroke="#F1F5F9" stroke-width="28"/>
+
+  <!-- spokes -->
+  <line x1="321.00" y1="256.00" x2="419.00" y2="256.00" stroke="#F1F5F9" stroke-width="16" stroke-linecap="round"/>
+  <line x1="288.50" y1="312.29" x2="337.50" y2="397.16" stroke="#F1F5F9" stroke-width="16" stroke-linecap="round"/>
+  <line x1="223.50" y1="312.29" x2="174.50" y2="397.16" stroke="#F1F5F9" stroke-width="16" stroke-linecap="round"/>
+  <line x1="191.00" y1="256.00" x2="93.00" y2="256.00" stroke="#F1F5F9" stroke-width="16" stroke-linecap="round"/>
+  <line x1="223.50" y1="199.71" x2="174.50" y2="114.84" stroke="#F1F5F9" stroke-width="16" stroke-linecap="round"/>
+  <line x1="288.50" y1="199.71" x2="337.50" y2="114.84" stroke="#F1F5F9" stroke-width="16" stroke-linecap="round"/>
+
+  <!-- hub: solid accent color, doubles as the play/encode glyph -->
+  <circle cx="256" cy="256" r="72" fill="#FF6B4A"/>
+  <path d="M 232 216 L 232 296 L 296 256 Z" fill="#171B22"/>
+</svg>

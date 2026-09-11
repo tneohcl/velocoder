@@ -5299,6 +5299,18 @@ class TestHelpWindow(unittest.TestCase):
         mock_set.assert_called_once()
         self.assertEqual(mock_set.call_args[0][0], "help_window_geometry")
 
+    def test_first_ever_open_defaults_to_900x620(self):
+        # Regression guard: this used to default to 760x520, noticeably
+        # smaller than the size the Help-visual-upgrade pass's own
+        # screenshots were actually reviewed and approved at -- a
+        # first-time user opening Help never saw the layout that was
+        # visually signed off on. Only the very first open (no saved
+        # help_window_geometry yet) is affected; every later one goes
+        # through restoreGeometry instead.
+        window = main.MainWindow()
+        window._show_help_window()
+        self.assertEqual(window._help_window.size(), QSize(900, 620))
+
     def test_topic_tree_has_zero_indentation(self):
         # Regression guard: nonzero indentation makes Qt paint its own
         # accent-colored current-item indicator inside the reserved

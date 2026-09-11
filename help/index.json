@@ -202,7 +202,7 @@
         },
         {
           "id": "settings-for-new-and-selected-videos",
-          "title": "Settings for New and Selected Videos",
+          "title": "New vs. Selected Settings",
           "keywords": [
             "settings for new videos",
             "settings for selected",
@@ -223,7 +223,7 @@
         },
         {
           "id": "continue-where-you-left-off",
-          "title": "Continue Where You Left Off",
+          "title": "Restore Previous Session",
           "keywords": [
             "restore",
             "session",

@@ -383,7 +383,13 @@ class HelpWindow(QWidget):
         if geometry is not None:
             self.restoreGeometry(geometry)
         else:
-            self.resize(760, 520)
+            # 900x620, not the smaller 760x520 this used to default to --
+            # that's literally the size the Help-visual-upgrade pass's
+            # own screenshots were reviewed and approved at (illustrated
+            # articles read noticeably tighter below it). Only affects a
+            # first-ever open; restoreGeometry above takes over for
+            # every later one.
+            self.resize(900, 620)
 
     def closeEvent(self, event):
         self._qsettings.setValue("help_window_geometry", self.saveGeometry())

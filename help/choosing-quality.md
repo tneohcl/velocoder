@@ -10,5 +10,3 @@ The Quality row gives you three plain choices:
 
 > **Recommended**
 > Balanced works well for most videos -- reach for Smaller File or Better Quality only once you know you want the tradeoff.
-
-These three map to different exact numbers depending on which hardware is actually doing the work -- Processing above (Automatic/CPU/Intel/AMD) picks that, and you never need to know the underlying number unless you open Expert.

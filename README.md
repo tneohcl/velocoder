@@ -1,3 +1,5 @@
+<img src="assets/app_icon.svg" width="96" alt="VeloCoder icon">
+
 # VeloCoder
 
 A focused desktop video transcoder built with PySide6 and ffmpeg --

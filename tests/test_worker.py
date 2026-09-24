@@ -29,6 +29,28 @@ from PySide6.QtCore import QCoreApplication, QEventLoop, QProcess, QTimer  # noq
 # loop -- QCoreApplication (no GUI needed here, unlike main.py's tests).
 _app = QCoreApplication.instance() or QCoreApplication([])
 
+# Captured before setUpModule's stub replaces it, for the tests that
+# exercise the real validation encode itself.
+_real_validate_hevc_encode = worker.validate_hevc_encode
+_module_patches = []
+
+
+def setUpModule():
+    # Detection tests below pick which GPUs exist by faking
+    # find_render_node with made-up render node paths -- the real one-
+    # frame validation encode on top of that would just fail and hide
+    # every faked GPU. Default to "the driver works"; tests that care
+    # about a failing driver override this locally.
+    _module_patches.append(patch.object(worker, "validate_hevc_encode", return_value=None))
+    for p in _module_patches:
+        p.start()
+
+
+def tearDownModule():
+    for p in _module_patches:
+        p.stop()
+    _module_patches.clear()
+
 HAS_VAAPI = Path("/dev/dri/by-path").exists()
 
 
@@ -1788,6 +1810,131 @@ class TestBestAvailableEngineReusesDetection(unittest.TestCase):
             side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID),
         ):
             self.assertEqual(worker.best_available_engine(), ("hevc_vaapi", "intel"))
+
+
+def _validate_failing_for(*broken_vendors: str):
+    """A validate_hevc_encode stand-in whose encode "fails" for the given
+    vendor names ("intel"/"amd") and succeeds for everything else."""
+    def _fake(render_node, vendor):
+        return "driver can't encode" if vendor in broken_vendors else None
+    return _fake
+
+
+class TestDetectHardwareValidation(unittest.TestCase):
+    """A render node only proves the kernel sees the card -- detection
+    also runs a real validation encode, and a GPU that fails it must
+    never be offered (nor picked by Automatic), only reported."""
+
+    def _detect(self, present, broken):
+        with patch.object(worker, "find_render_node", side_effect=_find_render_node_for(*present)), \
+             patch.object(worker, "validate_hevc_encode", side_effect=_validate_failing_for(*broken)):
+            return worker.detect_hardware()
+
+    def test_broken_intel_is_reported_not_offered(self):
+        backends, unusable = self._detect(
+            (worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID), ("intel",),
+        )
+        self.assertEqual([b.id for b in backends], ["cpu", "amd"])
+        self.assertEqual([(g.id, g.display_name, g.reason) for g in unusable],
+                         [("intel", "Intel", "driver can't encode")])
+
+    def test_automatic_skips_a_broken_intel_for_a_working_amd(self):
+        backends, _unusable = self._detect(
+            (worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID), ("intel",),
+        )
+        self.assertEqual(worker.best_available_engine(backends), ("hevc_vaapi", "amd"))
+
+    def test_every_gpu_broken_falls_back_to_cpu(self):
+        backends, unusable = self._detect(
+            (worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID), ("intel", "amd"),
+        )
+        self.assertEqual([b.id for b in backends], ["cpu"])
+        self.assertEqual([g.id for g in unusable], ["intel", "amd"])
+        self.assertEqual(worker.best_available_engine(backends), ("libx265", None))
+
+    def test_no_render_node_is_neither_offered_nor_reported(self):
+        # Nothing to validate and nothing worth telling the user about --
+        # the machine just doesn't have that vendor's GPU.
+        with patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")), \
+             patch.object(worker, "validate_hevc_encode") as mock_validate:
+            backends, unusable = worker.detect_hardware()
+        self.assertEqual([b.id for b in backends], ["cpu"])
+        self.assertEqual(unusable, [])
+        mock_validate.assert_not_called()
+
+    def test_validates_each_gpu_on_its_own_resolved_render_node(self):
+        with patch.object(
+            worker, "find_render_node",
+            side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID),
+        ), patch.object(worker, "validate_hevc_encode", return_value=None) as mock_validate:
+            worker.detect_hardware()
+        self.assertEqual(
+            [c.args for c in mock_validate.call_args_list],
+            [("/dev/dri/renderD0", "intel"), ("/dev/dri/renderD1", "amd")],
+        )
+
+    def test_detect_available_backends_is_just_the_usable_list(self):
+        with patch.object(
+            worker, "find_render_node",
+            side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID),
+        ), patch.object(worker, "validate_hevc_encode", side_effect=_validate_failing_for("amd")):
+            backends = worker.detect_available_backends()
+        self.assertEqual([b.id for b in backends], ["cpu", "intel"])
+
+
+class TestValidateHevcEncode(unittest.TestCase):
+    """The validation encode itself -- subprocess mocked except where
+    noted, so these hold on any machine regardless of its GPUs."""
+
+    def _run(self, vendor="intel", **run_result):
+        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        for key, value in run_result.items():
+            setattr(completed, key, value)
+        with patch.object(worker.subprocess, "run", return_value=completed) as mock_run:
+            error = _real_validate_hevc_encode("/dev/dri/renderD128", vendor)
+        return error, mock_run.call_args[0][0]
+
+    def test_success_is_none(self):
+        error, _args = self._run()
+        self.assertIsNone(error)
+
+    def test_failure_returns_ffmpegs_first_error_line_without_hex_addresses(self):
+        error, _args = self._run(returncode=1, stderr=(
+            "[hevc_vaapi @ 0x55b6ae65aac0] Compatible profile VAProfileHEVCMain (17) is not supported by driver.\n"
+            "[vost#0:0/hevc_vaapi @ 0x55b6ae65a480] Error while opening encoder\n"
+        ))
+        self.assertEqual(error, "[hevc_vaapi] Compatible profile VAProfileHEVCMain (17) is not supported by driver.")
+
+    def test_failure_with_no_stderr_still_explains_itself(self):
+        error, _args = self._run(returncode=187, stderr="")
+        self.assertEqual(error, "ffmpeg exited with code 187")
+
+    def test_intel_validates_with_icq_its_quality_default(self):
+        _error, args = self._run(vendor="intel")
+        self.assertIn("ICQ", args)
+        self.assertEqual(args[args.index("-vaapi_device") + 1], "/dev/dri/renderD128")
+        self.assertIn("hevc_vaapi", args)
+
+    def test_amd_validates_with_cqp_since_radeonsi_rejects_icq(self):
+        _error, args = self._run(vendor="amd")
+        self.assertIn("CQP", args)
+        self.assertNotIn("ICQ", args)
+
+    def test_missing_ffmpeg_is_an_error_not_a_crash(self):
+        with patch.object(worker.subprocess, "run", side_effect=FileNotFoundError("ffmpeg")):
+            error = _real_validate_hevc_encode("/dev/dri/renderD128", "intel")
+        self.assertIn("could not run ffmpeg", error)
+
+    def test_timeout_is_an_error_not_a_crash(self):
+        with patch.object(worker.subprocess, "run", side_effect=subprocess.TimeoutExpired("ffmpeg", 10)):
+            error = _real_validate_hevc_encode("/dev/dri/renderD128", "intel")
+        self.assertIn("timed out", error)
+
+    def test_real_ffmpeg_on_a_nonexistent_render_node_fails_cleanly(self):
+        # Real ffmpeg, no mock -- CI installs it, and a device path that
+        # can't exist fails the same way on every machine.
+        error = _real_validate_hevc_encode("/dev/dri/renderD999", "intel")
+        self.assertIsNotNone(error)
 
 
 class TestGpuVendorSelection(ClipTestCase):

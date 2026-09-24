@@ -27,7 +27,7 @@ _app = QApplication.instance() or QApplication([])
 
 import about_dialogs  # noqa: E402
 from constants import APP_NAME, APP_ORGANIZATION, APP_VERSION  # noqa: E402
-from worker import ProcessingBackend  # noqa: E402
+from worker import ProcessingBackend, UnusableGpu  # noqa: E402
 
 
 class TestSystemInfoText(unittest.TestCase):
@@ -47,6 +47,21 @@ class TestSystemInfoText(unittest.TestCase):
         self.assertIn("- CPU", text)
         self.assertIn("- Intel", text)
         self.assertIn("- AMD", text)
+
+    def test_no_unusable_gpus_means_no_unavailable_section(self):
+        text = about_dialogs.system_info_text([ProcessingBackend("cpu", "CPU")], "Dark", "7.0")
+        self.assertNotIn("Unavailable", text)
+
+    def test_unusable_gpu_is_listed_without_ffmpegs_raw_reason(self):
+        # The reason is ffmpeg's own error text and can name a device
+        # path -- debug log only, never copied System Information.
+        text = about_dialogs.system_info_text(
+            [ProcessingBackend("cpu", "CPU"), ProcessingBackend("amd", "AMD")], "Dark", "7.0",
+            [UnusableGpu("intel", "Intel", "[hevc_vaapi] profile not supported on /dev/dri/renderD128")],
+        )
+        self.assertIn("Unavailable Processing:\n- Intel (found, but its video driver can't encode)\n", text)
+        self.assertNotIn("/dev/dri", text)
+        self.assertNotIn("hevc_vaapi", text)
 
     def test_includes_app_name_version_theme_and_ffmpeg_version(self):
         text = about_dialogs.system_info_text([ProcessingBackend("cpu", "CPU")], "Light", "7.0")

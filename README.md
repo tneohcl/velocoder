@@ -292,9 +292,17 @@ same underlying value, never two independently-tracked ones.
   (software) / **Intel (iGPU)** / **AMD (GPU)** choice (the latter two
   both `hevc_vaapi`, distinguished by the `gpu_vendor` settings-dict key).
   The explicit choices are dynamic now, not a fixed list: `worker.
-  detect_available_backends()` probes `/dev/dri/by-path` once at startup,
-  and Intel/AMD only appear as buttons at all when that vendor's render
-  node actually resolved — a machine with only one GPU vendor gets a
+  detect_hardware()` probes `/dev/dri/by-path` once at startup, then runs
+  a one-frame `hevc_vaapi` validation encode (`worker.validate_hevc_encode`,
+  ~0.15s per GPU, using that vendor's own Quality rate-control mode) on
+  each render node it finds. Intel/AMD only appear as buttons at all when
+  that vendor's render node resolved *and* its validation encode worked.
+  A render node alone isn't enough: with no VAAPI driver installed, or
+  with a decode-only one (Fedora's own `libva-intel-media-driver` has no
+  encode on a UHD 630 — RPM Fusion nonfree's `intel-media-driver` does),
+  the node still exists but every hardware job would fail. A GPU that
+  fails validation is logged with ffmpeg's error to the debug log and
+  listed under "Unavailable Processing" in System Information — a machine with only one GPU vendor gets a
   two-way CPU/Intel or CPU/AMD row, and a machine with neither shows no
   Processing row at all (Automatic and a lone CPU choice would always
   mean the same thing, so there's nothing to ask). No NVIDIA option yet

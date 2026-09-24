@@ -16,15 +16,25 @@ from PySide6.QtWidgets import (
 from constants import APP_NAME, APP_ORGANIZATION, APP_VERSION
 
 
-def system_info_text(available_backends, theme_name: str, ffmpeg_version: str | None) -> str:
+def system_info_text(available_backends, theme_name: str, ffmpeg_version: str | None,
+                     unusable_gpus=()) -> str:
     """Plain text for System Information's viewer and its Copy button --
     built ONLY from the app's own version/name constants, platform.*,
-    each backend's display_name, and the resolved theme name. No file
-    path, filename, or username ever enters this function's inputs in
-    the first place, so there's nothing to filter out afterward -- the
-    "no personal data in copied System Information" requirement holds
-    by construction, not by scrubbing."""
+    each backend's (and unusable GPU's) display_name, and the resolved
+    theme name. No file path, filename, or username ever enters this
+    function's output in the first place, so there's nothing to filter
+    out afterward -- the "no personal data in copied System Information"
+    requirement holds by construction, not by scrubbing. An unusable
+    GPU's ffmpeg reason is deliberately left out for the same reason (it
+    can name a device path); it goes to the debug log instead."""
     backend_lines = "\n".join(f"- {backend.display_name}" for backend in available_backends)
+    unusable_section = ""
+    if unusable_gpus:
+        unusable_lines = "\n".join(
+            f"- {gpu.display_name} (found, but its video driver can't encode)"
+            for gpu in unusable_gpus
+        )
+        unusable_section = f"\nUnavailable Processing:\n{unusable_lines}\n"
     return (
         f"{APP_NAME} {APP_VERSION}\n"
         f"Platform: {platform.system()} {platform.machine()}\n"
@@ -32,16 +42,18 @@ def system_info_text(available_backends, theme_name: str, ffmpeg_version: str | 
         f"\n"
         f"Available Processing:\n"
         f"{backend_lines}\n"
+        f"{unusable_section}"
         f"\n"
         f"Theme: {theme_name}\n"
     )
 
 
 class SystemInfoDialog(QDialog):
-    def __init__(self, parent, available_backends, theme_name: str, ffmpeg_version: str | None):
+    def __init__(self, parent, available_backends, theme_name: str, ffmpeg_version: str | None,
+                 unusable_gpus=()):
         super().__init__(parent)
         self.setWindowTitle("System Information")
-        self._text = system_info_text(available_backends, theme_name, ffmpeg_version)
+        self._text = system_info_text(available_backends, theme_name, ffmpeg_version, unusable_gpus)
 
         text_view = QPlainTextEdit()
         text_view.setPlainText(self._text)
@@ -116,7 +128,8 @@ class LicensesDialog(QDialog):
 
 
 class AboutDialog(QDialog):
-    def __init__(self, parent, icon: QIcon, available_backends, theme_name: str, ffmpeg_version: str | None):
+    def __init__(self, parent, icon: QIcon, available_backends, theme_name: str, ffmpeg_version: str | None,
+                 unusable_gpus=()):
         super().__init__(parent)
         self.setWindowTitle(f"About {APP_NAME}")
         # Compact and fixed -- About is a small, static identity card,
@@ -151,7 +164,7 @@ class AboutDialog(QDialog):
 
         system_info_btn = QPushButton("System Information…")
         system_info_btn.clicked.connect(
-            lambda: SystemInfoDialog(self, available_backends, theme_name, ffmpeg_version).exec()
+            lambda: SystemInfoDialog(self, available_backends, theme_name, ffmpeg_version, unusable_gpus).exec()
         )
         licenses_btn = QPushButton("Licenses…")
         licenses_btn.clicked.connect(lambda: LicensesDialog(self).exec())

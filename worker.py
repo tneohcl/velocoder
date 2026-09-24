@@ -53,33 +53,105 @@ def find_render_node(vendor_id: str) -> str:
 
 @dataclass(frozen=True)
 class ProcessingBackend:
-    """One real, verified-present Processing choice. "Verified" here means
-    only what find_render_node already means -- a DRM render node exists
-    for that PCI vendor -- not a real validation encode; see this
-    fork's hardware-detection proposal for the (currently deferred) real-
-    encode validation stage."""
+    """One real, verified-usable Processing choice. For a GPU, "verified"
+    means both a DRM render node exists for that PCI vendor and a tiny
+    real hevc_vaapi encode on it succeeded (validate_hevc_encode) -- a
+    render node alone only proves the kernel sees the card, not that a
+    VAAPI driver capable of encoding is installed for it."""
     id: str
     display_name: str
 
 
-def detect_available_backends() -> list[ProcessingBackend]:
-    """Every Processing choice actually usable on this machine, CPU first
-    then whichever GPU vendors resolve a real render node -- CPU/Intel/AMD
-    order matches the segmented row's own longstanding left-to-right
-    layout (ui_builder.py), not a hardware-preference ranking. CPU is
+@dataclass(frozen=True)
+class UnusableGpu:
+    """A GPU whose render node exists but whose validation encode failed
+    -- kept separate from ProcessingBackend so nothing that builds
+    Processing choices from the backend list can offer it by mistake.
+    reason is ffmpeg's own error line, for the debug log only."""
+    id: str
+    display_name: str
+    reason: str
+
+
+# Each vendor's validation encode uses the rate-control mode its Quality
+# default actually runs with (constants.RC_MODE_FRIENDLY's "quality"), so
+# a driver that can encode HEVC but rejects that mode still gets caught
+# here rather than on the user's first real job.
+_VALIDATION_RC_ARGS = {
+    "intel": ["-rc_mode", "ICQ", "-global_quality", "26"],
+    "amd": ["-rc_mode", "CQP", "-qp", "26"],
+}
+_VALIDATION_TIMEOUT_SECONDS = 10
+
+
+def validate_hevc_encode(render_node: str, vendor: str) -> str | None:
+    """Run a one-frame hevc_vaapi encode on render_node. None means it
+    worked; otherwise ffmpeg's first error line (hex addresses stripped).
+
+    Confirmed necessary on real hardware: Fedora's own intel-media-driver
+    build (free kernels only) loads fine on a UHD 630 but has no encode
+    entrypoints at all ("Compatible profile VAProfileHEVCMain (17) is not
+    supported by driver"), and with no VAAPI driver installed the render
+    nodes still exist -- both cases a render-node-only check reported as
+    available. ~0.15s per GPU."""
+    args = [
+        "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error",
+        "-vaapi_device", render_node,
+        "-f", "lavfi", "-i", "testsrc2=s=256x144:d=1", "-frames:v", "1",
+        "-vf", "format=nv12,hwupload", "-c:v", "hevc_vaapi",
+        *_VALIDATION_RC_ARGS[vendor],
+        "-f", "null", "-",
+    ]
+    try:
+        result = subprocess.run(
+            args, capture_output=True, text=True, timeout=_VALIDATION_TIMEOUT_SECONDS,
+        )
+    except OSError as e:
+        return f"could not run ffmpeg: {e}"
+    except subprocess.TimeoutExpired:
+        return f"validation encode timed out after {_VALIDATION_TIMEOUT_SECONDS}s"
+    if result.returncode == 0:
+        return None
+    lines = [ln.strip() for ln in result.stderr.splitlines() if ln.strip()]
+    first = lines[0] if lines else f"ffmpeg exited with code {result.returncode}"
+    return re.sub(r" @ 0x[0-9a-f]+", "", first)
+
+
+def detect_hardware() -> tuple[list[ProcessingBackend], list[UnusableGpu]]:
+    """Every Processing choice actually usable on this machine, plus any
+    GPU that has a render node but failed its validation encode.
+
+    Backends are CPU first, then whichever GPU vendors both resolve a
+    render node and pass validate_hevc_encode -- CPU/Intel/AMD order
+    matches the segmented row's own longstanding left-to-right layout
+    (ui_builder.py), not a hardware-preference ranking. CPU is
     unconditional: the software encoder needs no device at all. The one
     place anything picks hardware *for* the user (best_available_engine,
     below) reuses this instead of re-probing on its own, so "what Automatic
     silently resolves to" and "what Processing even offers to pick
-    manually" can never disagree."""
+    manually" can never disagree.
+
+    A GPU with no render node at all is simply absent from both lists --
+    only a present-but-broken one is worth telling the user about."""
     backends = [ProcessingBackend("cpu", "CPU")]
+    unusable = []
     for vendor, display_name in (("intel", "Intel"), ("amd", "AMD")):
         try:
-            find_render_node(GPU_VENDOR_IDS[vendor])
-            backends.append(ProcessingBackend(vendor, display_name))
+            node = find_render_node(GPU_VENDOR_IDS[vendor])
         except RuntimeError:
             continue
-    return backends
+        error = validate_hevc_encode(node, vendor)
+        if error is None:
+            backends.append(ProcessingBackend(vendor, display_name))
+        else:
+            unusable.append(UnusableGpu(vendor, display_name, error))
+    return backends, unusable
+
+
+def detect_available_backends() -> list[ProcessingBackend]:
+    """Just detect_hardware()'s usable backends, for callers that don't
+    report unusable GPUs."""
+    return detect_hardware()[0]
 
 
 def best_available_engine(backends: list[ProcessingBackend] | None = None) -> tuple[str, str | None]:

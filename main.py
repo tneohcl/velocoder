@@ -229,9 +229,14 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # life of a run of this app (no hot-plug monitoring), and this
         # snapshot is what both _build_encoding_group's button set and
         # _resolved_engine_vendor below check against, so they can never
-        # disagree about what's actually present.
-        self._available_backends = worker.detect_available_backends()
+        # disagree about what's actually present. A GPU whose driver
+        # failed the validation encode is logged here (launch.sh sends
+        # stdout to the debug log) and listed in System Information, but
+        # never offered as a Processing choice.
+        self._available_backends, self._unusable_gpus = worker.detect_hardware()
         self._available_backend_ids = {b.id for b in self._available_backends}
+        for gpu in self._unusable_gpus:
+            print(f"Hardware: {gpu.display_name} GPU found but its validation encode failed: {gpu.reason}")
 
         self._build_ui()
         # Ctrl+Z/Ctrl+Shift+Z -- default Qt.WindowShortcut context, fires
@@ -514,6 +519,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         AboutDialog(
             self, _app_icon(), self._available_backends,
             _resolve_theme(self._theme_choice).capitalize(), worker.ffmpeg_version(),
+            unusable_gpus=self._unusable_gpus,
         ).exec()
 
     def _on_system_theme_changed(self, _scheme):

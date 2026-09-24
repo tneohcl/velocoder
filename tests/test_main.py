@@ -66,6 +66,12 @@ def setUpModule():
     # which cleanly shadows this default just for their own scope.
     _session_patches.append(patch.object(session, "load_session", return_value=None))
     _session_patches.append(patch.object(session, "save_session"))
+    # Same idea for hardware detection's validation encode: this file's
+    # tests pick which GPUs exist by faking find_render_node (with made-up
+    # render node paths), so the real one-frame encode on top of that
+    # would just fail and hide every faked GPU. Default to "the driver
+    # works"; TestUnusableGpu below overrides it locally.
+    _session_patches.append(patch.object(worker, "validate_hevc_encode", return_value=None))
     for p in _session_patches:
         p.start()
 
@@ -4558,17 +4564,16 @@ class TestSettingsForEngineVendorRcModeTranslation(unittest.TestCase):
 
 
 class TestHardwareProbedOnceForTheWholeSession(unittest.TestCase):
-    """detect_available_backends does a real filesystem probe (find_render_
-    node -> /dev/dri/by-path) -- cheap today, but the whole point of
-    caching it once in MainWindow.__init__ (_available_backends) rather
-    than re-detecting per call site is that this stops being true the
-    moment detection means an actual FFmpeg validation encode. Spies on
+    """detect_hardware does a real filesystem probe (find_render_node ->
+    /dev/dri/by-path) plus a real FFmpeg validation encode per GPU found
+    -- the whole point of caching it once in MainWindow.__init__
+    (_available_backends) rather than re-detecting per call site. Spies on
     the real function (side_effect=the real thing, not a stub) so this
     also exercises genuine detection logic, not just a call-count."""
 
     def test_automatic_and_both_job_boundary_corrections_reuse_the_startup_snapshot(self):
-        real_detect = worker.detect_available_backends
-        with patch.object(worker, "detect_available_backends", side_effect=real_detect) as mock_detect, \
+        real_detect = worker.detect_hardware
+        with patch.object(worker, "detect_hardware", side_effect=real_detect) as mock_detect, \
              patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")):
             window = main.MainWindow()
             self.assertEqual(mock_detect.call_count, 1)
@@ -4601,6 +4606,39 @@ class TestHardwareProbedOnceForTheWholeSession(unittest.TestCase):
             item.setSelected(True)
             window.encoder_combo.setCurrentIndex(intel_index)
             self.assertEqual(mock_detect.call_count, 1)
+
+
+class TestUnusableGpu(unittest.TestCase):
+    """A GPU with a render node whose validation encode fails (e.g. an
+    Intel iGPU with a decode-only driver) must not get a Processing
+    button, Automatic must skip it, and System Information must say so."""
+
+    def _window_with_broken_intel(self):
+        def _validate(_node, vendor):
+            return "[hevc_vaapi] profile not supported" if vendor == "intel" else None
+        with patch.object(
+            worker, "find_render_node",
+            side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID),
+        ), patch.object(worker, "validate_hevc_encode", side_effect=_validate):
+            return main.MainWindow()
+
+    def test_broken_intel_gets_no_processing_button(self):
+        window = self._window_with_broken_intel()
+        window.show()
+        self.assertIsNone(window.processing_intel_btn)
+        self.assertIsNotNone(window.processing_amd_btn)
+        self.assertTrue(window.processing_amd_btn.isVisible())
+
+    def test_automatic_resolves_to_amd_instead(self):
+        window = self._window_with_broken_intel()
+        self.assertEqual(worker.best_available_engine(window._available_backends), ("hevc_vaapi", "amd"))
+
+    def test_about_dialog_receives_the_unusable_gpu(self):
+        window = self._window_with_broken_intel()
+        with patch.object(main, "AboutDialog") as mock_cls:
+            window._show_about_dialog()
+        unusable = mock_cls.call_args.kwargs["unusable_gpus"]
+        self.assertEqual([g.id for g in unusable], ["intel"])
 
 
 class TestUnknownProcessingChoiceRaises(unittest.TestCase):

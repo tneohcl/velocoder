@@ -110,6 +110,13 @@ QGroupBox::title {
 QGroupBox#collapsibleGroup::indicator {
     width: 0px;
     height: 0px;
+    /* width/height 0 alone still left a 1px dot before the title (seen in
+       the 2026-09-25 UI audit screenshots); no image/border/background
+       removes it entirely. */
+    image: none;
+    border: none;
+    background: transparent;
+    margin: 0px;
 }
 
 QTabWidget::pane {

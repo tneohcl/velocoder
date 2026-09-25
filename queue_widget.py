@@ -132,7 +132,7 @@ class _VideoCellDelegate(QStyledItemDelegate):
             subtitle_font = QFont(opt.font)
             subtitle_font.setPointSizeF(max(opt.font.pointSizeF() - 1, 7))
             painter.setFont(subtitle_font)
-            painter.setPen(QColor(_current_theme_palette.get("TEXT_SECONDARY", "#8b93a1")))
+            painter.setPen(QColor(_current_theme_palette.get("TEXT_SECONDARY", "#9098a6")))
             elided_subtitle = painter.fontMetrics().elidedText(subtitle, Qt.ElideRight, int(text_rect.width()))
             painter.drawText(
                 QRectF(text_rect.x(), text_rect.y() + half_height, text_rect.width(), half_height),

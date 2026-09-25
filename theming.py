@@ -121,12 +121,42 @@ def _fuzzy_text_color(widget) -> QColor:
     comes back invalid, i.e. solid black) -- reported live as "always
     black text" in both themes. Returning the QColor itself sidesteps
     that string round-trip entirely.
+
+    WCAG floor (2026-09-25 UI audit): the empty-state hint is instructions
+    ("Drop videos here or click Add Videos"), not decoration, so it must
+    reach 4.5:1. PlaceholderText measured 3.3:1 on the queue's BG_FIELD.
+    The palette color is kept when it passes; otherwise the same
+    TEXT_SECONDARY fallback as above (>= 4.5:1 on BG_FIELD in both themes).
     """
     palette = widget.palette()
     placeholder = palette.color(QPalette.PlaceholderText)
-    if placeholder != palette.color(QPalette.WindowText):
-        return placeholder
-    return QColor(_current_theme_palette.get("TEXT_SECONDARY", "#8b93a1"))
+    fallback = QColor(_current_theme_palette.get("TEXT_SECONDARY", "#9098a6"))
+    if placeholder == palette.color(QPalette.WindowText):
+        return fallback
+    background = QColor(_current_theme_palette.get("BG_FIELD", "#171a1f"))
+    if _contrast_ratio(_composite_over(placeholder, background), background) < 4.5:
+        return fallback
+    return placeholder
+
+
+def _relative_luminance(color: QColor) -> float:
+    channels = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+                for c in (color.redF(), color.greenF(), color.blueF())]
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def _contrast_ratio(a: QColor, b: QColor) -> float:
+    hi, lo = sorted((_relative_luminance(a), _relative_luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _composite_over(color: QColor, background: QColor) -> QColor:
+    """What a translucent color actually looks like painted on background."""
+    a = color.alphaF()
+    return QColor.fromRgbF(*(a * f + (1 - a) * b for f, b in (
+        (color.redF(), background.redF()),
+        (color.greenF(), background.greenF()),
+        (color.blueF(), background.blueF()))))
 
 
 def _load_stylesheet(app, theme_name: str = "dark", style_path: Path = Path(__file__).parent / "style.qss"):

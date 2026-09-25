@@ -1,7 +1,9 @@
 """ODCS shared widgets (PySide6 Widgets). Styled by base.qss via objectNames.
 
     ViewSwitch        neutral segmented view switch (Status | Restore)
-    SettingsList      grouped list of SettingRow: whole row is a button, value wraps
+    SettingsList      grouped list of SettingRow: whole row is a button, label over
+                      value (wraps), optional leading icon and status dot
+    StatusDot         small status dot, always beside words
     StatusFacts       separate facts with their own result and date
                       (completed / checked / tested), "Not yet recorded" when never
     CollapsibleSection  leading ▸/▾ header, collapses to the header only
@@ -16,7 +18,7 @@ from __future__ import annotations
 from typing import Callable, Iterable
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (QButtonGroup, QDialog, QDialogButtonBox, QFrame, QGridLayout,
                                QHBoxLayout, QLabel, QPushButton, QSizePolicy,
                                QVBoxLayout, QWidget)
@@ -82,33 +84,86 @@ class ViewSwitch(QFrame):
 
 
 # --------------------------------------------------------------------------
-class SettingRow(QPushButton):
-    """One setting: label, current value (wraps, never truncates), chevron.
-    A real button, so it gets keyboard focus, Space/Enter and a Button
-    accessibility role; the child labels ignore the mouse."""
+class StatusDot(QWidget):
+    """Small filled status dot (ok / warning / error / never) in the live
+    theme's colours. Always paired with words; never the only signal."""
 
-    def __init__(self, label: str, value: str = "", parent: QWidget | None = None):
+    COLORS = {"ok": "SUCCESS", "warning": "WARNING", "error": "ERROR", "never": "TEXT_DISABLED"}
+
+    def __init__(self, state: str = "ok", size: int = 8, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._state = state
+        self.setFixedSize(size, size)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def state(self) -> str:
+        return self._state
+
+    def setState(self, state: str) -> None:  # noqa: N802
+        self._state = state
+        self.update()
+
+    def paintEvent(self, event):  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(current_tokens()[self.COLORS.get(self._state, "TEXT_DISABLED")]))
+        p.drawEllipse(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1))
+
+
+class SettingRow(QPushButton):
+    """One setting, two lines: the label, and under it the current value
+    (wraps, never truncates) with an optional status dot; a chevron trails.
+    An optional leading icon names the kind of setting. A real button, so it
+    gets keyboard focus, Space/Enter and a Button accessibility role; the
+    child widgets ignore the mouse."""
+
+    ICON_SIZE = 20
+
+    def __init__(self, label: str, value: str = "", parent: QWidget | None = None,
+                 icon: QIcon | None = None):
         super().__init__(parent)
         self.setObjectName("odcsSettingRow")
         self.setAutoDefault(False)
         policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         policy.setHeightForWidth(True)  # grows only as much as a wrapped value needs
         self.setSizePolicy(policy)
+        self._icon = QLabel()
+        self._icon.setObjectName("odcsSettingIcon")
+        self._icon.setFixedSize(self.ICON_SIZE, self.ICON_SIZE)
         self._label = QLabel(label)
+        self._label.setObjectName("odcsSettingLabel")
         self._value = QLabel(value)
         self._value.setObjectName("odcsSettingValue")
         self._value.setWordWrap(True)
-        self._value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._dot = StatusDot("ok")
+        self._dot.hide()
         self._chevron = QLabel("›")
         self._chevron.setObjectName("odcsChevron")
-        for child in (self._label, self._value, self._chevron):
+        for child in (self._icon, self._label, self._value, self._chevron):
             child.setAttribute(Qt.WA_TransparentForMouseEvents)
+        value_row = QHBoxLayout()
+        value_row.setContentsMargins(0, 0, 0, 0)
+        value_row.setSpacing(6)
+        # The dot sits on the value's first line, however many lines it wraps to.
+        dot_box = QVBoxLayout()
+        dot_box.setContentsMargins(0, self._value.fontMetrics().height() // 2 - 4, 0, 0)
+        dot_box.addWidget(self._dot)
+        dot_box.addStretch(1)
+        value_row.addLayout(dot_box)
+        value_row.addWidget(self._value, 1)
+        text = QVBoxLayout()
+        text.setContentsMargins(0, 0, 0, 0)
+        text.setSpacing(1)
+        text.addWidget(self._label)
+        text.addLayout(value_row)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 8, 10, 8)
-        layout.setSpacing(8)
-        layout.addWidget(self._label)
-        layout.addWidget(self._value, 1)
+        layout.setSpacing(10)
+        layout.addWidget(self._icon)
+        layout.addLayout(text, 1)
         layout.addWidget(self._chevron)
+        self.setLeadingIcon(icon)
         self._update_accessible()
 
     def label(self) -> str:
@@ -117,10 +172,25 @@ class SettingRow(QPushButton):
     def value(self) -> str:
         return self._value.text()
 
-    def setValue(self, value: str, state: str = "") -> None:  # noqa: N802
-        """state: "" | "warning" | "error" — colours the value; the words carry the meaning."""
+    def indicator(self) -> str | None:
+        return self._dot.state() if not self._dot.isHidden() else None
+
+    def setLeadingIcon(self, icon: QIcon | None) -> None:  # noqa: N802
+        """None hides the icon column; a QIcon that is null (no theme icon)
+        keeps the column empty so rows in one list stay aligned."""
+        self._icon.setVisible(icon is not None)
+        if icon is not None:
+            self._icon.setPixmap(icon.pixmap(self.ICON_SIZE, self.ICON_SIZE) if not icon.isNull() else QPixmap())
+
+    def setValue(self, value: str, state: str = "", indicator: str | None = None) -> None:  # noqa: N802
+        """state: "" | "warning" | "error" colours the value. indicator: a
+        status dot before it ("ok" | "warning" | "error" | "never"), or None.
+        Either way the words carry the meaning."""
         self._value.setText(value)
         set_role(self._value, state or "secondary")
+        self._dot.setVisible(indicator is not None)
+        if indicator is not None:
+            self._dot.setState(indicator)
         self._update_accessible()
         self.updateGeometry()
 
@@ -163,8 +233,9 @@ class SettingsList(QFrame):
         outer.addStretch(1)
         self.rows: list[SettingRow] = []
 
-    def addRow(self, label: str, value: str = "", on_click: Callable[[], None] | None = None) -> SettingRow:  # noqa: N802
-        row = SettingRow(label, value)
+    def addRow(self, label: str, value: str = "", on_click: Callable[[], None] | None = None,  # noqa: N802
+               icon: QIcon | None = None) -> SettingRow:
+        row = SettingRow(label, value, icon=icon)
         set_role(row._value, "secondary")
         for previous in self.rows:  # only the last row drops its separator
             _set_property(previous, "last", "false")

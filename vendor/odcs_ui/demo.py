@@ -44,11 +44,14 @@ def build() -> QWidget:
 
     body = QHBoxLayout()
     body.setSpacing(32)
+    from PySide6.QtGui import QIcon
     settings = SettingsList("What's backed up")
-    settings.addRow("Folders", "5 folders")
-    settings.addRow("Applications", "97 apps, including 3 no longer installed")
-    settings.addRow("Destination", "Offline").setValue("Offline", "error")
-    settings.addRow("Schedule", "Daily at 4:00 AM")
+    settings.addRow("Folders", "5 folders", icon=QIcon.fromTheme("folder"))
+    settings.addRow("Applications", "97 selected · 2 to review", icon=QIcon.fromTheme("applications-all")).setValue(
+        "97 selected · 2 to review", "warning")
+    settings.addRow("Destination", "", icon=QIcon.fromTheme("drive-harddisk")).setValue(
+        "TITAN-i · Not connected", "error", indicator="error")
+    settings.addRow("Schedule", "Daily at 4:00 AM", icon=QIcon.fromTheme("chronometer"))
     settings.setFixedWidth(300)
     body.addWidget(settings, 0)
 

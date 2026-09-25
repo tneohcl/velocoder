@@ -6,4 +6,4 @@ Qt:       odcs_ui.theming (ThemeController, THEME_CHOICES), odcs_ui.timefmt,
           EmptyState, AboutDialog), odcs_ui.demo (gallery)
 Design:   see DESIGN.md in the repository.
 """
-__version__ = "0.3.0"
+__version__ = "0.4.0"

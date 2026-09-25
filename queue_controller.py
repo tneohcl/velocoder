@@ -726,6 +726,12 @@ class _QueueControllerMixin:
             return
         count = self.queue_list.topLevelItemCount()
         self.start_btn.setText("Convert" if count == 0 else f"Convert {count} Video{'s' if count != 1 else ''}")
+        # Error prevention (2026-09-25 UI audit): with nothing queued, Convert
+        # used to stay clickable and only answer "Queue is empty" in the
+        # status line. Every queue mutation and the idle/finished phases
+        # already route through here, so this keeps the state current.
+        self.start_btn.setEnabled(count > 0)
+        self.start_btn.setToolTip("" if count > 0 else "Add videos to the queue first")
 
     def _refresh_idle_controls(self):
         """What add_files()/_remove_selected()/_clear_queue()/

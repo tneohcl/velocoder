@@ -460,7 +460,9 @@ class TestFuzzyTextColor(unittest.TestCase):
         # The real bug: QColor.name() drops alpha entirely, which used to
         # turn a legitimately-translucent PlaceholderText role back into a
         # fully-opaque, indistinguishable-from-regular-text color.
-        widget = self._widget_with_roles(QColor(20, 20, 20), QColor(20, 20, 20, 128))
+        # Light text on the (default, dark) BG_FIELD, so it also clears the
+        # 4.5:1 floor and is returned untouched, alpha included.
+        widget = self._widget_with_roles(QColor(20, 20, 20), QColor(240, 240, 240, 200))
         result = theming._fuzzy_text_color(widget)
         # A real, directly-usable QColor -- not a string. Reported live as
         # "always black text" in both themes when this used to return a
@@ -470,12 +472,24 @@ class TestFuzzyTextColor(unittest.TestCase):
         # syntax at all -- it silently comes back invalid (== black),
         # confirmed directly against this exact string.
         self.assertTrue(result.isValid())
-        self.assertEqual((result.red(), result.green(), result.blue(), result.alpha()), (20, 20, 20, 128))
+        self.assertEqual((result.red(), result.green(), result.blue(), result.alpha()), (240, 240, 240, 200))
 
     def test_distinct_solid_placeholder_role_is_honored_as_is(self):
-        widget = self._widget_with_roles(QColor(20, 20, 20), QColor(120, 120, 120))
+        widget = self._widget_with_roles(QColor(20, 20, 20), QColor(200, 200, 200))
         result = theming._fuzzy_text_color(widget)
-        self.assertEqual((result.red(), result.green(), result.blue(), result.alpha()), (120, 120, 120, 255))
+        self.assertEqual((result.red(), result.green(), result.blue(), result.alpha()), (200, 200, 200, 255))
+
+    def test_low_contrast_placeholder_falls_back_to_text_secondary(self):
+        # WCAG floor (2026-09-25 UI audit): a placeholder role that would
+        # paint below 4.5:1 on BG_FIELD -- solid or translucent -- is
+        # replaced by TEXT_SECONDARY, which themes.py keeps above 4.5:1.
+        palette = {"TEXT_SECONDARY": "#9098a6", "BG_FIELD": "#171a1f"}
+        for placeholder in (QColor(120, 120, 120), QColor(20, 20, 20, 128)):
+            with self.subTest(placeholder=placeholder.name(QColor.HexArgb)):
+                widget = self._widget_with_roles(QColor(230, 230, 230), placeholder)
+                with patch.dict(theming._current_theme_palette, palette):
+                    result = theming._fuzzy_text_color(widget)
+                self.assertEqual(result.name(), "#9098a6")
 
     def test_placeholder_identical_to_window_text_falls_back_to_text_secondary(self):
         # The genuine "nothing distinct here at all" case (both RGB and
@@ -2328,7 +2342,8 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
             window._clear_queue()
         self.assertFalse(window._start_when_ready)
-        self.assertTrue(window.start_btn.isEnabled())
+        # Cleared = empty queue = nothing to convert (2026-09-25 UI audit).
+        self.assertFalse(window.start_btn.isEnabled())
         self.assertIn("empty", window.status_label.text().lower())
         # The now-irrelevant probes for the cleared video still land
         # eventually -- must not resurrect the cancelled Convert once
@@ -2346,7 +2361,7 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         window._undo()  # back to an empty queue
         self.assertEqual(window.queue_list.topLevelItemCount(), 0)
         self.assertFalse(window._start_when_ready)
-        self.assertTrue(window.start_btn.isEnabled())
+        self.assertFalse(window.start_btn.isEnabled())
 
     def test_redo_during_preparation_waits_for_the_restored_videos_own_analysis(self):
         # Real, reported failure mode: _restore_queue_snapshot rebuilds
@@ -3171,7 +3186,19 @@ class TestRunPhaseVisuals(unittest.TestCase):
         self.assertFalse(window.stats_label.isVisible())
         self.assertFalse(window.stop_btn.isVisible())
         self.assertFalse(window.open_folder_btn.isVisible())
+        # Empty queue: Convert disabled with a reason (2026-09-25 UI audit).
+        self.assertFalse(window.start_btn.isEnabled())
+        self.assertTrue(window.start_btn.toolTip())
+
+    def test_idle_with_a_queued_video_enables_convert(self):
+        from PySide6.QtWidgets import QTreeWidgetItem
+        window = main.MainWindow()
+        window.show()
+        window.queue_list.addTopLevelItem(QTreeWidgetItem(["clip.mkv"]))
+        window._apply_run_phase_visuals("idle")
         self.assertTrue(window.start_btn.isEnabled())
+        self.assertEqual(window.start_btn.text(), "Convert 1 Video")
+        self.assertEqual(window.start_btn.toolTip(), "")
 
     def test_preparing_shows_indeterminate_progress_and_hides_stop(self):
         window = main.MainWindow()
@@ -3223,6 +3250,10 @@ class TestRunPhaseVisuals(unittest.TestCase):
         window._run_completed_count = 4
         window._run_total_input_bytes = 12_400_000_000
         window._run_total_output_bytes = 4_100_000_000
+        # A finished run leaves its videos in the list, so Convert stays
+        # available (an empty list would disable it, see the idle tests).
+        from PySide6.QtWidgets import QTreeWidgetItem
+        window.queue_list.addTopLevelItem(QTreeWidgetItem(["clip.mkv"]))
         window._apply_run_phase_visuals("finished")
         self.assertFalse(window.progress_bar.isVisible())
         self.assertTrue(window.open_folder_btn.isVisible())

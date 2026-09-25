@@ -245,7 +245,7 @@ class HelpWindow(QWidget):
         # not structural depth), so this is set directly in Python
         # instead, and re-applied on every theme change the same way
         # the rich-text article view's own colors are (see refresh_theme).
-        return QColor(_current_theme_palette.get("TEXT_SECONDARY", "#8b93a1"))
+        return QColor(_current_theme_palette.get("TEXT_SECONDARY", "#9098a6"))
 
     def _on_search_changed(self, text: str):
         # Reported live, twice: filtering the tree left the article pane
@@ -323,7 +323,7 @@ class HelpWindow(QWidget):
         # in refresh_theme below) rather than baked in once, matching
         # every other dynamic-per-theme read in this app.
         fg = _current_theme_palette.get("TEXT_PRIMARY", "#e6e8eb")
-        secondary = _current_theme_palette.get("TEXT_SECONDARY", "#8b93a1")
+        secondary = _current_theme_palette.get("TEXT_SECONDARY", "#9098a6")
         bg = _current_theme_palette.get("BG_PANEL", "#21252c")
         card_bg = _current_theme_palette.get("BG_CONTROL", "#2a2f38")
         border = _current_theme_palette.get("BORDER", "#333944")

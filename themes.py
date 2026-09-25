@@ -34,7 +34,11 @@ DARK = {
     "BORDER_OUTER": "#414956",
     "BORDER_HOVER": "#454c59",
     "TEXT_PRIMARY": "#e6e8eb",
-    "TEXT_SECONDARY": "#8b93a1",
+    # WCAG 2.2 AA (2026-09-25 UI audit): every TEXT_* token except
+    # TEXT_DISABLED must reach >= 4.5:1 on BG_WINDOW, BG_PANEL and BG_FIELD
+    # (TEXT_SECONDARY also on BG_CONTROL). TEXT_CAPTION stays the quietest
+    # readable tier, just no longer below the minimum.
+    "TEXT_SECONDARY": "#9098a6",
     "TEXT_TERTIARY": "#c3c8d1",
     "TEXT_READONLY": "#9aa1ac",
     # Reported live: the quality/speed/audio-bitrate tier captions ("Balanced",
@@ -47,7 +51,7 @@ DARK = {
     # instead: quieter than TEXT_SECONDARY (still clearly a secondary-tier
     # caption, not body text) but nowhere near as faint as the empty-state
     # hint, which keeps using the dynamic palette-driven color unchanged.
-    "TEXT_CAPTION": "#737a87",
+    "TEXT_CAPTION": "#868d9a",
     "TEXT_DISABLED": "#5a616c",
     "TEXT_ON_ACCENT": "#0d1117",
     "ACCENT": "#4fa8e0",
@@ -80,13 +84,13 @@ LIGHT = {
     "BORDER_OUTER": "#c3c8d0",
     "BORDER_HOVER": "#a8afb9",
     "TEXT_PRIMARY": "#1a1d23",
-    "TEXT_SECONDARY": "#6b7280",
+    "TEXT_SECONDARY": "#565d6b",
     "TEXT_TERTIARY": "#4b5563",
-    "TEXT_READONLY": "#6b7280",
+    "TEXT_READONLY": "#565d6b",
     # See DARK's own comment on this same token -- same reasoning, mirrored
     # direction (lighter/quieter than TEXT_SECONDARY here, since light mode's
     # background is light).
-    "TEXT_CAPTION": "#848b98",
+    "TEXT_CAPTION": "#656c79",
     "TEXT_DISABLED": "#9ca3af",
     "TEXT_ON_ACCENT": "#ffffff",
     "ACCENT": "#1c72c4",

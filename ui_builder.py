@@ -12,7 +12,7 @@ Mixed in as `class MainWindow(QMainWindow, _UiBuilderMixin)`, not
 in the MRO fine, but multiple-inheriting from two QObject-derived
 classes is a well-known source of real, hard-to-diagnose problems. A
 plain mixin sidesteps that entirely."""
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QMargins
 from PySide6.QtGui import QAction, QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
@@ -302,6 +302,7 @@ class _UiBuilderMixin:
         group.setCursor(Qt.PointingHandCursor)
         layout = QVBoxLayout(group)
         layout.addWidget(content)
+        expanded_margins = layout.contentsMargins()
 
         # A stretch factor in the parent layout (the Log group has one, to
         # share space with the queue list) still applies to the *group*
@@ -312,7 +313,13 @@ class _UiBuilderMixin:
         collapsed_policy = QSizePolicy(expanded_policy.horizontalPolicy(), QSizePolicy.Fixed)
 
         def _toggle(checked):
-            group.setTitle(f"{title}  {'▾' if checked else '▸'}")
+            # Leading disclosure triangle (▸ collapsed / ▾ expanded), the
+            # convention KDE, macOS and most tree views use; it trailed the
+            # title before. Collapsed, the inner margins go to zero so the
+            # section reads as a header bar, not an empty card (2026-09-25
+            # UI audit).
+            group.setTitle(f"{'▾' if checked else '▸'}  {title}")
+            layout.setContentsMargins(expanded_margins if checked else QMargins(0, 0, 0, 0))
             content.setVisible(checked)
             group.setSizePolicy(expanded_policy if checked else collapsed_policy)
             group.updateGeometry()
@@ -442,6 +449,15 @@ class _UiBuilderMixin:
         )
         self.codec_combo.currentIndexChanged.connect(self._on_codec_changed)
         form.addRow("Codec:", self.codec_combo)
+        # Shown only while a GPU engine is selected (main.py, next to
+        # codec_combo.setEnabled): the combo is locked to H.265 then, and a
+        # greyed-out control with no stated reason was flagged in the
+        # 2026-09-25 UI audit. Same caption style as the tier captions.
+        self.codec_lock_label = QLabel("GPU encoding uses H.265 only. Choose CPU for H.264.")
+        self.codec_lock_label.setObjectName("captionLabel")
+        self.codec_lock_label.setWordWrap(True)
+        self.codec_lock_label.setVisible(False)
+        form.addRow("", self.codec_lock_label)
 
         return group
 

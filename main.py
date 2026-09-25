@@ -646,6 +646,9 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # back into this same method for a change it made itself, not a
         # real user action.
         self.codec_combo.setEnabled(not is_vaapi)
+        self.codec_lock_label.setVisible(is_vaapi)
+        self.codec_combo.setAccessibleDescription(
+            "Locked to H.265: GPU encoding supports H.265 only" if is_vaapi else "")
         if is_vaapi:
             self.codec_combo.blockSignals(True)
             self.codec_combo.setCurrentIndex(0)  # H.265 (HEVC)

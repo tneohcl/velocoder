@@ -1,1 +1,1 @@
-**Copy FFmpeg Command** (in the **...** menu) copies the exact command line VeloCoder would run for the currently selected video's settings, to your clipboard. Meant for advanced users who want to inspect, reuse, or tweak the underlying command by hand -- not needed for ordinary use.
+**Copy FFmpeg Command** (**Edit → Copy FFmpeg Command**) copies the exact command line VeloCoder would run for the currently selected video's settings, to your clipboard. Meant for advanced users who want to inspect, reuse, or tweak the underlying command by hand -- not needed for ordinary use.

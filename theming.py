@@ -11,7 +11,9 @@ from PySide6.QtCore import Qt, QEvent, QObject
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QComboBox, QProxyStyle, QScrollArea, QStyle, QWidget
 
-import themes
+import themes  # also puts the bundled vendor/odcs_ui on sys.path
+from odcs_ui import color as odcs_color
+from odcs_ui import theming as odcs_theming
 
 # Populated by _load_stylesheet on every load/theme switch; read back by
 # _ComboPopupBackgroundFilter so a popup styled after a theme change gets
@@ -58,19 +60,10 @@ def _system_accent_tokens(app) -> dict:
     sits on. Screenshotted both themes to confirm the mismatch before
     fixing it this way.
     """
-    role = getattr(QPalette, "Accent", QPalette.Highlight)
-    accent = app.palette().color(role)
-    if not accent.isValid() or accent == QColor(0, 0, 0):
-        accent = QColor("#4fa8e0")
-    luminance = 0.299 * accent.redF() + 0.587 * accent.greenF() + 0.114 * accent.blueF()
-    on_accent_is_dark = luminance > 0.5
-    return {
-        "ACCENT": accent.name(),
-        "ACCENT_HOVER": accent.lighter(118).name(),
-        "ACCENT_PRESSED": accent.darker(115).name(),
-        "TEXT_ON_ACCENT": "#0d1117" if on_accent_is_dark else "#ffffff",
-        "CHECK_ICON": "check_dark.svg" if on_accent_is_dark else "check_light.svg",
-    }
+    values = odcs_theming.accent_tokens(app.palette(), "#4fa8e0")
+    on_accent_is_dark = values["TEXT_ON_ACCENT"] == odcs_color.DARK_ON_ACCENT
+    values["CHECK_ICON"] = "check_dark.svg" if on_accent_is_dark else "check_light.svg"
+    return values
 
 
 def _fuzzy_text_color(widget) -> QColor:
@@ -286,45 +279,10 @@ class _ComboPopupBackgroundFilter(QObject):
         return False
 
 
-class _FocusVisibleFilter(QObject):
-    """QSS has no :focus-visible equivalent -- plain :focus matches a
-    mouse click exactly the same as Tab, so a checkbox clicked with the
-    mouse picked up the same accent-colored ring Tab-ing to it does
-    (reported directly, confirmed by screenshot) -- wrong the same way it
-    would be in a browser without :focus-visible: a pointer click doesn't
-    need a keyboard-navigation aid pointing at where it already is.
-
-    QFocusEvent.reason() is exactly the signal a browser's own
-    :focus-visible heuristic is standing in for -- TabFocusReason/
-    BacktabFocusReason for real keyboard navigation, MouseFocusReason for
-    a click, plus a handful of others (ActiveWindowFocusReason,
-    PopupFocusReason, ShortcutFocusReason, ...) that aren't keyboard
-    navigation either. This filter watches FocusIn/FocusOut app-wide and
-    mirrors that distinction onto a "focusVisible" dynamic property,
-    which style.qss matches instead of :focus for every control this
-    applies to. Applied universally rather than scoped to specific widget
-    types: a property no QSS rule references is a harmless no-op, so
-    there's nothing to lose covering every focusable widget the same way
-    instead of maintaining a matching type list here.
-    """
-
-    def eventFilter(self, obj, event):
-        # FocusIn/FocusOut also reach plain QWindow objects (a top-level
-        # window gaining/losing OS-level focus, not any widget inside it)
-        # -- confirmed by a real crash, QWindow has no .style(). Only
-        # QWidgets carry the QSS-matched property this filter sets.
-        if not isinstance(obj, QWidget):
-            return False
-        if event.type() == QEvent.Type.FocusIn:
-            visible = event.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason)
-            obj.setProperty("focusVisible", visible)
-            obj.style().unpolish(obj)
-            obj.style().polish(obj)
-        elif event.type() == QEvent.Type.FocusOut:
-            obj.setProperty("focusVisible", False)
-            obj.style().unpolish(obj)
-            obj.style().polish(obj)
-        return False
+# Keyboard-only focus ring: proven here first, now shared by every ODCS app
+# (odcs_ui.theming.FocusVisibleFilter). style.qss matches the same
+# [focusVisible="true"] property it sets on Tab/Shift+Tab focus only.
+_FocusVisibleFilter = odcs_theming.FocusVisibleFilter
 
 
 class _ComboWheelBlockFilter(QObject):

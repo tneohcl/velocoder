@@ -366,13 +366,20 @@ class TestThemeIntegration(unittest.TestCase):
         self.assertEqual(window._theme_choice, "system")
         self.assertEqual(window.theme_combo.currentData(), "system")
 
-    def test_no_menu_bar(self):
-        # Theme picking moved to a footer combo (see the status-bar tests
-        # below) -- a whole menu bar for one three-item setting was more
-        # chrome than the setting warranted. Guards against it quietly
-        # coming back if this is touched again.
+    def test_menu_bar_has_the_standard_menus(self):
+        # ODCS App Studio rule: a menu bar everywhere, with stable menus,
+        # so every command is discoverable where people look for it.
         window = main.MainWindow()
-        self.assertEqual(window.menuBar().actions(), [])
+        self.assertEqual([a.text() for a in window.menuBar().actions()],
+                         ["&File", "&Edit", "&Queue", "&View", "&Help"])
+
+    def test_view_menu_theme_choices_follow_the_theme_setting(self):
+        window = main.MainWindow()
+        light = next(a for a in window.theme_actions.actions() if a.data() == "light")
+        with patch.object(window, "_apply_theme"):
+            light.trigger()
+        self.assertEqual(window.theme_combo.currentData(), "light")
+        self.assertEqual([a.data() for a in window.theme_actions.actions() if a.isChecked()], ["light"])
 
     def test_invalid_persisted_choice_falls_back_to_dark(self):
         # __init__ applies this same guard to whatever QSettings hands back
@@ -4116,7 +4123,11 @@ class TestLeftPanelScrolling(unittest.TestCase):
             floor = left.minimumHeight()
         window.resize(window.width(), 50)
         _app.processEvents()
-        self.assertEqual(window.height(), floor)
+        # The window itself also carries the menu bar and toolbar now, so
+        # the invariant is on the settings column: it never drops below
+        # its collapsed floor, and the window stops shrinking there.
+        self.assertEqual(left.height(), floor)
+        self.assertEqual(window.height(), window.minimumSizeHint().height())
 
     def test_shrinking_after_expanding_falls_back_to_scrolling(self):
         # The window grew to fit when Expert expanded (TestExpertExpand
@@ -5087,50 +5098,64 @@ class TestSessionPersistenceRestore(unittest.TestCase):
 
 
 def _menu_actions(window) -> dict:
-    return {a.text(): a for a in window.queue_menu_btn.menu().actions() if not a.isSeparator()}
+    """Every command in the menu bar, by its text (submenus included)."""
+    found = {}
+
+    def walk(menu):
+        for action in menu.actions():
+            if action.menu():
+                walk(action.menu())
+            elif not action.isSeparator():
+                found[action.text()] = action
+
+    for top in window.menuBar().actions():
+        walk(top.menu())
+    return found
 
 
-class TestMoreActionsIcon(unittest.TestCase):
-    # Reported live: the literal "⋯" text read as three stray characters
-    # next to Add Videos, not a deliberate control -- replaced with a
-    # real icon (assets/more_dark.svg / more_light.svg).
-    def test_button_has_a_real_icon_not_text(self):
+def _menu_entries(window, title) -> list:
+    menu = next(a.menu() for a in window.menuBar().actions() if a.text() == title)
+    return [a.text() if not a.isSeparator() else "---" for a in menu.actions()]
+
+
+class TestToolbar(unittest.TestCase):
+    # ODCS window model: the old "⋯" overflow button is gone; the frequent
+    # queue commands sit leading in the toolbar and Convert trails it.
+    def test_no_overflow_button(self):
         window = main.MainWindow()
-        self.assertFalse(window.queue_menu_btn.icon().isNull())
-        self.assertEqual(window.queue_menu_btn.text(), "")
+        self.assertFalse(hasattr(window, "queue_menu_btn"))
 
-    def test_button_has_an_accessible_name(self):
+    def test_convert_is_the_trailing_toolbar_action(self):
         window = main.MainWindow()
-        self.assertEqual(window.queue_menu_btn.accessibleName(), "More actions")
+        bar = window.findChild(QWidget, "appToolbar")
+        row = bar.layout()
+        widgets = [row.itemAt(i).widget() for i in range(row.count()) if row.itemAt(i).widget()]
+        self.assertIs(widgets[-1], window.start_btn)
+        self.assertIn(window.add_files_btn, widgets)
+        self.assertIn(window.remove_queue_btn, widgets)
 
-    def test_icon_refreshes_on_theme_change(self):
-        # setIcon() only ever takes a snapshot at set-icon time -- unlike
-        # QSS-driven appearance, it doesn't react to _load_stylesheet on
-        # its own, so _apply_theme must explicitly refresh it.
+    def test_remove_follows_the_selection(self):
         window = main.MainWindow()
-        with patch.object(window, "_themed_icon", wraps=window._themed_icon) as mock_themed_icon:
-            window._apply_theme("light")
-        self.assertIn(
-            "more", [call.args[0] for call in mock_themed_icon.call_args_list],
-        )
+        self.assertFalse(window.remove_queue_btn.isEnabled())
 
-    def test_icon_refreshes_on_system_theme_change_while_following_system(self):
+    def test_queue_menu_mirrors_the_run_buttons(self):
         window = main.MainWindow()
-        window._theme_choice = "system"
-        with patch.object(window, "_themed_icon", wraps=window._themed_icon) as mock_themed_icon:
-            window._on_system_theme_changed(Qt.ColorScheme.Dark)
-        self.assertIn(
-            "more", [call.args[0] for call in mock_themed_icon.call_args_list],
-        )
+        window.start_btn.setEnabled(False)
+        self.assertFalse(window.convert_action.isEnabled())
+        window.start_btn.setEnabled(True)
+        self.assertTrue(window.convert_action.isEnabled())
+        window.start_btn.setText("Convert 2 Videos")
+        window._button_mirror.sync()
+        self.assertEqual(window.convert_action.text(), "Convert 2 Videos")
 
 
 class TestHelpMenuAndShortcut(unittest.TestCase):
     def test_help_action_exists_and_triggers_show_help_window(self):
         window = main.MainWindow()
         actions = _menu_actions(window)
-        self.assertIn("Help", actions)
+        self.assertIn("VeloCoder Help", actions)
         with patch.object(window, "_show_help_window") as mock_show:
-            actions["Help"].trigger()
+            actions["VeloCoder Help"].trigger()
         mock_show.assert_called_once()
 
     def test_about_action_exists_and_triggers_show_about_dialog(self):
@@ -5168,55 +5193,42 @@ class TestHelpMenuAndShortcut(unittest.TestCase):
         self.assertFalse(icon_arg.pixmap(64, 64).isNull())
 
     def test_menu_order_matches_spec(self):
-        # Remove Selected / Clear Queue -- Stop After Current Video --
-        # Show Conversion Log/Copy FFmpeg Command -- Settings.../Help/
-        # About VeloCoder, exactly, including the separators' positions.
         window = main.MainWindow()
-        entries = [
-            a.text() if not a.isSeparator() else "---"
-            for a in window.queue_menu_btn.menu().actions()
-        ]
-        self.assertEqual(entries, [
-            "Remove Selected", "Clear Queue", "---",
-            "Stop After Current Video", "---",
-            "Show Conversion Log", "Copy FFmpeg Command", "---",
-            "Settings…", "Help", "About VeloCoder",
-        ])
+        self.assertEqual(_menu_entries(window, "&File"),
+                         ["Add Videos…", "Save To…", "Open Output Folder", "---", "Quit"])
+        self.assertEqual(_menu_entries(window, "&Edit"),
+                         ["Undo", "Redo", "---", "Remove Selected", "Clear Queue", "---",
+                          "Copy FFmpeg Command", "---", "Settings…"])
+        self.assertEqual(_menu_entries(window, "&Queue"), ["Convert", "Stop", "Stop After Current Video"])
+        self.assertEqual(_menu_entries(window, "&View"), ["Show Conversion Log", "Theme"])
+        self.assertEqual(_menu_entries(window, "&Help"), ["VeloCoder Help", "About VeloCoder"])
+
+    def test_each_shortcut_has_exactly_one_owner(self):
+        # A QShortcut and a QAction bound to the same key make Qt treat the
+        # key as ambiguous and fire neither.
+        window = main.MainWindow()
+        keys = [a.shortcut().toString() for a in _menu_actions(window).values() if not a.shortcut().isEmpty()]
+        keys += [s.key().toString() for s in window.findChildren(QShortcut)]
+        self.assertEqual(len(keys), len(set(keys)), keys)
+        for expected in ("Ctrl+O", "Ctrl+Q", "Ctrl+Z", "Ctrl+Shift+Z", "F1", "Ctrl+Return", "Ctrl+L", "Ctrl+,"):
+            self.assertIn(expected, keys)
 
     def test_f1_is_bound_to_show_help_window(self):
-        # Fires the QShortcut's own activated signal directly rather
-        # than a real QTest.keyClick -- a window-wide (default
-        # Qt.WindowShortcut context) shortcut needs this window to
-        # actually be the active one to receive a real key event, which
-        # offscreen/headless test runs can't reliably guarantee. This
-        # still genuinely verifies F1 is bound to the right slot, not
-        # just that the slot works if called directly.
         window = main.MainWindow()
-        f1_shortcuts = [
-            s for s in window.findChildren(QShortcut)
-            if s.key() == QKeySequence(Qt.Key_F1)
-        ]
-        self.assertEqual(len(f1_shortcuts), 1)
+        f1 = [a for a in _menu_actions(window).values() if a.shortcut() == QKeySequence(Qt.Key_F1)]
+        self.assertEqual(len(f1), 1)
         with patch.object(window, "_show_help_window") as mock_show:
-            f1_shortcuts[0].activated.emit()
+            f1[0].trigger()
         mock_show.assert_called_once()
 
     def test_ctrl_q_closes_the_window(self):
-        # Verified behaviorally (does the window actually end up closed),
-        # not via patch.object(window, "close") -- unlike a pure-Python
-        # method (_show_help_window above), close() is a native QWidget
-        # slot; the QShortcut's connection was already made against the
-        # real bound method at construction time, and confirmed directly
-        # that a later patch.object(window, "close") does not retroactively
-        # redirect it.
+        # Verified behaviorally (does the window actually end up closed):
+        # Quit goes through close() and so closeEvent's session flush.
         window = main.MainWindow()
         window.show()
-        ctrl_q_shortcuts = [
-            s for s in window.findChildren(QShortcut)
-            if s.key() == QKeySequence("Ctrl+Q")
-        ]
-        self.assertEqual(len(ctrl_q_shortcuts), 1)
-        ctrl_q_shortcuts[0].activated.emit()
+        quit_actions = [a for a in _menu_actions(window).values() if a.shortcut() == QKeySequence("Ctrl+Q")]
+        self.assertEqual(len(quit_actions), 1)
+        quit_actions[0].trigger()
         self.assertFalse(window.isVisible())
 
 

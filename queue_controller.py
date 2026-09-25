@@ -1002,7 +1002,7 @@ class _QueueControllerMixin:
     def _set_status(self, text: str):
         # Every status_label update goes through here (not
         # status_label.setText directly) so toggling "Stop After Current
-        # Video" (self.pause_after_check, now in the overflow menu, not a
+        # Video" (self.pause_after_check, now in the Queue menu, not a
         # permanent checkbox next to Convert/Cancel the way it used to
         # be) can visibly say so regardless of which of the several call
         # sites below last set the status -- a single suffix rule applied

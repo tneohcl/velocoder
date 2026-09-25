@@ -12,12 +12,12 @@ Mixed in as `class MainWindow(QMainWindow, _UiBuilderMixin)`, not
 in the MRO fine, but multiple-inheriting from two QObject-derived
 classes is a well-known source of real, hard-to-diagnose problems. A
 plain mixin sidesteps that entirely."""
-from PySide6.QtCore import Qt, QSize, QMargins
-from PySide6.QtGui import QAction, QFont, QFontMetrics
+from PySide6.QtCore import Qt, QEvent, QObject, QSize, QMargins
+from PySide6.QtGui import QAction, QActionGroup, QFont, QFontMetrics, QKeySequence
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QMenu, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-    QSizePolicy, QSlider, QSpinBox, QTabWidget, QToolButton, QVBoxLayout, QWidget,
+    QSizePolicy, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 import formatting
@@ -32,6 +32,9 @@ from queue_widget import (
 from theming import _NoItemFocusRectStyle
 
 PANEL_MARGIN = 8
+# The settings column is fixed-width (see _build_ui); the toolbar title
+# matches it so the queue commands line up with the queue.
+LEFT_PANEL_WIDTH = 456
 PANEL_SPACING = 8
 # Distinct from PANEL_SPACING -- that one governs the left/right panels'
 # own outer layouts (Presets group to tab widget, queue list to buttons
@@ -47,6 +50,29 @@ PANEL_SPACING = 8
 SECTION_SPACING = 9
 
 THEME_CHOICES = [("dark", "Dark"), ("light", "Light"), ("system", "Match System")]
+
+
+class _ButtonActionMirror(QObject):
+    """Keeps menu actions in step with the buttons that own the run state:
+    enabled state live (so a shortcut never fires a disabled command) and the
+    button's wording whenever the menu opens ("Convert 3 Videos", "Resume")."""
+
+    def __init__(self, pairs, parent=None):
+        super().__init__(parent)
+        self.pairs = dict(pairs)
+        for button in self.pairs:
+            button.installEventFilter(self)
+        self.sync()
+
+    def sync(self):
+        for button, action in self.pairs.items():
+            action.setEnabled(button.isEnabled())
+            action.setText(button.text())
+
+    def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
+        if event.type() == QEvent.EnabledChange and obj in self.pairs:
+            self.pairs[obj].setEnabled(obj.isEnabled())
+        return False
 
 
 class _UiBuilderMixin:
@@ -82,23 +108,135 @@ class _UiBuilderMixin:
         # than sitting exactly on it.
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QHBoxLayout(central)
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         left = self._build_left_panel()
-        left.setFixedWidth(456)
+        left.setFixedWidth(LEFT_PANEL_WIDTH)
         left.setObjectName("leftPanel")
         layout.addWidget(left)
-        layout.addWidget(self._build_right_panel(), 1)
+        right = self._build_right_panel()
+        right.setObjectName("contentPanel")
+        right.setAttribute(Qt.WA_StyledBackground, True)
+        layout.addWidget(right, 1)
+        outer.addWidget(self._build_toolbar())
+        outer.addLayout(layout, 1)
         self._build_status_bar()
+        self._build_menu_bar()
+
+    def _build_toolbar(self) -> QWidget:
+        """ODCS toolbar: app name over the settings column, the frequent queue
+        commands, then the primary action trailing (Convert), with Stop /
+        Open Folder just before it."""
+        bar = QWidget()
+        bar.setObjectName("appToolbar")
+        bar.setAttribute(Qt.WA_StyledBackground, True)
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(16, 8, 16, 8)
+        row.setSpacing(8)
+        title = QLabel("VeloCoder")
+        title.setObjectName("appTitle")
+        # Add Videos… lines up with the queue's left edge.
+        title.setFixedWidth(LEFT_PANEL_WIDTH - 16 - 8)
+        row.addWidget(title)
+        row.addWidget(self.add_files_btn)
+        row.addWidget(self.remove_queue_btn)
+        row.addStretch(1)
+        for button in (self.open_folder_btn, self.stop_btn, self.start_btn):
+            row.addWidget(button)
+        return bar
+
+    def _build_menu_bar(self):
+        """Every command, with its shortcut, in stable menus (menu bar
+        everywhere is an ODCS rule). Shortcuts live on these actions, not on
+        separate QShortcuts, so a key never has two owners."""
+        bar = self.menuBar()
+        file_menu = self._menu(bar, "&File")
+        self.add_videos_action = self._menu_action(file_menu, "Add Videos…", self._pick_files)
+        self.add_videos_action.setShortcut(QKeySequence.Open)
+        self._menu_action(file_menu, "Save To…", self._pick_output_dir)
+        self._menu_action(file_menu, "Open Output Folder", self._open_output_dir)
+        file_menu.addSeparator()
+        self.quit_action = self._menu_action(file_menu, "Quit", self.close)
+        self.quit_action.setShortcut(QKeySequence("Ctrl+Q"))
+        self.quit_action.setMenuRole(QAction.QuitRole)
+
+        edit_menu = self._menu(bar, "&Edit")
+        self.undo_action = self._menu_action(edit_menu, "Undo", self._undo)
+        self.undo_action.setShortcut(QKeySequence("Ctrl+Z"))
+        self.redo_action = self._menu_action(edit_menu, "Redo", self._redo)
+        self.redo_action.setShortcut(QKeySequence("Ctrl+Shift+Z"))
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.remove_btn)
+        edit_menu.addAction(self.clear_btn)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.copy_command_action)
+        edit_menu.addSeparator()
+        self.settings_action.setShortcut(QKeySequence("Ctrl+,"))
+        self.settings_action.setMenuRole(QAction.PreferencesRole)
+        edit_menu.addAction(self.settings_action)
+
+        queue_menu = self._menu(bar, "&Queue")
+        self.convert_action = self._menu_action(queue_menu, "Convert", self.start_btn.click)
+        self.convert_action.setShortcut(QKeySequence("Ctrl+Return"))
+        self.stop_action = self._menu_action(queue_menu, "Stop", self.stop_btn.click)
+        queue_menu.addAction(self.pause_after_check)
+        # The buttons own the run state (queue_controller.py); the menu
+        # mirrors their enabled state and wording.
+        self._button_mirror = _ButtonActionMirror(
+            {self.start_btn: self.convert_action, self.stop_btn: self.stop_action}, self)
+        queue_menu.aboutToShow.connect(self._button_mirror.sync)
+
+        view_menu = self._menu(bar, "&View")
+        self.show_log_action.setShortcut(QKeySequence("Ctrl+L"))
+        view_menu.addAction(self.show_log_action)
+        theme_menu = self._menu(view_menu, "Theme")
+        self.theme_actions = QActionGroup(self)
+        for value, label in THEME_CHOICES:
+            action = QAction(label, self)
+            theme_menu.addAction(action)
+            action.setCheckable(True)
+            action.setData(value)
+            action.setChecked(value == self._theme_choice)
+            self.theme_actions.addAction(action)
+            action.triggered.connect(lambda _checked=False, value=value: self.theme_combo.setCurrentIndex(
+                self.theme_combo.findData(value)))
+        self.theme_combo.currentIndexChanged.connect(self._sync_theme_actions)
+
+        help_menu = self._menu(bar, "&Help")
+        self.help_action.setShortcut(QKeySequence(Qt.Key_F1))
+        help_menu.addAction(self.help_action)
+        help_menu.addAction(self.about_action)
+
+    def _menu(self, parent_menu, title):
+        menu = QMenu(title, self)
+        parent_menu.addMenu(menu)
+        return menu
+
+    def _menu_action(self, menu, text, slot):
+        # QAction(text, self) / QMenu(title, self), not the addAction(text,
+        # slot) / addMenu(title) overloads: the window owns every action and
+        # menu, so their Python wrappers stay valid (with the overloads, a
+        # second MainWindow in one process saw them as already deleted).
+        action = QAction(text, self)
+        action.triggered.connect(slot)
+        menu.addAction(action)
+        return action
+
+    def _sync_theme_actions(self):
+        for action in self.theme_actions.actions():
+            action.setChecked(action.data() == self.theme_combo.currentData())
 
     def _build_status_bar(self):
         # The footer itself is gone -- Theme and hardware-acceleration
         # status used to sit here permanently ("a qBittorrent-style
         # footer strip"), reported live as the most generic-utility-
         # feeling part of an otherwise much friendlier window. Theme
-        # moved into Settings… (the overflow menu, _build_right_panel);
+        # moved into Settings… (Edit menu, _build_menu_bar);
         # hardware status is silent now even when no acceleration exists
         # at all -- CPU is a completely valid, unremarkable Automatic
         # outcome, not something worth greeting a non-technical user with
@@ -175,8 +313,8 @@ class _UiBuilderMixin:
         layout.addWidget(tabs)
 
         # Effective Command no longer sits in the main layout at all, even
-        # collapsed -- "Copy FFmpeg Command" (the overflow menu built in
-        # _build_right_panel) is now the only exposed entry point for it,
+        # collapsed -- "Copy FFmpeg Command" (Edit menu, built in
+        # _build_menu_bar) is now the only exposed entry point for it,
         # since _copy_command_to_clipboard (main.py) already reads
         # self._last_preview_args directly rather than this widget's own
         # text. self.command_preview itself still gets constructed and
@@ -334,7 +472,7 @@ class _UiBuilderMixin:
         # own comment) -- constructed only so main.py's
         # _update_command_preview keeps a real widget to call
         # setPlainText() on exactly as before. No parent, no layout;
-        # "Copy FFmpeg Command" (the overflow menu, _build_right_panel)
+        # "Copy FFmpeg Command" (Edit menu, _build_menu_bar)
         # is the only exposed entry point now, and it reads
         # self._last_preview_args directly, not this widget's text.
         self.command_preview = QPlainTextEdit()
@@ -1073,28 +1211,6 @@ class _UiBuilderMixin:
         layout.setContentsMargins(PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN)
         layout.setSpacing(PANEL_SPACING)
 
-        # "Videos", not "Queue" -- matches the rest of the user-facing
-        # vocabulary this app already uses (Start -> Convert, Add Files ->
-        # Add Videos, Container -> File Format): the user is thinking "my
-        # videos", not "my queue entries". Purely the visible label --
-        # queue_list/TranscodeQueue/_queue_editable and every other
-        # internal name stay exactly as they are, and "Clear Queue"/
-        # "Queue is empty"/"Queue ETA" elsewhere are correctly-technical
-        # as-is, not part of this rename. The fuller instructional text
-        # that used to live here ("drag files here, or use Add Files --
-        # select a row to edit its settings live") was redundant either
-        # way: DropTreeWidget's own empty-state placeholder ("Drop videos
-        # here, or click 'Add Videos...'") already carries that message
-        # exactly when it's relevant (queue is empty), and disappears once
-        # it isn't needed.
-        #
-        # Not added to layout yet -- Add Videos/the overflow menu (built
-        # below, alongside queue_list) share this same header row now
-        # (reported live: they're operations *on* Videos, so they read
-        # better next to its own heading than sitting below the table,
-        # which is where a per-run detail like Save-to naturally starts
-        # instead). videos_heading is added once that row is assembled.
-        videos_heading = QLabel("Videos")
         self.queue_list = DropTreeWidget(self.add_files, on_reordered=self._push_undo_snapshot)
         # Suppresses the redundant per-cell focus-rect box Fusion draws
         # natively (see _NoItemFocusRectStyle's own docstring for why
@@ -1154,97 +1270,38 @@ class _UiBuilderMixin:
         self.queue_list.itemSelectionChanged.connect(self._on_queue_selection_changed)
         self.queue_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.queue_list.customContextMenuRequested.connect(self._on_queue_context_menu)
-        # Not added to layout yet -- comes after the header row below,
-        # which needs add_files_btn/queue_menu_btn built first.
-
-        # header_row, not q_btns -- shares the same row as videos_heading
-        # now (see that label's own comment above for why); the name
-        # stays q_btns below purely so the rest of this block (queue_menu
-        # and its actions) doesn't need touching.
-        q_btns = header_row = QHBoxLayout()
-        header_row.addWidget(videos_heading)
-        header_row.addStretch()
+        # ODCS window model: queue commands live in the menu bar (every
+        # command, with its shortcut) and the toolbar (the frequent ones);
+        # the old "⋯" overflow button is gone. The QActions below are the
+        # single definition each menu and button shares.
         self.add_files_btn = QPushButton("Add Videos…")
         self.add_files_btn.clicked.connect(self._pick_files)
-        q_btns.addWidget(self.add_files_btn)
-        # One overflow menu for everything that isn't the primary, always-
-        # needed action (Add Videos) -- Remove Selected/Clear Queue keep
-        # their existing Delete-key and right-click-menu entry points
-        # untouched, this just removes their own permanent toolbar buttons.
-        # Attribute names unchanged (self.remove_btn/self.clear_btn/
-        # self.pause_after_check) despite now being QActions, not
-        # QPushButton/QCheckBox -- QAction supports the same setEnabled/
-        # setChecked/isChecked calls every existing queue_controller.py
-        # call site for these three already uses, so none of that logic
-        # needed to change, only how each one is built and wired here.
-        self.queue_menu_btn = QToolButton()
-        # A real icon (circled dots), not the literal "⋯" text -- reported
-        # live as reading like three stray characters next to Add Videos
-        # rather than a deliberate control. Refreshed on every theme
-        # change (_apply_theme/_on_system_theme_changed, main.py) since
-        # setIcon() only takes a snapshot at set-icon time -- unlike QSS-
-        # driven appearance, it does not react to _load_stylesheet on its
-        # own.
-        self.queue_menu_btn.setIcon(self._themed_icon("more"))
-        # objectName so style.qss can give this one icon-only button a
-        # tighter padding than the generic QToolButton rule -- that rule
-        # (padding: 6px 10px) is sized for a text+icon tool button, and
-        # left almost no room for an 18px icon inside a fixed 32px
-        # button: reported live (and confirmed by grabbing the button
-        # alone) that the icon rendered noticeably smaller than 18px,
-        # squeezed by its own padding.
-        self.queue_menu_btn.setObjectName("queueMenuButton")
-        # 20px, not 16 -- reported live twice against real screenshots:
-        # first that the three dots nearly disappeared at 16px reading
-        # as a stray status indicator, then that they were still too
-        # small even at 18px once the padding above turned out to be
-        # shrinking it further. The 32px clickable area (button, not
-        # icon) stays unchanged.
-        self.queue_menu_btn.setIconSize(QSize(20, 20))
-        self.queue_menu_btn.setFixedSize(32, 32)
-        # "More actions", not "More queue actions" -- half of what's in
-        # here (Show Conversion Log, Copy FFmpeg Command, Settings…)
-        # isn't a queue action at all. Reported live.
-        self.queue_menu_btn.setToolTip("More actions")
-        self.queue_menu_btn.setAccessibleName("More actions")
-        self.queue_menu_btn.setPopupMode(QToolButton.InstantPopup)
-        queue_menu = QMenu(self.queue_menu_btn)
         self.remove_btn = QAction("Remove Selected", self)
         self.remove_btn.triggered.connect(self._remove_selected)
+        self.remove_queue_btn = QPushButton("Remove")
+        self.remove_queue_btn.setToolTip("Remove the selected videos from the queue (Delete)")
+        self.remove_queue_btn.clicked.connect(self._remove_selected)
+        self.remove_queue_btn.setEnabled(False)
+        self.queue_list.itemSelectionChanged.connect(
+            lambda: self.remove_queue_btn.setEnabled(bool(self.queue_list.selectedItems())))
         self.clear_btn = QAction("Clear Queue", self)
         self.clear_btn.triggered.connect(self._clear_queue)
-        queue_menu.addAction(self.remove_btn)
-        queue_menu.addAction(self.clear_btn)
-        queue_menu.addSeparator()
+        # Only meaningful during a run -- _apply_run_phase_visuals
+        # (queue_controller.py) enables it for the active phases.
         self.pause_after_check = QAction("Stop After Current Video", self)
         self.pause_after_check.setCheckable(True)
         self.pause_after_check.setEnabled(False)
         self.pause_after_check.toggled.connect(self._on_pause_after_toggled)
-        queue_menu.addAction(self.pause_after_check)
-        queue_menu.addSeparator()
-        show_log_action = QAction("Show Conversion Log", self)
-        show_log_action.triggered.connect(self._show_log_window)
-        queue_menu.addAction(show_log_action)
-        copy_command_action = QAction("Copy FFmpeg Command", self)
-        copy_command_action.triggered.connect(self._copy_command_to_clipboard)
-        queue_menu.addAction(copy_command_action)
-        queue_menu.addSeparator()
-        settings_action = QAction("Settings…", self)
-        settings_action.triggered.connect(self._open_settings_dialog)
-        queue_menu.addAction(settings_action)
-        # F1 is the primary way into Help (main.py) -- this entry exists
-        # so it's discoverable without knowing that shortcut, same
-        # reasoning as every other action here also being reachable
-        # without memorizing one.
-        help_action = QAction("Help", self)
-        help_action.triggered.connect(self._show_help_window)
-        queue_menu.addAction(help_action)
-        about_action = QAction("About VeloCoder", self)
-        about_action.triggered.connect(self._show_about_dialog)
-        queue_menu.addAction(about_action)
-        self.queue_menu_btn.setMenu(queue_menu)
-        q_btns.addWidget(self.queue_menu_btn)
-        layout.addLayout(header_row)
+        self.show_log_action = QAction("Show Conversion Log", self)
+        self.show_log_action.triggered.connect(self._show_log_window)
+        self.copy_command_action = QAction("Copy FFmpeg Command", self)
+        self.copy_command_action.triggered.connect(self._copy_command_to_clipboard)
+        self.settings_action = QAction("Settings…", self)
+        self.settings_action.triggered.connect(self._open_settings_dialog)
+        self.help_action = QAction("VeloCoder Help", self)
+        self.help_action.triggered.connect(self._show_help_window)
+        self.about_action = QAction("About VeloCoder", self)
+        self.about_action.triggered.connect(self._show_about_dialog)
         layout.addWidget(self.queue_list, 1)
 
         # Output folder is a per-run detail, not the first decision anyone
@@ -1280,7 +1337,7 @@ class _UiBuilderMixin:
         layout.addLayout(out_row)
 
         # "Stop After Current Video" (self.pause_after_check, still that
-        # attribute name) now lives in the overflow menu built above, not
+        # attribute name) now lives in the Queue menu (_build_menu_bar), not
         # a permanent checkbox here -- a one-shot request, not a
         # persistent policy either way: checking it lets the *currently*
         # running job finish untouched (no partial encode lost, unlike
@@ -1317,15 +1374,8 @@ class _UiBuilderMixin:
         self.stats_label.setStyleSheet("font-size: 10pt;")
         layout.addWidget(self.stats_label)
 
-        # Convert/Cancel sit at the very bottom of the panel, after status/
-        # progress/ETA/stats, not right under Save to -- reported live:
-        # while converting, the progress area *is* the content, and Cancel
-        # is an action on that content, so it reads better trailing it than
-        # sitting above it. Idle/preparing/running/paused all still reach
-        # this same row; only stop_btn's text/enabled state changes
-        # (_set_status and friends, queue_controller.py), the row itself
-        # never moves.
-        run_row = QHBoxLayout()
+        # Convert is the window's primary action: the toolbar places it
+        # trailing, with Stop / Open Folder just before it (_build_toolbar).
         self.start_btn = QPushButton("Convert")
         self.start_btn.setObjectName("startButton")
         self.start_btn.setDefault(True)
@@ -1356,32 +1406,11 @@ class _UiBuilderMixin:
         self.open_folder_btn = QPushButton("Open Folder")
         self.open_folder_btn.setMinimumHeight(32)
         self.open_folder_btn.clicked.connect(self._open_output_dir)
-        # Right-anchored, Convert rightmost -- the leading stretch absorbs
-        # all the extra width instead of the buttons (both already capped
-        # above), so no per-button stretch factor is needed between them.
-        # Borrows macOS's own dialog/sheet convention (secondary action to
-        # the left of the primary, primary rightmost and tinted) even
-        # though this row isn't a dialog -- reported live as not reading
-        # like a deliberate concluding action while left-anchored under
-        # Save to; that convention is recognizable enough on its own to be
-        # worth reusing here regardless. stop_btn/open_folder_btn share the
-        # same slot (left of Convert) and are never both visible at once --
-        # _apply_run_phase_visuals (queue_controller.py) toggles between
-        # them per phase; a hidden widget in a QHBoxLayout claims no space,
-        # already relied on elsewhere in this file (quality_slider/
-        # size_spin's own visibility toggles), so no extra layout logic is
-        # needed for the mutual exclusivity.
-        run_row.addStretch()
-        run_row.addWidget(self.stop_btn)
-        run_row.addWidget(self.open_folder_btn)
-        run_row.addWidget(self.start_btn)
-        layout.addLayout(run_row)
 
         # Not shown in the main layout at all, same treatment as
         # command_preview on the left -- raw ffmpeg stderr is a debugging
         # aid, not something the simplified default view needs permanent
-        # space for even collapsed. "Show Conversion Log" (the overflow
-        # menu, this same method above) opens it in its own small window
+        # space for even collapsed. View ▸ Show Conversion Log opens it in its own small window
         # on demand, reparenting this exact widget rather than
         # duplicating it -- every _on_job_log/_on_job_started/etc. call
         # keeps appending to it unchanged either way. queue_list's own

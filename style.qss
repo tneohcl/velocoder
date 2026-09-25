@@ -53,6 +53,44 @@ QWidget#leftPanel {
     border-right: 1px solid $SPLITTER;
 }
 
+/* ODCS window model (odcs-ui DESIGN.md): menu bar and toolbar on the window
+   colour, a hairline under the toolbar, the queue on the panel colour. */
+QMenuBar {
+    background-color: $BG_WINDOW;
+    color: $TEXT_PRIMARY;
+    padding: 2px 8px;
+}
+
+QMenuBar::item {
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: transparent;
+}
+
+QMenuBar::item:selected {
+    background-color: $HOVER_BG;
+}
+
+QWidget#appToolbar {
+    background-color: $BG_WINDOW;
+    border-bottom: 1px solid $SPLITTER;
+}
+
+QLabel#appTitle {
+    font-weight: 700;
+}
+
+QWidget#contentPanel {
+    background-color: $BG_PANEL;
+}
+
+/* The settings column is the sidebar: window colour, with its cards on it. */
+QScrollArea#leftPanel,
+QScrollArea#leftPanel > QWidget#qt_scrollarea_viewport,
+QScrollArea#leftPanel > QWidget#qt_scrollarea_viewport > QWidget {
+    background-color: $BG_WINDOW;
+}
+
 /* margin-top used to be 14px, just about exactly the title text's own
    rendered height at 10pt bold -- the title sat straddling the border
    line instead of clearing it, the classic "native GroupBox" look (a
@@ -270,17 +308,6 @@ QToolButton:pressed {
 
 QToolButton:disabled {
     color: $TEXT_DISABLED;
-}
-
-/* The generic QToolButton padding above (6px 10px) is sized for a
-   text+icon tool button -- on this fixed 32px icon-only button it left
-   almost no room for the icon itself, which rendered visibly smaller
-   than its own setIconSize (confirmed by grabbing the button alone).
-   A small, even padding instead, scoped to just this one button by
-   objectName (ui_builder.py) so the generic rule is free to stay as-is
-   for any future text-carrying QToolButton. */
-QToolButton#queueMenuButton {
-    padding: 2px;
 }
 
 /* The little dropdown-indicator arrow InstantPopup mode would otherwise

@@ -239,22 +239,10 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             print(f"Hardware: {gpu.display_name} GPU found but its validation encode failed: {gpu.reason}")
 
         self._build_ui()
-        # Ctrl+Z/Ctrl+Shift+Z -- default Qt.WindowShortcut context, fires
-        # regardless of which child widget has focus, matching how
-        # document-level undo normally behaves. Queue-structure only (add/
-        # remove/clear/reorder) -- see _push_undo_snapshot/_undo/_redo in
-        # queue_controller.py.
-        QShortcut(QKeySequence("Ctrl+Z"), self, self._undo)
-        QShortcut(QKeySequence("Ctrl+Shift+Z"), self, self._redo)
-        # Default Qt.WindowShortcut context, same as the two above --
-        # F1 for Help should work regardless of which control has focus.
-        QShortcut(QKeySequence(Qt.Key_F1), self, self._show_help_window)
-        # self.close(), not QApplication.quit() directly -- routes
-        # through this window's own closeEvent (session flush, geometry/
-        # theme persistence) exactly like clicking the window's real
-        # close button would, rather than a shortcut-specific shutdown
-        # path that could skip it.
-        QShortcut(QKeySequence("Ctrl+Q"), self, self.close)
+        # Undo/Redo (Ctrl+Z / Ctrl+Shift+Z), Help (F1) and Quit (Ctrl+Q) are
+        # menu-bar actions now (ui_builder.py, _build_menu_bar): window-wide,
+        # listed where people look for them, and one owner per key. Quit goes
+        # through self.close() and so through closeEvent's session flush.
         # Delete removes the selected queue row(s) -- scoped to queue_list
         # itself (Qt.WidgetWithChildrenShortcut, not the window-wide
         # default above) so Delete/Backspace still edits text normally
@@ -448,10 +436,6 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # retroactively touch.
         if getattr(self, "_help_window", None) is not None:
             self._help_window.refresh_theme()
-        # Same reasoning, for a static icon this time rather than rich
-        # text -- setIcon() (ui_builder.py) only ever took a snapshot of
-        # the icon at construction time.
-        self.queue_menu_btn.setIcon(self._themed_icon("more"))
 
     def _open_settings_dialog(self):
         # Lazily built once, reused on every subsequent open -- same
@@ -527,7 +511,6 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             _load_stylesheet(QApplication.instance(), _resolve_theme("system"))
             if getattr(self, "_help_window", None) is not None:
                 self._help_window.refresh_theme()
-            self.queue_menu_btn.setIcon(self._themed_icon("more"))
 
     def _update_settings_scope_label(self, selected=None):
         # Reported live: nothing distinguished "these controls are about

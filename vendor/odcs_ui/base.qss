@@ -1,0 +1,160 @@
+/* ODCS base stylesheet — component states from DESIGN.md.
+   Load it first; an app's own stylesheet comes after and may refine it.
+   Rule: every state keeps the same size, padding, radius and border width.
+   Only colors change. Focus is shown by the border color (Qt stylesheets
+   have no outline), so it never shifts layout either. */
+
+QMainWindow, QDialog { background: $BG_WINDOW; color: $TEXT_PRIMARY; }
+/* Text colour everywhere comes from the tokens, not the system palette, so a
+   forced Dark/Light choice can't leave system-coloured text behind. */
+QWidget { color: $TEXT_PRIMARY; }
+/* Pseudo-states only work on the last part of a Qt selector, so disabled
+   text is one plain rule (children of a disabled widget are disabled too). */
+QLabel:disabled { color: $TEXT_DISABLED; }
+/* Plain QWidget windows and panels opt in with the odcsSurface property
+   (odcs_ui.theming.set_surface). */
+*[odcsSurface="window"] { background: $BG_WINDOW; }
+*[odcsSurface="panel"] { background: $BG_PANEL; }
+QToolTip { background: $BG_PANEL; color: $TEXT_PRIMARY; border: 1px solid $BORDER_OUTER; padding: 4px 6px; }
+
+/* Buttons -------------------------------------------------------------- */
+QPushButton {
+    min-height: 26px;
+    padding: 0 12px;
+    border: 1px solid $BORDER_STRONG;
+    border-radius: 4px;
+    background: $BG_CONTROL;
+    color: $TEXT_PRIMARY;
+}
+QPushButton:hover { background: $BG_CONTROL_HOVER; border-color: $BORDER_HOVER; }
+QPushButton:pressed { background: $BG_CONTROL_PRESSED; border-color: $BORDER_HOVER; }
+QPushButton:checked { background: $SELECTION_BG; border-color: $ACCENT; }
+QPushButton[focusVisible="true"] { border-color: $ACCENT; }
+QPushButton:disabled { background: $BG_CONTROL; color: $TEXT_DISABLED; border-color: $BORDER; }
+
+/* The current task's action (Back up now, Convert N Videos, Review restore…). */
+QPushButton[role="primary"] { background: $ACCENT; color: $TEXT_ON_ACCENT; border-color: $ACCENT; font-weight: 600; }
+QPushButton[role="primary"]:hover { background: $ACCENT_HOVER; border-color: $ACCENT_HOVER; }
+QPushButton[role="primary"]:pressed { background: $ACCENT_PRESSED; border-color: $ACCENT_PRESSED; }
+QPushButton[role="primary"][focusVisible="true"] { border-color: $TEXT_PRIMARY; }
+QPushButton[role="primary"]:disabled { background: $BG_ACCENT_DISABLED; color: $TEXT_ACCENT_DISABLED; border-color: $BG_ACCENT_DISABLED; }
+
+/* Toolbar buttons: borderless until hovered, labelled icons. */
+QToolBar { background: $BG_WINDOW; border: none; border-bottom: 1px solid $BORDER; spacing: 6px; padding: 6px 12px; }
+QToolBar QToolButton {
+    min-height: 26px;
+    padding: 0 8px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: $TEXT_PRIMARY;
+}
+QToolBar QToolButton:hover { background: $HOVER_BG; }
+QToolBar QToolButton:pressed { background: $BG_CONTROL_PRESSED; }
+QToolBar QToolButton:checked { background: $SELECTION_BG; }
+QToolBar QToolButton[focusVisible="true"] { border-color: $ACCENT; }
+QToolBar QToolButton:disabled { color: $TEXT_DISABLED; }
+
+/* Fields ------------------------------------------------------------------ */
+QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QComboBox {
+    border: 1px solid $BORDER;
+    border-radius: 4px;
+    background: $BG_FIELD;
+    color: $TEXT_PRIMARY;
+    selection-background-color: $SELECTION_BG;
+    selection-color: $TEXT_PRIMARY;
+}
+QLineEdit, QSpinBox, QComboBox { min-height: 26px; padding: 0 8px; }
+QLineEdit:hover, QSpinBox:hover, QComboBox:hover { border-color: $BORDER_HOVER; }
+QLineEdit[focusVisible="true"], QPlainTextEdit[focusVisible="true"], QTextEdit[focusVisible="true"], QSpinBox[focusVisible="true"], QComboBox[focusVisible="true"] { border-color: $ACCENT; }
+QLineEdit:disabled, QSpinBox:disabled, QComboBox:disabled { background: $BG_CONTROL; color: $TEXT_DISABLED; border-color: $BORDER; }
+
+/* Checkboxes: 16 px box, constant border width. Apps set `image` for the
+   checked mark (it must contrast with $ACCENT: see ON_ACCENT_IS_DARK). */
+QCheckBox { spacing: 8px; color: $TEXT_PRIMARY; }
+QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid $BORDER_HOVER; border-radius: 4px; background: $BG_FIELD; }
+QCheckBox::indicator:hover { border-color: $ACCENT; }
+QCheckBox::indicator:checked { background: $ACCENT; border-color: $ACCENT; }
+QCheckBox[focusVisible="true"] { color: $TEXT_PRIMARY; }
+QCheckBox[focusVisible="true"]::indicator { border-color: $ACCENT; }
+QCheckBox:disabled { color: $TEXT_DISABLED; }
+QCheckBox::indicator:disabled { background: $BG_CONTROL; border-color: $BORDER; }
+
+/* Lists and trees: hover, selected, keyboard current item. */
+QListView, QTreeView, QTableView { background: $BG_FIELD; border: 1px solid $BORDER; border-radius: 8px; color: $TEXT_PRIMARY; outline: 0; }
+QListView::item, QTreeView::item { padding: 6px 8px; border: 1px solid transparent; }
+QListView::item:hover, QTreeView::item:hover { background: $HOVER_BG; }
+QListView::item:selected, QTreeView::item:selected { background: $SELECTION_BG; color: $TEXT_PRIMARY; }
+QListView[focusVisible="true"]::item:focus, QTreeView[focusVisible="true"]::item:focus { border-color: $ACCENT; }
+QHeaderView::section { background: $BG_PANEL; color: $TEXT_SECONDARY; border: none; border-bottom: 1px solid $BORDER; padding: 6px 8px; font-weight: 600; }
+
+/* Text roles ---------------------------------------------------------------- */
+QLabel[role="secondary"] { color: $TEXT_SECONDARY; }
+QLabel[role="caption"] { color: $TEXT_CAPTION; }
+QLabel[role="success"] { color: $SUCCESS; }
+QLabel[role="warning"] { color: $WARNING_TEXT; }
+QLabel[role="error"] { color: $ERROR; }
+
+QMenuBar { background: $BG_WINDOW; color: $TEXT_PRIMARY; }
+QMenuBar::item:selected, QMenu::item:selected { background: $SELECTION_BG; color: $TEXT_PRIMARY; }
+QMenu { background: $BG_PANEL; color: $TEXT_PRIMARY; border: 1px solid $BORDER_OUTER; padding: 4px; }
+QMenu::item:disabled { color: $TEXT_DISABLED; }
+QMenu::separator { height: 1px; background: $BORDER; margin: 4px 8px; }
+
+/* ODCS widgets (odcs_ui.widgets) ----------------------------------------------
+   Same rule as above: states change colors only. Selection never changes font
+   weight, which would change text width and shift the layout. */
+
+QLabel#odcsGroupHeading { color: $TEXT_SECONDARY; font-weight: 600; padding: 0 8px; }
+
+QFrame#odcsViewSwitch { background: $BG_CONTROL; border-radius: 6px; }
+QFrame#odcsViewSwitch QPushButton#odcsSegment {
+    min-height: 22px;
+    padding: 0 14px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: $TEXT_SECONDARY;
+}
+QFrame#odcsViewSwitch QPushButton#odcsSegment:hover { background: $HOVER_BG; color: $TEXT_PRIMARY; }
+QFrame#odcsViewSwitch QPushButton#odcsSegment:pressed { background: $BG_CONTROL_PRESSED; color: $TEXT_PRIMARY; }
+QFrame#odcsViewSwitch QPushButton#odcsSegment:checked { background: $BG_PANEL; border-color: $BORDER_STRONG; color: $TEXT_PRIMARY; }
+QFrame#odcsViewSwitch QPushButton#odcsSegment[focusVisible="true"] { border-color: $ACCENT; }
+QFrame#odcsViewSwitch QPushButton#odcsSegment:disabled { color: $TEXT_DISABLED; }
+
+QFrame#odcsSettingsList { background: $BG_PANEL; border: 1px solid $BORDER; border-radius: 8px; }
+QPushButton#odcsSettingRow {
+    min-height: 0;
+    padding: 0;
+    border: 1px solid transparent;
+    border-bottom-color: $BORDER;
+    border-radius: 0;
+    background: transparent;
+    text-align: left;
+}
+QPushButton#odcsSettingRow:hover { background: $HOVER_BG; }
+QPushButton#odcsSettingRow:pressed { background: $BG_CONTROL_PRESSED; }
+QPushButton#odcsSettingRow[focusVisible="true"] { border-color: $ACCENT; }
+QPushButton#odcsSettingRow[last="true"] { border-bottom-color: transparent; }
+QPushButton#odcsSettingRow[last="true"][focusVisible="true"] { border-color: $ACCENT; }
+QLabel#odcsChevron { color: $TEXT_SECONDARY; }
+
+QFrame#odcsFactCell { border: none; border-bottom: 1px solid $BORDER; }
+QFrame#odcsFactCell[last="true"] { border-bottom: none; }
+
+QPushButton#odcsSectionHeader {
+    min-height: 0;
+    padding: 4px 6px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: $TEXT_PRIMARY;
+    font-weight: 600;
+    text-align: left;
+}
+QPushButton#odcsSectionHeader:checked { background: transparent; border-color: transparent; }
+QPushButton#odcsSectionHeader:hover, QPushButton#odcsSectionHeader:checked:hover { background: $HOVER_BG; }
+QPushButton#odcsSectionHeader:pressed { background: $BG_CONTROL_PRESSED; }
+QPushButton#odcsSectionHeader[focusVisible="true"] { border-color: $ACCENT; }
+
+QLabel#odcsAboutName { font-size: 16pt; font-weight: 700; }

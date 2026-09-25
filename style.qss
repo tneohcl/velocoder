@@ -76,7 +76,10 @@ QWidget#appToolbar {
     border-bottom: 1px solid $SPLITTER;
 }
 
+/* The app name is the brand: body x 1.6, weight 700, i.e. 16pt over the
+   10pt body above (the ODCS About dialog's app-name size). */
 QLabel#appTitle {
+    font-size: 16pt;
     font-weight: 700;
 }
 

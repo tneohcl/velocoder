@@ -337,6 +337,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # lifetime assumptions) not something to rely on at all.
         self._session_save_timer.stop()
         self._save_session_now()
+        self._stop_detection_processes()
         self._qsettings.setValue("window_geometry", self.saveGeometry())
         self._qsettings.setValue("video_expert_expanded", self.video_expert_group.isChecked())
         super().closeEvent(event)

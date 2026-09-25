@@ -5232,6 +5232,61 @@ class TestHelpMenuAndShortcut(unittest.TestCase):
         self.assertFalse(window.isVisible())
 
 
+class TestProbeTeardown(unittest.TestCase):
+    """Closing the window mid-probe used to leave ffprobe/idet QProcesses to
+    be destroyed with it; their finished/readyRead callbacks then touched the
+    dead objects ("Internal C++ object (QProcess) already deleted")."""
+
+    def _sleeping_process(self, window):
+        from PySide6.QtCore import QProcess
+        proc = QProcess(window)
+        proc.start("sleep", ["30"])
+        self.assertTrue(proc.waitForStarted(3000))
+        window._detection_processes.append(proc)
+        return proc
+
+    def test_close_stops_outstanding_probes(self):
+        from PySide6.QtCore import QProcess
+        window = main.MainWindow()
+        proc = self._sleeping_process(window)
+        window.close()
+        self.assertEqual(proc.state(), QProcess.NotRunning)
+        self.assertEqual(window._detection_processes, [])
+
+    def test_callbacks_tolerate_an_already_destroyed_process(self):
+        import shiboken6
+        from PySide6.QtCore import QProcess
+        window = main.MainWindow()
+        proc = self._sleeping_process(window)
+        proc.kill()
+        proc.waitForFinished(3000)
+        shiboken6.delete(proc)
+        chunks = []
+        window._drain_probe_output(proc, chunks, QProcess.readAllStandardError)  # must not raise
+        self.assertEqual(chunks, [])
+        self.assertEqual(window._live_detection_processes(), [])
+
+
+class TestProbeResultForRemovedRow(unittest.TestCase):
+    def test_bookkeeping_ignores_a_row_removed_before_its_probe_landed(self):
+        # Used to raise "Internal C++ object (QTreeWidgetItem) already
+        # deleted" from inside the probe callbacks' finally block, which
+        # also skipped _maybe_begin_ready_conversion().
+        import shiboken6
+        from PySide6.QtWidgets import QTreeWidgetItem
+        window = main.MainWindow()
+        item = QTreeWidgetItem(["gone.mkv"])
+        window.queue_list.addTopLevelItem(item)
+        window._pending_analysis_items[item] = 2
+        window._pending_mid_run_items[item] = 2
+        window._pending_analysis_items.pop(item)
+        window._pending_mid_run_items.pop(item)
+        window.queue_list.takeTopLevelItem(0)
+        shiboken6.delete(item)
+        window._note_probe_finished(item)       # must not raise
+        window._maybe_submit_mid_run_job(item)  # must not raise
+
+
 class TestAppIcon(unittest.TestCase):
     def test_app_icon_loads_the_real_asset(self):
         icon = main._app_icon()

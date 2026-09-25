@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QProcess, QUrl
 from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWidgets import QFileDialog, QMenu, QMessageBox, QTreeWidgetItem
+import shiboken6
 
 import worker
 import formatting
@@ -335,6 +336,8 @@ class _QueueControllerMixin:
         # (submitting a mid-run add to the live queue) and only ever
         # applies during a run, this one is display-only bookkeeping that
         # applies to every added file regardless of run state.
+        if not shiboken6.isValid(item):
+            return  # row removed before its probe landed; removal already dropped its count
         remaining = self._pending_analysis_items.get(item)
         if remaining is None:
             return
@@ -345,6 +348,8 @@ class _QueueControllerMixin:
             del self._pending_analysis_items[item]
 
     def _maybe_submit_mid_run_job(self, item: QTreeWidgetItem):
+        if not shiboken6.isValid(item):
+            return  # same: a removed row has nothing left to submit
         remaining = self._pending_mid_run_items.get(item)
         if remaining is None:
             return
@@ -387,6 +392,36 @@ class _QueueControllerMixin:
         self._note_probe_finished(item)
         self._maybe_begin_ready_conversion()
 
+    @staticmethod
+    def _drain_probe_output(proc, chunks, read):
+        # A probe can still signal while its QProcess is being destroyed
+        # (window torn down mid-probe); reading from it then raises instead
+        # of returning the last bytes, and there is nothing left to keep.
+        try:
+            chunks.append(bytes(read(proc)).decode(errors="replace"))
+        except RuntimeError:
+            pass
+
+    def _live_detection_processes(self) -> list:
+        live = []
+        for proc in self._detection_processes:
+            try:
+                if proc.state() != QProcess.NotRunning:
+                    live.append(proc)
+            except RuntimeError:
+                pass  # already destroyed along with its parent
+        return live
+
+    def _stop_detection_processes(self):
+        """On close: stop outstanding ffprobe/idet probes before Qt destroys
+        them with the window. Signals are blocked first so no result lands
+        on a half-torn-down window, and nothing outlives the app."""
+        for proc in self._live_detection_processes():
+            proc.blockSignals(True)
+            proc.kill()
+            proc.waitForFinished(1000)
+        self._detection_processes = []
+
     def _start_interlace_detection(self, item: QTreeWidgetItem, path: Path):
         # Runs async (real files can take tens of seconds to sample) --
         # never blocks adding files, the item just updates once this lands.
@@ -396,7 +431,7 @@ class _QueueControllerMixin:
         proc.setArguments(args[1:])
         stderr_chunks: list[str] = []
         proc.readyReadStandardError.connect(
-            lambda: stderr_chunks.append(bytes(proc.readAllStandardError()).decode(errors="replace"))
+            lambda: self._drain_probe_output(proc, stderr_chunks, QProcess.readAllStandardError)
         )
         proc.finished.connect(lambda code, status: self._on_interlace_detected(item, "".join(stderr_chunks)))
         proc.errorOccurred.connect(lambda error: self._on_probe_error(item, proc, error))
@@ -425,7 +460,9 @@ class _QueueControllerMixin:
         self._on_control_changed()
 
     def _on_interlace_detected(self, item: QTreeWidgetItem, stderr_text: str):
-        self._detection_processes = [p for p in self._detection_processes if p.state() != QProcess.NotRunning]
+        if not shiboken6.isValid(self.queue_list):
+            return  # the window itself is gone (closed without closeEvent, e.g. in tests)
+        self._detection_processes = self._live_detection_processes()
         # finally, not a plain call after this try block -- confirmed a
         # real race, not just a theoretical one: called unconditionally
         # right here (ahead of the job-dict update below) meant that if
@@ -441,7 +478,7 @@ class _QueueControllerMixin:
             try:
                 job = item.data(STATUS_COL, Qt.UserRole)
             except RuntimeError:
-                self._maybe_submit_mid_run_job(item)  # no-ops: same RuntimeError, caught there too
+                self._maybe_submit_mid_run_job(item)  # no-op for a removed row (shiboken6.isValid guard there)
                 return  # item's C++ object was deleted (e.g. Clear Queue) before detection finished
             if job is None:
                 self._maybe_submit_mid_run_job(item)
@@ -493,7 +530,7 @@ class _QueueControllerMixin:
         proc.setArguments(args[1:])
         stdout_chunks: list[str] = []
         proc.readyReadStandardOutput.connect(
-            lambda: stdout_chunks.append(bytes(proc.readAllStandardOutput()).decode(errors="replace"))
+            lambda: self._drain_probe_output(proc, stdout_chunks, QProcess.readAllStandardOutput)
         )
         proc.finished.connect(lambda code, status: self._on_source_probed(item, "".join(stdout_chunks)))
         proc.errorOccurred.connect(lambda error: self._on_probe_error(item, proc, error))
@@ -501,7 +538,9 @@ class _QueueControllerMixin:
         proc.start()
 
     def _on_source_probed(self, item: QTreeWidgetItem, stdout_text: str):
-        self._detection_processes = [p for p in self._detection_processes if p.state() != QProcess.NotRunning]
+        if not shiboken6.isValid(self.queue_list):
+            return  # the window itself is gone (closed without closeEvent, e.g. in tests)
+        self._detection_processes = self._live_detection_processes()
         # finally, not a plain call ahead of the block below -- same real
         # race already fixed in _on_interlace_detected's identical
         # restructuring (see that method's own comment). This probe's own
@@ -515,7 +554,7 @@ class _QueueControllerMixin:
             try:
                 item.text(VIDEO_COL)  # touch the item; raises RuntimeError if its C++ object is gone
             except RuntimeError:
-                self._maybe_submit_mid_run_job(item)  # no-ops: same RuntimeError, caught there too
+                self._maybe_submit_mid_run_job(item)  # no-op for a removed row (shiboken6.isValid guard there)
                 return  # item deleted (e.g. Clear Queue) before the probe landed
             info = worker.parse_probe_output(stdout_text)
             if info.get("duration"):

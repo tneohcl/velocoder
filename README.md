@@ -469,8 +469,7 @@ this section.)*
   ...)` under the hood — same function real jobs use, so it can never drift
   from what actually runs) still exists and still updates on every settings
   change; it's just never added to any layout. The only exposed entry point
-  now is **Copy FFmpeg Command** in the **More actions** overflow menu (queue pane,
-  see below), which reads the resolved argv list directly
+  now is **Edit → Copy FFmpeg Command**, which reads the resolved argv list directly
   (`self._last_preview_args`) rather than this widget's own display text —
   `_copy_command_to_clipboard` needs no visible preview to work at all.
 
@@ -478,7 +477,7 @@ Theme (System/Light/Dark) and hardware-acceleration status used to sit in a
 permanent, qBittorrent-style footer strip at all times — reported live as
 the most generic-desktop-utility-feeling part of an otherwise much
 friendlier window, so this fork's own footer is gone entirely. Theme moved
-into **Settings…** (same overflow menu), a small `QDialog` hosting the
+into **Edit → Settings…** (Ctrl+,) and **View → Theme**, a small `QDialog` hosting the
 exact same `theme_combo` widget, reparented in on open rather than
 duplicated. Hardware status is silent during normal operation, including
 when no hardware acceleration exists at all — Automatic Processing
@@ -630,14 +629,12 @@ notice on top of it.
   **copy** of the job dict, confirmed empirically — the running queue's
   snapshot, taken at add time, wouldn't otherwise see the async
   interlace-detection result land moments later.
-- **Remove Selected / Clear Queue** live in the **More actions** overflow menu next to
-  **Add Videos…** now, not permanent buttons of their own — a circled-dots
-  icon (`assets/more_dark.svg`/`more_light.svg`), not the literal "⋯" text
-  it used to be (reported live as reading like three stray characters
-  rather than a deliberate control); `queue_menu_btn.setIcon(...)` is
-  explicitly refreshed on every theme change (`_apply_theme`/
-  `_on_system_theme_changed`, main.py), since unlike QSS-driven
-  appearance it doesn't react to a stylesheet reload on its own. Delete-key
+- **ODCS window model** (shared with Keep via odcs-ui): a menu bar with every
+  command and its shortcut (File, Edit, Queue, View, Help), and a toolbar with
+  **Add Videos…** and **Remove** leading and **Convert** trailing as the one
+  primary action (Stop / Open Folder appear just before it when relevant).
+  The old "More actions" overflow button is gone. **Clear Queue** is in
+  **Edit**; the Queue menu mirrors the Convert/Stop buttons' state. Delete-key
   (queue focused) and the right-click context menu still reach Remove
   directly either way. Clear Queue still asks for confirmation first
   (skipped entirely if the queue is already empty) — it can discard real
@@ -671,7 +668,7 @@ notice on top of it.
   Preparing shows an indeterminate progress bar (no real fraction exists
   yet during file analysis); Converting/Paused show the full determinate
   telemetry. Checking **Stop After Current Video** (`pause_after_check`, a
-  checkable action in the **More actions** menu) appends "— will stop after this
+  checkable action in the **Queue** menu) appends "— will stop after this
   video" to the status line, centralized through the `_set_status` helper
   every status update goes through.
 - **Convert / Cancel**, bottom-right of the panel, below status/progress/
@@ -712,7 +709,7 @@ notice on top of it.
   one-time no-hardware notice, alone) or another conversion begins,
   whichever comes first.
 - **Log** (raw ffmpeg stderr) has no permanent panel either, collapsed or
-  otherwise — **Show Conversion Log** (the **More actions** menu) opens it in its own
+  otherwise — **View → Show Conversion Log** (Ctrl+L) opens it in its own
   small non-modal window, reparenting the real, already-live `log_view`
   widget rather than duplicating it. `queue_list`'s own stretch factor
   simply claims the space Log used to share space with it for.
@@ -721,9 +718,8 @@ notice on top of it.
 
 <img src="screenshots/help_dark.png" alt="Help window" width="380"> <img src="screenshots/about_dark.png" alt="About VeloCoder" width="220"> <img src="screenshots/system_information_dark.png" alt="System Information" width="220">
 
-Reachable from the **More actions** menu (**Help**, **About VeloCoder**) or F1
-(Help specifically) — no menu bar, no permanent **?** buttons next to
-controls, nothing added to the main window itself.
+Reachable from the **Help** menu (**VeloCoder Help**, **About VeloCoder**) or F1
+(Help specifically) — no permanent **?** buttons next to controls.
 
 - **Help** (`help_window.py`'s `HelpWindow`) is a non-modal, resizable
   window: a search field and category/topic tree on the left, an

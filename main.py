@@ -428,6 +428,9 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         self._theme_choice = choice
         self._qsettings.setValue("theme_choice", choice)
         _load_stylesheet(QApplication.instance(), _resolve_theme(choice))
+        # Queue status icons are set once per job state; redraw them for
+        # the new theme.
+        self._refresh_status_icons()
         # _load_stylesheet alone re-themes ordinary widget chrome (the
         # Help window's search field/topic tree included) via the same
         # app-level QSS every other window already shares -- but the
@@ -510,6 +513,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
     def _on_system_theme_changed(self, _scheme):
         if self._theme_choice == "system":
             _load_stylesheet(QApplication.instance(), _resolve_theme("system"))
+            self._refresh_status_icons()
             if getattr(self, "_help_window", None) is not None:
                 self._help_window.refresh_theme()
 

@@ -25,7 +25,7 @@ from PySide6.QtCore import (  # noqa: E402
     QEvent, QEventLoop, QMimeData, QPoint, QPointF, QRect, QSize, Qt, QTimer, QUrl,
 )
 from PySide6.QtGui import (  # noqa: E402
-    QColor, QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QFocusEvent, QFont,
+    QColor, QDragEnterEvent, QIcon, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QFocusEvent, QFont,
     QFontMetrics, QKeySequence, QPainter, QPalette, QPixmap, QShortcut, QWheelEvent,
 )
 from PySide6.QtWidgets import QApplication, QScrollArea, QStyleOptionViewItem, QTabWidget, QWidget  # noqa: E402
@@ -2714,6 +2714,60 @@ class TestQueueContextMenu(unittest.TestCase):
         window._on_job_finished("/tmp/clip.mkv", "/tmp/out/clip.mp4")
         updated = item.data(main.STATUS_COL, main.Qt.UserRole)
         self.assertEqual(updated["_completed_output_path"], "/tmp/out/clip.mp4")
+
+
+class TestStatusIconsFollowTheme(unittest.TestCase):
+    """A row's status icon (running / done / warning) is set once, when its
+    job changes state. Switching Appearance afterwards must redraw it in
+    the new theme, not leave the old theme's glyph on the new background."""
+
+    @staticmethod
+    def _image(icon):
+        return icon.pixmap(16, 16).toImage()
+
+    def test_existing_status_icons_follow_a_theme_switch(self):
+        window = main.MainWindow()
+        assets = Path(main.__file__).parent / "assets"
+        with patch.object(window._qsettings, "setValue"):
+            window._apply_theme("dark")
+            done = _add_dummy_item(window, "a.mkv")
+            window._current_running_item = done
+            window._on_job_finished("/nonexistent/a.mkv", "/nonexistent/a.mp4")
+            failed = _add_dummy_item(window, "b.mkv")
+            window._current_running_item = failed
+            window._on_job_failed("/nonexistent/b.mkv", "boom")
+            for item, name in ((done, "status_done"), (failed, "status_warning")):
+                self.assertEqual(self._image(item.icon(main.STATUS_COL)),
+                                 self._image(QIcon(str(assets / f"{name}_dark.svg"))))
+            window._apply_theme("light")
+        for item, name in ((done, "status_done"), (failed, "status_warning")):
+            with self.subTest(icon=name):
+                self.assertEqual(self._image(item.icon(main.STATUS_COL)),
+                                 self._image(QIcon(str(assets / f"{name}_light.svg"))))
+
+    def test_desktop_theme_change_redraws_status_icons_when_following_system(self):
+        window = main.MainWindow()
+        assets = Path(main.__file__).parent / "assets"
+        window._theme_choice = "system"
+        with patch.object(main, "_resolve_theme", return_value="dark"):
+            item = _add_dummy_item(window, "a.mkv")
+            window._current_running_item = item
+            window._on_job_finished("/nonexistent/a.mkv", "/nonexistent/a.mp4")
+        with patch.object(main, "_resolve_theme", return_value="light"):
+            window._on_system_theme_changed(None)
+        self.assertEqual(self._image(item.icon(main.STATUS_COL)),
+                         self._image(QIcon(str(assets / "status_done_light.svg"))))
+
+    def test_cleared_status_stays_cleared_after_a_theme_switch(self):
+        window = main.MainWindow()
+        with patch.object(window._qsettings, "setValue"):
+            window._apply_theme("dark")
+            item = _add_dummy_item(window, "a.mkv")
+            window._current_running_item = item
+            window._on_job_finished("/nonexistent/a.mkv", "/nonexistent/a.mp4")
+            window._clear_status_icon(item)
+            window._apply_theme("light")
+        self.assertTrue(item.icon(main.STATUS_COL).isNull())
 
 
 class TestRefreshVideoCell(unittest.TestCase):

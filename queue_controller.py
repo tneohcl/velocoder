@@ -26,6 +26,9 @@ from queue_widget import (
 # without needing to know what the other two already contributed.
 _RAW_VIDEO_LABEL_ROLE = Qt.UserRole + 2
 _RAW_AUDIO_LABEL_ROLE = Qt.UserRole + 3
+# Which status icon (status_play / status_done / status_warning) a row shows,
+# so a theme switch can redraw it (queue_widget uses UserRole + 1 and + 4).
+_STATUS_ICON_ROLE = Qt.UserRole + 5
 
 # Debounced, not written on every call -- a slider drag alone can fire
 # this dozens of times a second (_sync_settings_to_selected_queue_items),
@@ -36,6 +39,26 @@ _SESSION_SAVE_DEBOUNCE_MS = 400
 
 
 class _QueueControllerMixin:
+    def _set_status_icon(self, item, name: str):
+        """Show a status icon on a queue row, remembering which one, so
+        _refresh_status_icons can redraw it after a theme switch."""
+        item.setData(STATUS_COL, _STATUS_ICON_ROLE, name)
+        item.setIcon(STATUS_COL, self._themed_icon(name))
+
+    def _clear_status_icon(self, item):
+        item.setData(STATUS_COL, _STATUS_ICON_ROLE, None)
+        item.setIcon(STATUS_COL, QIcon())
+
+    def _refresh_status_icons(self):
+        """Redraw every row's status icon in the current theme. They're set
+        once, on a job's state change, so without this an Appearance switch
+        left the old theme's glyphs on the new background."""
+        for index in range(self.queue_list.topLevelItemCount()):
+            item = self.queue_list.topLevelItem(index)
+            name = item.data(STATUS_COL, _STATUS_ICON_ROLE)
+            if name:
+                item.setIcon(STATUS_COL, self._themed_icon(name))
+
     def _refresh_video_cell(self, item: QTreeWidgetItem):
         # Video-column *subtitle* (the delegate's second line -- see
         # queue_widget._VideoCellDelegate) depends on three independent
@@ -995,7 +1018,7 @@ class _QueueControllerMixin:
         # 1-based index is enough to look up which row is now running.
         self._running_items = [self.queue_list.topLevelItem(i) for i in range(self.queue_list.topLevelItemCount())]
         for item in self._running_items:
-            item.setIcon(STATUS_COL, QIcon())  # clear any status icon left from a previous run
+            self._clear_status_icon(item)  # clear any status icon left from a previous run
             item.setText(RESULT_COL, "Ready")  # clear a previous run's result too
         # Otherwise a new run's very first job, if it fails preflight
         # before job_started ever reaches it, would get blamed on
@@ -1100,7 +1123,7 @@ class _QueueControllerMixin:
         self.stats_label.setText("—")
         self.log_view.appendPlainText(f"\n=== Starting {path} ===")
         self._current_running_item = self._running_items[index - 1]
-        self._current_running_item.setIcon(STATUS_COL, self._themed_icon("status_play"))
+        self._set_status_icon(self._current_running_item, "status_play")
         self._current_running_item.setText(RESULT_COL, "Converting… 0%")
 
     def _on_job_progress(self, fraction: float):
@@ -1162,7 +1185,7 @@ class _QueueControllerMixin:
     def _on_job_finished(self, path: str, output_path: str):
         self.log_view.appendPlainText(f"=== Done: {path} ===")
         if self._current_running_item is not None:
-            self._current_running_item.setIcon(STATUS_COL, self._themed_icon("status_done"))
+            self._set_status_icon(self._current_running_item, "status_done")
             sizes = self._append_result_size(self._current_running_item, Path(path), Path(output_path))
             # Counted unconditionally -- this handler only ever fires on a
             # real success (a failure goes through _on_job_failed instead),
@@ -1192,7 +1215,7 @@ class _QueueControllerMixin:
         self.log_view.appendPlainText(f"=== FAILED: {path}: {reason} ===")
         self._run_failed_count += 1
         if self._current_running_item is not None:
-            self._current_running_item.setIcon(STATUS_COL, self._themed_icon("status_warning"))
+            self._set_status_icon(self._current_running_item, "status_warning")
             self._current_running_item.setToolTip(STATUS_COL, reason)
             # Short in the visible column -- the real reason can be long
             # (a raw ffmpeg error line) and already lives in the tooltip

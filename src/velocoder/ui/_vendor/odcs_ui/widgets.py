@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Callable, Iterable
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (QButtonGroup, QDialog, QDialogButtonBox, QFrame, QGridLayout,
                                QHBoxLayout, QLabel, QPushButton, QSizePolicy,
@@ -42,10 +42,18 @@ class ViewSwitch(QFrame):
 
     currentChanged = Signal(int)
 
-    def __init__(self, labels: Iterable[str], parent: QWidget | None = None, accessible_name: str = "View"):
+    def __init__(self, labels: Iterable[str], parent: QWidget | None = None, accessible_name: str = "View",
+                 fill: bool = False):
+        """fill=True: take the full width available (e.g. a sidebar's, lined up
+        with the cards under it), split evenly between the segments."""
         super().__init__(parent)
         self.setObjectName("odcsViewSwitch")
+        self._fill = fill
         self.setAccessibleName(accessible_name)
+        # Hug the segments: in a taller row (a toolbar with larger buttons) a
+        # stretched frame put the extra height above and below them, so the
+        # 2 px inset looked wider at the top and bottom than at the sides.
+        self.setSizePolicy(QSizePolicy.Expanding if fill else QSizePolicy.Preferred, QSizePolicy.Fixed)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(2)
@@ -57,13 +65,29 @@ class ViewSwitch(QFrame):
             button.setCheckable(True)
             button.setAutoDefault(False)
             self._group.addButton(button, index)
-            layout.addWidget(button)
+            if fill:
+                # Equal segments whatever their labels: ignore each label's own
+                # width and share the frame evenly (minimumSizeHint keeps every
+                # segment at least as wide as the widest label).
+                button.setSizePolicy(QSizePolicy.Ignored, button.sizePolicy().verticalPolicy())
+            layout.addWidget(button, 1 if fill else 0)
         self._group.idToggled.connect(lambda index, on: on and self.currentChanged.emit(index))
         if self._group.buttons():
             self._group.button(0).setChecked(True)
 
     def buttons(self) -> list[QPushButton]:
         return [self._group.button(i) for i in range(len(self._group.buttons()))]
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 (Qt API)
+        hint = super().minimumSizeHint()
+        buttons = self.buttons()
+        if not self._fill or not buttons:
+            return hint
+        margins = self.layout().contentsMargins()
+        widest = max(button.sizeHint().width() for button in buttons)
+        width = (widest * len(buttons) + self.layout().spacing() * (len(buttons) - 1)
+                 + margins.left() + margins.right())
+        return QSize(max(hint.width(), width), hint.height())
 
     def currentIndex(self) -> int:  # noqa: N802 (Qt naming)
         return self._group.checkedId()
@@ -111,9 +135,57 @@ class StatusDot(QWidget):
         p.drawEllipse(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1))
 
 
+_ZWSP = "\u200b"
+_BREAK_AFTER = set("/\\-_·:@+|")
+_LONGEST_RUN = 20
+
+
+def _wrappable(text: str) -> str:
+    """Display copy of `text` that word wrap can fit into any column: a
+    zero-width space after path and name separators, and every
+    _LONGEST_RUN characters of a run that has no break at all (hashes, IDs).
+    Ordinary words are shorter and never break mid-word. Qt's own break
+    rules around hyphens differ by platform, so they are not relied on."""
+    out, run = [], 0
+    for char in text:
+        if char.isspace():
+            run = 0
+        elif run == _LONGEST_RUN:  # a longer run: break before its next character
+            out.append(_ZWSP)
+            run = 1
+        else:
+            run += 1
+        out.append(char)
+        if char in _BREAK_AFTER:
+            out.append(_ZWSP)
+            run = 0
+    return "".join(out)
+
+
+class _FittingLabel(QLabel):
+    """A word-wrapped label that sets no minimum width: its width comes from
+    the column and the text wraps into it, at any font size. Its size hint
+    is the text on one line; QLabel's own hint guesses a squarish block, so
+    a list sized from it came out far taller than its rows."""
+
+    def __init__(self, text: str, name: str):
+        super().__init__(text)
+        self.setObjectName(name)
+        self.setWordWrap(True)
+        self.setMinimumWidth(1)  # an explicit minimum overrides the longest word's
+
+    def sizeHint(self) -> QSize:  # noqa: N802 (Qt API)
+        margins = self.contentsMargins()
+        width = (self.fontMetrics().horizontalAdvance(self.text().replace(_ZWSP, ""))
+                 + margins.left() + margins.right() + 2 * self.margin())
+        return QSize(width, self.heightForWidth(width))
+
+
 class SettingRow(QPushButton):
     """One setting, two lines: the label, and under it the current value
     (wraps, never truncates) with an optional status dot; a chevron trails.
+    Label and value wrap at any font size, so a row fits the width it is
+    given rather than widening its column.
     An optional leading icon names the kind of setting. A real button, so it
     gets keyboard focus, Space/Enter and a Button accessibility role; the
     child widgets ignore the mouse."""
@@ -125,17 +197,20 @@ class SettingRow(QPushButton):
         super().__init__(parent)
         self.setObjectName("odcsSettingRow")
         self.setAutoDefault(False)
-        policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # Minimum, not Fixed: a Fixed row is capped at its one-line size hint,
+        # so a layout could not give a wrapped value its height-for-width.
+        policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         policy.setHeightForWidth(True)  # grows only as much as a wrapped value needs
         self.setSizePolicy(policy)
         self._icon = QLabel()
         self._icon.setObjectName("odcsSettingIcon")
         self._icon.setFixedSize(self.ICON_SIZE, self.ICON_SIZE)
-        self._label = QLabel(label)
-        self._label.setObjectName("odcsSettingLabel")
-        self._value = QLabel(value)
-        self._value.setObjectName("odcsSettingValue")
-        self._value.setWordWrap(True)
+        self._text = value
+        self._label = _FittingLabel(_wrappable(label), "odcsSettingLabel")
+        self._label_text = label
+        # An empty value still takes its line (constant geometry): a row whose
+        # value has not loaded yet is already as tall as it will be.
+        self._value = _FittingLabel(_wrappable(value) or _ZWSP, "odcsSettingValue")
         self._dot = StatusDot("ok")
         self._dot.hide()
         self._chevron = QLabel("›")
@@ -167,10 +242,10 @@ class SettingRow(QPushButton):
         self._update_accessible()
 
     def label(self) -> str:
-        return self._label.text()
+        return self._label_text
 
     def value(self) -> str:
-        return self._value.text()
+        return self._text
 
     def indicator(self) -> str | None:
         return self._dot.state() if not self._dot.isHidden() else None
@@ -178,15 +253,28 @@ class SettingRow(QPushButton):
     def setLeadingIcon(self, icon: QIcon | None) -> None:  # noqa: N802
         """None hides the icon column; a QIcon that is null (no theme icon)
         keeps the column empty so rows in one list stay aligned."""
+        self._leading_icon = icon
         self._icon.setVisible(icon is not None)
+        self._draw_icon()
+
+    def _draw_icon(self) -> None:
+        icon = getattr(self, "_leading_icon", None)
         if icon is not None:
             self._icon.setPixmap(icon.pixmap(self.ICON_SIZE, self.ICON_SIZE) if not icon.isNull() else QPixmap())
+
+    def changeEvent(self, event):  # noqa: N802 (Qt API)
+        # A theme switch can change the icon theme (match_icon_theme); the
+        # label holds a rendered pixmap, so draw it again.
+        if event.type() in (QEvent.StyleChange, QEvent.PaletteChange):
+            self._draw_icon()
+        super().changeEvent(event)
 
     def setValue(self, value: str, state: str = "", indicator: str | None = None) -> None:  # noqa: N802
         """state: "" | "warning" | "error" colours the value. indicator: a
         status dot before it ("ok" | "warning" | "error" | "never"), or None.
         Either way the words carry the meaning."""
-        self._value.setText(value)
+        self._text = value
+        self._value.setText(_wrappable(value) or _ZWSP)
         set_role(self._value, state or "secondary")
         self._dot.setVisible(indicator is not None)
         if indicator is not None:
@@ -195,7 +283,7 @@ class SettingRow(QPushButton):
         self.updateGeometry()
 
     def _update_accessible(self) -> None:
-        self.setAccessibleName(f"{self._label.text()}: {self._value.text()}. Change")
+        self.setAccessibleName(f"{self._label_text}: {self._text}. Change")
 
     # QPushButton sizes itself from its own text; this one is laid out.
     def sizeHint(self) -> QSize:  # noqa: N802
@@ -220,12 +308,12 @@ class SettingsList(QFrame):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(6)
         if heading:
-            title = QLabel(heading)
-            title.setObjectName("odcsGroupHeading")
-            outer.addWidget(title)
+            outer.addWidget(_FittingLabel(heading, "odcsGroupHeading"))
         self._box = QFrame()
         self._box.setObjectName("odcsSettingsList")
-        self._box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        # Minimum: the rows' own base.qss `min-height: 0` lets each shrink to
+        # nothing, so the box holds them at full size and never squeezes them.
+        self._box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         self._rows_layout = QVBoxLayout(self._box)
         self._rows_layout.setContentsMargins(1, 1, 1, 1)
         self._rows_layout.setSpacing(0)
@@ -314,9 +402,7 @@ class StatusFacts(QFrame):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(6)
         if heading:
-            title = QLabel(heading)
-            title.setObjectName("odcsGroupHeading")
-            outer.addWidget(title)
+            outer.addWidget(_FittingLabel(heading, "odcsGroupHeading"))
         self._grid = QGridLayout()
         self._grid.setHorizontalSpacing(0)  # cells carry the gap, so hairlines join up
         self._grid.setVerticalSpacing(0)
@@ -336,30 +422,26 @@ class StatusFacts(QFrame):
         desc_label.setWordWrap(True)
         when_label = QLabel(when or self.NEVER)
         set_role(when_label, "secondary")
-        for col, widget in enumerate((icon, title_label, desc_label, when_label)):
-            cell = QFrame()
-            cell.setObjectName("odcsFactCell")
-            lay = QHBoxLayout(cell)
-            lay.setContentsMargins(0, 8, 10, 8)
-            lay.addWidget(widget)
-            self._grid.addWidget(cell, row, col)
-            cells.append(cell)
         button = None
-        if not action:  # keep the hairline running under the action column
-            filler = QFrame()
-            filler.setObjectName("odcsFactCell")
-            self._grid.addWidget(filler, row, 4)
-            cells.append(filler)
         if action:
             button = QPushButton(action[0])
             button.setAutoDefault(False)
             button.clicked.connect(action[1])
+        for col, widget in enumerate((icon, title_label, desc_label, when_label)):
             cell = QFrame()
             cell.setObjectName("odcsFactCell")
-            lay = QHBoxLayout(cell)
-            lay.setContentsMargins(0, 4, 0, 4)
-            lay.addWidget(button)
-            self._grid.addWidget(cell, row, 4)
+            lay = QVBoxLayout(cell)
+            lay.setContentsMargins(0, 8, 10, 8)
+            lay.setSpacing(6)
+            # Top-aligned, so a two-line fact keeps its icon, title and date
+            # level with the first line.
+            lay.setAlignment(Qt.AlignTop)
+            lay.addWidget(widget)
+            if widget is desc_label and button is not None:
+                # The fact's action sits under its description, on the same
+                # left edge, rather than in a column of its own.
+                lay.addWidget(button, 0, Qt.AlignLeft)
+            self._grid.addWidget(cell, row, col)
             cells.append(cell)
         # Separators run between facts, not under the last one.
         for previous in self._rows[-1:]:

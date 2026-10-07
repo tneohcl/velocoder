@@ -13,7 +13,7 @@ in the MRO fine, but multiple-inheriting from two QObject-derived
 classes is a well-known source of real, hard-to-diagnose problems. A
 plain mixin sidesteps that entirely."""
 from PySide6.QtCore import Qt, QEvent, QObject, QSize, QMargins
-from PySide6.QtGui import QAction, QActionGroup, QFont, QFontMetrics, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QMenu, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
@@ -50,6 +50,37 @@ PANEL_SPACING = 8
 SECTION_SPACING = 9
 
 THEME_CHOICES = [("dark", "Dark"), ("light", "Light"), ("system", "Match System")]
+
+
+class _ElidedLabel(QLabel):
+    """A one-line label that never sets its column's width: it asks for no
+    width of its own and elides in the middle to whatever it's given, so
+    a long filename keeps both its start and its extension. text() and
+    the tooltip keep the full string.
+
+    UI finish-gate review (2026-10-07): 'Settings for "<long release
+    name>"' pushed the fixed 456 px settings column wider, and with the
+    horizontal scrollbar off the segmented controls were clipped
+    silently (DESIGN.md: text never sets a column's width)."""
+
+    def setText(self, text: str):
+        super().setText(text)
+        self.setToolTip(text)
+
+    def sizeHint(self) -> QSize:
+        return QSize(0, super().sizeHint().height())
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().minimumSizeHint().height())
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        rect = self.contentsRect()
+        elided = self.fontMetrics().elidedText(self.text(), Qt.ElideMiddle, rect.width())
+        self.style().drawItemText(
+            painter, rect, int(self.alignment()), self.palette(), self.isEnabled(),
+            elided, self.foregroundRole(),
+        )
 
 
 class _ButtonActionMirror(QObject):
@@ -387,36 +418,6 @@ class _UiBuilderMixin:
         return container
 
     @staticmethod
-    def _segmented_btn_min_width(btn: QPushButton) -> int:
-        # Every segLeft/segMid/segRight button goes bold (font-weight: 600,
-        # style.qss) when checked, and bold text is wider than the same
-        # string at regular weight -- "Better Quality" reported live as
-        # still clipped after widening its row's overall cap, even though
-        # the cap math looked right for the *unchecked* (regular-weight)
-        # sizeHint. Root cause, confirmed by measuring: Qt's own
-        # QPushButton.sizeHint() doesn't get recomputed when a QSS-only
-        # pseudo-state change (:checked) alters the font weight -- it stays
-        # cached at whatever the *regular*-weight text needed, so the
-        # button never grows to fit its own bold state no matter how much
-        # room the row's cap leaves available. Reserving the bold-width
-        # up front, unconditionally, sidesteps that Qt limitation entirely
-        # instead of trying to force a sizeHint recompute on every toggle
-        # -- the button is simply never narrower than its bold state
-        # needs, checked or not. ensurePolished() first -- a button this
-        # freshly constructed hasn't had Qt's stylesheet cascade actually
-        # applied to it yet (confirmed directly: btn.font().pointSize()
-        # reads 9, the plain Qt/OS default, until polished; only after
-        # does it become 10, this app's actual QSS font-size), so reading
-        # btn.font() without this first measures a smaller, wrong font and
-        # under-computes the needed width by exactly the gap between the
-        # two sizes. 30 = QPushButton's own padding (6px top/bottom, 14px
-        # each side, style.qss) + 1px border on each side.
-        btn.ensurePolished()
-        bold_font = QFont(btn.font())
-        bold_font.setWeight(QFont.Weight(600))
-        return QFontMetrics(bold_font).horizontalAdvance(btn.text()) + 30
-
-    @staticmethod
     def _make_collapsible_group(title: str, content: QWidget, *, expanded: bool) -> QGroupBox:
         # A real title string, via the exact same native QGroupBox::title
         # subcontrol every other section (Encoding, Format, Audio Settings)
@@ -545,7 +546,6 @@ class _UiBuilderMixin:
 
         for btn, choice in seg_buttons:
             btn.setCheckable(True)
-            btn.setMinimumWidth(self._segmented_btn_min_width(btn))
             self.processing_button_group.addButton(btn)
             processing_seg_row.addWidget(btn, 1)
             btn.clicked.connect(lambda _checked, c=choice: self._on_processing_choice(c))
@@ -631,7 +631,6 @@ class _UiBuilderMixin:
         self.mode_filesize_btn.setToolTip("Aim for a target output size; quality follows.")
         for btn in (self.mode_quality_btn, self.mode_filesize_btn):
             btn.setCheckable(True)
-            btn.setMinimumWidth(self._segmented_btn_min_width(btn))
             self.mode_button_group.addButton(btn)
             mode_row.addWidget(btn, 1)
         self.mode_quality_btn.clicked.connect(
@@ -663,7 +662,6 @@ class _UiBuilderMixin:
             (self.quality_better_btn, "better"),
         ):
             btn.setCheckable(True)
-            btn.setMinimumWidth(self._segmented_btn_min_width(btn))
             self.quality_tier_button_group.addButton(btn)
             quality_tier_row.addWidget(btn, 1)
             btn.clicked.connect(lambda _checked, t=tier: self._on_quality_tier_clicked(t))
@@ -818,7 +816,7 @@ class _UiBuilderMixin:
         # with identical-looking controls either way. _update_settings_
         # scope_label (main.py) keeps this and audio_scope_label below in
         # sync with the real selection state.
-        self.video_scope_label = QLabel()
+        self.video_scope_label = _ElidedLabel()
         self.video_scope_label.setObjectName("scopeLabel")
         outer.addWidget(self.video_scope_label)
 
@@ -1073,7 +1071,7 @@ class _UiBuilderMixin:
         # label, kept in sync with it by _update_settings_scope_label
         # (main.py), just a second instance since a widget can't sit in
         # two tabs' layouts at once.
-        self.audio_scope_label = QLabel()
+        self.audio_scope_label = _ElidedLabel()
         self.audio_scope_label.setObjectName("scopeLabel")
         outer.addWidget(self.audio_scope_label)
 
@@ -1124,7 +1122,6 @@ class _UiBuilderMixin:
             (self.audio_handling_convert_btn, "convert"),
         ):
             btn.setCheckable(True)
-            btn.setMinimumWidth(self._segmented_btn_min_width(btn))
             self.audio_handling_button_group.addButton(btn)
             handling_row.addWidget(btn, 1)
             btn.clicked.connect(lambda _checked, c=choice: self._on_audio_handling_clicked(c))
@@ -1154,7 +1151,6 @@ class _UiBuilderMixin:
             (self.audio_channels_stereo_btn, "stereo"),
         ):
             btn.setCheckable(True)
-            btn.setMinimumWidth(self._segmented_btn_min_width(btn))
             self.audio_channels_button_group.addButton(btn)
             channels_row.addWidget(btn, 1)
             btn.clicked.connect(lambda _checked, c=choice: self._on_audio_channels_clicked(c))
@@ -1247,26 +1243,12 @@ class _UiBuilderMixin:
         self.queue_list.setStyle(self._queue_list_style)
         self.queue_list.setColumnCount(len(QUEUE_COLUMN_HEADERS))
         self.queue_list.setHeaderLabels(QUEUE_COLUMN_HEADERS)
-        # File is Interactive/user-resizable, not Stretch (which auto-
-        # claims leftover space but also makes Qt refuse to let it be
-        # dragged at all, silently, with no visible resize handle) --
-        # explicit initial widths below instead of Qt's generic default,
-        # sized to each column's actual content ("H.264 1280x720",
-        # "392.2KB", ...). Result, the last column, is the one exception:
-        # setStretchLastSection(True) makes *it* claim whatever's left
-        # over on the right rather than leaving a bare gap between it and
-        # the panel's edge -- losing manual-resize on Result specifically
-        # is an easy trade, unlike File, since its content ("612.3MB (71%
-        # smaller)") doesn't vary anywhere near as much as a filename does.
-        self.queue_list.header().setStretchLastSection(True)
-        # Video absorbed the old separate File column's width too (its
-        # own delegate now paints filename + codec/resolution/audio
-        # subtitle stacked in this one column, see queue_widget.py) --
-        # roughly File + Video's old combined width, not either alone.
-        for col, width in (
-            (VIDEO_COL, 260), (DURATION_COL, 70), (SIZE_COL, 60),
-        ):
-            self.queue_list.setColumnWidth(col, width)
+        # Video stretches and elides; Duration, Size and Status are sized
+        # from the font to their widest real value (DropTreeWidget.
+        # fit_columns). Fixed px widths used to truncate Size and Status (UI
+        # finish-gate review, 2026-10-07). The trade: Video can't be dragged
+        # wider, which a Stretch section never allows.
+        self.queue_list.fit_columns()
         self.queue_list.itemSelectionChanged.connect(self._on_queue_selection_changed)
         self.queue_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.queue_list.customContextMenuRequested.connect(self._on_queue_context_menu)
@@ -1379,7 +1361,6 @@ class _UiBuilderMixin:
         self.start_btn = QPushButton("Convert")
         self.start_btn.setObjectName("startButton")
         self.start_btn.setDefault(True)
-        self.start_btn.setMinimumHeight(32)
         # A capped max width, not just a stretch ratio -- 3:1 alone still
         # let the primary action grow to whatever width a wide window
         # happened to give this row, reported live as reading as an
@@ -1391,7 +1372,6 @@ class _UiBuilderMixin:
         self.start_btn.setMaximumWidth(280)
         self.start_btn.clicked.connect(self._start)
         self.stop_btn = QPushButton("Stop")
-        self.stop_btn.setMinimumHeight(32)
         self.stop_btn.setMaximumWidth(110)
         self.stop_btn.clicked.connect(self._stop)
         self.stop_btn.setEnabled(False)
@@ -1404,7 +1384,6 @@ class _UiBuilderMixin:
         # destructive override is gone -- QSS properties merge, not reset,
         # so this needed no replacement rule, just deleting the old one.
         self.open_folder_btn = QPushButton("Open Folder")
-        self.open_folder_btn.setMinimumHeight(32)
         self.open_folder_btn.clicked.connect(self._open_output_dir)
 
         # Not shown in the main layout at all, same treatment as

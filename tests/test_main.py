@@ -3420,7 +3420,7 @@ class TestOnAllFinishedSummary(unittest.TestCase):
         window._run_failed_count = 3
         window._on_all_finished()
         self.assertFalse(window.open_folder_btn.isVisible())
-        self.assertEqual(window.status_label.text(), "Conversion Failed")
+        self.assertEqual(window.status_label.text(), "⚠ Conversion Failed")
 
     def test_partial_completion_still_shows_summary(self):
         # Deliberate, non-obvious choice: 2-of-4 completed then cancelled
@@ -3467,7 +3467,7 @@ class TestOnAllFinishedSummary(unittest.TestCase):
         window._run_completed_count = 3
         window._run_failed_count = 1
         window._on_all_finished()
-        self.assertEqual(window.status_label.text(), "Completed with Issues")
+        self.assertEqual(window.status_label.text(), "⚠ Completed with Issues")
         self.assertEqual(window.eta_label.text(), "3 videos converted · 1 failed")
 
     def test_cancelled_takes_priority_over_failed_in_the_heading(self):
@@ -4155,8 +4155,13 @@ class TestLeftPanelScrolling(unittest.TestCase):
         self.assertIsInstance(left, QScrollArea)
 
     def test_no_scrolling_needed_at_default_size_with_expert_collapsed(self):
-        window = main.MainWindow()
-        window.show()
+        # _empty_qsettings, like the floor test below: without it this read
+        # whatever video_expert_expanded an earlier test (in any batch) last
+        # wrote to the real config, so it failed depending on test order.
+        with _empty_qsettings():
+            window = main.MainWindow()
+            window.show()
+            _app.processEvents()
         left = window.findChild(QWidget, "leftPanel")
         self.assertEqual(left.verticalScrollBar().maximum(), 0)
 
@@ -4753,53 +4758,6 @@ def _find_render_node_for(*present_vendors: str):
             return f"/dev/dri/renderD{present_vendors.index(vendor_id)}"
         raise RuntimeError(f"no render node found for PCI vendor {vendor_id}")
     return _fake
-
-
-class TestSegmentedButtonBoldWidth(unittest.TestCase):
-    # Regression guard for a real, reported-live clipping bug: "Better
-    # Quality" (the longest label in its row) had its text cut off,
-    # specifically once selected -- selection makes the segLeft/segMid/
-    # segRight buttons bold (style.qss), and Qt's own sizeHint() doesn't
-    # get recomputed for a QSS-only pseudo-state change, so a button sized
-    # for its regular-weight text stays that size even once bold needs
-    # more room. Every segmented button now reserves its own bold-state
-    # width unconditionally (ui_builder.py's _segmented_btn_min_width) --
-    # this checks that reservation actually covers the bold text for real
-    # buttons in the app, not just that the helper function exists.
-    def test_button_width_covers_its_own_bold_text(self):
-        # No compat_modern_btn/compat_compatible_btn here -- Compatibility
-        # is cut entirely (CONSUMER_FORK_PLAN.md's final control-hierarchy
-        # decision, once Codec was promoted to a direct Normal choice), so
-        # it doesn't exist as an attribute to check at all. No rc_quality_
-        # btn/rc_filesize_btn/rc_advanced_btn either -- that friendly
-        # 3-button row was cut from Expert entirely (it just duplicated
-        # Normal's own Mode toggle); Expert shows the real rc_mode_combo
-        # directly now, a QComboBox with no bold-state width concern.
-        # processing_* is back (restored, now Normal-visible) alongside
-        # mode_*/audio_handling_*/audio_channels_* (new Normal rows).
-        # processing_intel_btn/processing_amd_btn only exist at all when
-        # that vendor's hardware was detected (ui_builder.py) -- pinned
-        # present here so this test covers all three regardless of
-        # whatever GPUs happen to be installed on whatever machine runs
-        # it, same reasoning TestRateControlButtons' own docstring gives
-        # for not trusting ambient hardware.
-        with patch.object(worker, "find_render_node", return_value="/dev/dri/renderD128"):
-            window = main.MainWindow()
-        window.show()
-        for btn in (
-            window.processing_cpu_btn, window.processing_intel_btn, window.processing_amd_btn,
-            window.mode_quality_btn, window.mode_filesize_btn,
-            window.quality_smaller_btn, window.quality_balanced_btn, window.quality_better_btn,
-            window.audio_handling_automatic_btn, window.audio_handling_convert_btn,
-            window.audio_channels_keep_btn, window.audio_channels_stereo_btn,
-        ):
-            bold_font = QFont(btn.font())
-            bold_font.setWeight(QFont.Weight(600))
-            needed = QFontMetrics(bold_font).horizontalAdvance(btn.text()) + 30
-            self.assertGreaterEqual(
-                btn.width(), needed,
-                f"{btn.text()!r} is {btn.width()}px, needs {needed}px for its bold state",
-            )
 
 
 class TestSessionPersistenceSave(unittest.TestCase):
@@ -5549,6 +5507,327 @@ class TestHelpWindow(unittest.TestCase):
         window._help_window._select_topic("welcome")
         html = window._help_window.article_view.toHtml()
         self.assertIn("quick-start-light.png", html)
+
+
+
+# --- UI finish-gate review, 2026-10-07 ---------------------------------
+# Six findings from a pre-release review of the main window, each with a
+# rendered screenshot as evidence. These tests pin the fixes.
+
+def _queue_row(window, name: str, *, completed: bool = False) -> "main.QTreeWidgetItem":
+    """Adds a queue row directly (no probes, no real file) -- the same
+    shape _running_window above uses."""
+    job = {"path": Path(name), **window._current_settings()}
+    if completed:
+        job["_completed_output_path"] = f"/tmp/{name}.out.mp4"
+    item = main.QTreeWidgetItem([name])
+    item.setData(main.STATUS_COL, main.Qt.UserRole, job)
+    window.queue_list.addTopLevelItem(item)
+    return item
+
+
+def _stylesheet_blocks():
+    """(selector, body) pairs from style.qss, comments stripped."""
+    import re
+    text = re.sub(r"/\*.*?\*/", "", (REPO_ROOT / "style.qss").read_text(), flags=re.S)
+    return [(sel.strip(), body) for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", text)]
+
+
+class TestScopeLabelNeverWidensTheColumn(unittest.TestCase):
+    """Selecting a video with a long name used to push the settings column
+    past its fixed width, clipping the segmented controls (Processing
+    collapsed to one huge "Automatic", "Better Quality" vanished)."""
+
+    LONG_NAME = "The.Very.Long.Documentary.Name.Season.01.Episode.07.The.Return.Of.The.Long.Filename.2160p.WEB-DL.DDP5.1.Atmos.HDR10.HEVC-GROUP.mkv"
+
+    def _window_with_long_name_selected(self):
+        # GPUs pinned present: without one (CI runners) the Processing row is
+        # hidden, and a hidden button's geometry is a meaningless 640x480.
+        with patch.object(worker, "find_render_node", return_value="/dev/dri/renderD128"):
+            window = main.MainWindow()
+        window.resize(1186, 720)
+        window.show()
+        item = _queue_row(window, self.LONG_NAME)
+        item.setSelected(True)
+        window._on_queue_selection_changed()
+        QApplication.processEvents()
+        return window
+
+    def test_scope_label_does_not_ask_for_its_text_width(self):
+        window = self._window_with_long_name_selected()
+        for label in (window.video_scope_label, window.audio_scope_label):
+            self.assertLess(label.minimumSizeHint().width(), 100)
+            self.assertLess(label.sizeHint().width(), 100)
+
+    def test_full_text_and_tooltip_keep_the_whole_name(self):
+        window = self._window_with_long_name_selected()
+        self.assertEqual(window.video_scope_label.text(), f'Settings for "{self.LONG_NAME}"')
+        self.assertIn(self.LONG_NAME, window.video_scope_label.toolTip())
+
+    def test_segmented_controls_stay_inside_the_column(self):
+        window = self._window_with_long_name_selected()
+        viewport = window._left_panel_scroll.viewport()
+        for btn in (window.quality_smaller_btn, window.quality_balanced_btn, window.quality_better_btn,
+                    window.processing_cpu_btn, window.processing_amd_btn):
+            self.assertTrue(btn.isVisible(), btn.text())
+            right = btn.mapTo(viewport, btn.rect().topRight()).x()
+            self.assertLessEqual(right, viewport.width(), btn.text())
+            self.assertGreater(btn.width(), 0)
+
+
+class TestConvertOnlyUnfinished(unittest.TestCase):
+    """After a run, Convert still said "Convert 4 Videos" and re-queued
+    every row, re-encoding finished videos into "name (1).mp4" copies."""
+
+    def test_label_counts_only_unfinished_rows(self):
+        window = main.MainWindow()
+        for name in ("a.mkv", "b.mkv", "c.mkv"):
+            _queue_row(window, name, completed=True)
+        _queue_row(window, "failed.mkv")
+        window._update_start_button_label()
+        self.assertEqual(window.start_btn.text(), "Convert 1 Video")
+        self.assertTrue(window.start_btn.isEnabled())
+
+    def test_begin_conversion_queues_only_unfinished_rows(self):
+        window = main.MainWindow()
+        _queue_row(window, "done.mkv", completed=True)
+        failed = _queue_row(window, "failed.mkv")
+        with patch.object(window.queue, "start") as mock_start, \
+             patch.object(Path, "mkdir"):
+            window._begin_conversion()
+        jobs = mock_start.call_args.args[0]
+        self.assertEqual([job["path"].name for job in jobs], ["failed.mkv"])
+        self.assertEqual(window._running_items, [failed])
+
+    def test_finished_rows_keep_their_result_when_a_retry_starts(self):
+        window = main.MainWindow()
+        done = _queue_row(window, "done.mkv", completed=True)
+        done.setText(main.RESULT_COL, "1.2GB (68% smaller)")
+        _queue_row(window, "failed.mkv")
+        with patch.object(window.queue, "start"), patch.object(Path, "mkdir"):
+            window._begin_conversion()
+        self.assertEqual(done.text(main.RESULT_COL), "1.2GB (68% smaller)")
+
+    def test_everything_done_disables_convert_with_a_reason(self):
+        window = main.MainWindow()
+        _queue_row(window, "a.mkv", completed=True)
+        _queue_row(window, "b.mkv", completed=True)
+        window._update_start_button_label()
+        self.assertEqual(window.start_btn.text(), "Convert")
+        self.assertFalse(window.start_btn.isEnabled())
+        self.assertIn("converted", window.start_btn.toolTip())
+
+    def test_removing_the_last_unfinished_row_cancels_a_pending_start(self):
+        window = main.MainWindow()
+        _queue_row(window, "done.mkv", completed=True)
+        pending = _queue_row(window, "new.mkv")
+        window._start_when_ready = True
+        window._pending_analysis_items = {pending: 1}
+        window.queue_list.takeTopLevelItem(1)
+        with patch.object(window.queue, "start") as mock_start:
+            window._reconcile_pending_start_after_mutation()
+        mock_start.assert_not_called()
+        self.assertFalse(window._start_when_ready)
+
+    def test_start_with_nothing_unfinished_does_not_run(self):
+        window = main.MainWindow()
+        _queue_row(window, "a.mkv", completed=True)
+        with patch.object(window.queue, "start") as mock_start:
+            window._start()
+        mock_start.assert_not_called()
+
+
+class TestQueueColumnsFitTheirContent(unittest.TestCase):
+    """Size was a fixed 60 px ("11.2GB" showed as "11.2…") and Status lost
+    its live % at the minimum window size."""
+
+    def _window(self, width=960, height=640):
+        window = main.MainWindow()
+        window.resize(width, height)
+        window.show()
+        row = _queue_row(window, "Old camcorder tape 07.avi")
+        row.setText(main.SIZE_COL, "1023.9GB")
+        row.setText(main.RESULT_COL, "1023.9GB (100% smaller)")
+        QApplication.processEvents()
+        return window
+
+    def _assert_columns_fit(self, window):
+        header = window.queue_list.header()
+        fm = window.queue_list.fontMetrics()
+        for col, text in ((main.SIZE_COL, "1023.9GB"), (main.RESULT_COL, "1023.9GB (100% smaller)"),
+                          (main.DURATION_COL, "00:00:00"), (main.DURATION_COL, "Duration")):
+            self.assertGreaterEqual(header.sectionSize(col), fm.horizontalAdvance(text) + 12, (col, text))
+        self.assertFalse(window.queue_list.horizontalScrollBar().isVisible())
+
+    def test_minimum_window_fits_size_and_status(self):
+        self._assert_columns_fit(self._window())
+
+    def test_default_window_fits_size_and_status(self):
+        self._assert_columns_fit(self._window(1186, 720))
+
+    def test_larger_text_grows_the_columns(self):
+        window = self._window()
+        before = window.queue_list.header().sectionSize(main.RESULT_COL)
+        # Through the stylesheet: style.qss pins the font size, so setFont()
+        # alone would change nothing.
+        window.queue_list.setStyleSheet("QTreeWidget { font-size: 11.5pt; }")
+        QApplication.processEvents()
+        self.assertGreater(window.queue_list.header().sectionSize(main.RESULT_COL), before)
+        self._assert_columns_fit(window)
+
+    def test_video_column_takes_the_spare_width(self):
+        window = self._window(1186, 720)
+        header = window.queue_list.header()
+        others = sum(header.sectionSize(c) for c in (main.DURATION_COL, main.SIZE_COL, main.RESULT_COL))
+        self.assertEqual(header.sectionSize(main.VIDEO_COL) + others, window.queue_list.viewport().width())
+
+
+class TestControlsMatchTheDesignDecisions(unittest.TestCase):
+    """Selection is colour-only, toolbar buttons share one 28 px height,
+    controls use the 4 px radius token."""
+
+    def test_selected_segments_and_tabs_do_not_change_weight(self):
+        for selector, body in _stylesheet_blocks():
+            if ":checked" in selector or "tab:selected" in selector:
+                self.assertNotIn("font-weight", body, selector)
+
+    def test_toolbar_buttons_share_one_height(self):
+        window = main.MainWindow()
+        window.show()
+        window.open_folder_btn.setVisible(True)
+        window.stop_btn.setVisible(True)
+        QApplication.processEvents()
+        heights = {btn.text(): btn.height() for btn in (
+            window.add_files_btn, window.remove_queue_btn, window.start_btn,
+            window.stop_btn, window.open_folder_btn)}
+        self.assertEqual(len(set(heights.values())), 1, heights)
+
+    def test_controls_use_the_radius_token(self):
+        for selector, body in _stylesheet_blocks():
+            self.assertNotIn("radius: 6px", body, selector)
+
+    def test_segment_widths_fit_their_text(self):
+        with patch.object(worker, "find_render_node", return_value="/dev/dri/renderD128"):
+            window = main.MainWindow()
+        window.show()
+        QApplication.processEvents()
+        for btn in (window.quality_smaller_btn, window.quality_balanced_btn, window.quality_better_btn,
+                    window.processing_cpu_btn, window.processing_intel_btn, window.processing_amd_btn):
+            needed = btn.fontMetrics().horizontalAdvance(btn.text())
+            self.assertGreaterEqual(btn.width(), needed + 2, btn.text())
+
+
+class TestFocusRingClearsTheLabel(unittest.TestCase):
+    """Qt draws a QSS `outline` as a focus rect INSIDE the button, over the
+    label. Buttons now show focus as their own border; the queue draws one
+    ring around the whole current row."""
+
+    def test_buttons_show_focus_with_a_border_not_an_outline(self):
+        rules = [(s, b) for s, b in _stylesheet_blocks() if "QPushButton" in s and 'focusVisible="true"' in s]
+        self.assertTrue(rules)
+        for selector, body in rules:
+            self.assertNotIn("outline:", body.replace("outline: none", ""), selector)
+        self.assertTrue(any("border:" in b for _, b in rules))
+
+    def test_focus_border_keeps_the_button_size(self):
+        window = main.MainWindow()
+        window.show()
+        _queue_row(window, "a.mkv")
+        window._update_start_button_label()
+        QApplication.processEvents()
+        before = window.start_btn.sizeHint()
+        window.start_btn.setProperty("focusVisible", True)
+        window.start_btn.style().unpolish(window.start_btn)
+        window.start_btn.style().polish(window.start_btn)
+        self.assertEqual(window.start_btn.sizeHint(), before)
+
+    def test_queue_draws_a_ring_around_the_current_row(self):
+        window = main.MainWindow()
+        window.resize(1186, 720)
+        window.show()
+        _queue_row(window, "a.mkv")
+        _queue_row(window, "b.mkv")
+        queue = window.queue_list
+        queue.setCurrentItem(queue.topLevelItem(0))
+        queue.setProperty("focusVisible", True)
+        QApplication.processEvents()
+        image = queue.viewport().grab().toImage()
+        row = queue.visualItemRect(queue.topLevelItem(0))
+        accent = QColor(theming._current_theme_palette["ACCENT"])
+        # Both ends of the row carry the ring, not just the Video cell.
+        for x in (row.left() + 1, queue.viewport().width() - 2):
+            self.assertEqual(image.pixelColor(x, row.center().y()).name(), accent.name(), x)
+
+    def test_queue_draws_no_ring_without_keyboard_focus(self):
+        window = main.MainWindow()
+        window.resize(1186, 720)
+        window.show()
+        _queue_row(window, "a.mkv")
+        queue = window.queue_list
+        queue.setCurrentItem(queue.topLevelItem(0))
+        queue.setProperty("focusVisible", False)
+        QApplication.processEvents()
+        image = queue.viewport().grab().toImage()
+        row = queue.visualItemRect(queue.topLevelItem(0))
+        accent = QColor(theming._current_theme_palette["ACCENT"])
+        self.assertNotEqual(image.pixelColor(queue.viewport().width() - 2, row.center().y()).name(), accent.name())
+
+
+class TestFailuresReadWithoutHovering(unittest.TestCase):
+    """A failed row only said "Failed" (the reason lived in a tooltip), and
+    "Completed with Issues" was plain body text."""
+
+    def test_failed_row_carries_its_reason_for_the_subtitle(self):
+        window = main.MainWindow()
+        item = _queue_row(window, "clip.mkv")
+        window._running_items = [item]
+        window._current_running_item = item
+        window._on_job_failed("clip.mkv", "[hevc_vaapi] No usable encoding entrypoint found")
+        self.assertEqual(item.data(main.VIDEO_COL, queue_widget.FAILURE_REASON_ROLE),
+                         "[hevc_vaapi] No usable encoding entrypoint found")
+        self.assertEqual(item.toolTip(main.STATUS_COL), "[hevc_vaapi] No usable encoding entrypoint found")
+
+    def test_retry_clears_the_old_reason(self):
+        window = main.MainWindow()
+        item = _queue_row(window, "clip.mkv")
+        item.setData(main.VIDEO_COL, queue_widget.FAILURE_REASON_ROLE, "old reason")
+        with patch.object(window.queue, "start"), patch.object(Path, "mkdir"):
+            window._begin_conversion()
+        self.assertIsNone(item.data(main.VIDEO_COL, queue_widget.FAILURE_REASON_ROLE))
+
+    def test_failed_subtitle_is_painted_in_the_error_colour(self):
+        window = main.MainWindow()
+        window.resize(1186, 720)
+        window.show()
+        item = _queue_row(window, "clip.mkv")
+        item.setData(main.VIDEO_COL, queue_widget.FAILURE_REASON_ROLE, "█████████████████████")
+        QApplication.processEvents()
+        image = window.queue_list.viewport().grab().toImage()
+        row = window.queue_list.visualItemRect(item)
+        error = QColor(theming._current_theme_palette["ERROR"]).name()
+        found = any(image.pixelColor(x, y).name() == error
+                    for x in range(row.left(), row.left() + 200)
+                    for y in range(row.center().y(), row.bottom()))
+        self.assertTrue(found)
+
+    def test_finished_heading_is_a_headline_with_an_icon(self):
+        window = main.MainWindow()
+        window.show()
+        window._run_completed_count = 3
+        window._run_failed_count = 1
+        window._on_all_finished()
+        self.assertEqual(window.status_label.text(), "⚠ Completed with Issues")
+        self.assertTrue(window.status_label.property("headline"))
+
+    def test_headline_style_drops_once_the_queue_moves_on(self):
+        window = main.MainWindow()
+        window.show()
+        _queue_row(window, "a.mkv", completed=True)
+        window._run_completed_count = 1
+        window._on_all_finished()
+        self.assertTrue(window.status_label.property("headline"))
+        window._set_status("Converting 1 of 2 — b.mkv")
+        self.assertFalse(window.status_label.property("headline"))
 
 
 if __name__ == "__main__":

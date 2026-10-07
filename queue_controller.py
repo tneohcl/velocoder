@@ -15,7 +15,7 @@ import session
 from constants import VIDEO_FILTER
 from queue_widget import (
     VIDEO_COL, DURATION_COL, SIZE_COL, RESULT_COL,
-    STATUS_COL, VIDEO_SUBTITLE_ROLE, AUDIO_TRACK_COUNT_ROLE, QUEUE_COLUMN_HEADERS,
+    STATUS_COL, VIDEO_SUBTITLE_ROLE, AUDIO_TRACK_COUNT_ROLE, FAILURE_REASON_ROLE, QUEUE_COLUMN_HEADERS,
 )
 
 # Raw pieces _refresh_video_cell composes into the delegate-facing
@@ -168,6 +168,15 @@ class _QueueControllerMixin:
         # dict's own history was, and this app never attempts partial
         # ffmpeg resume, so there is nothing else to restore it *to*.
         return [job for job in self._queue_snapshot() if job.get("_completed_output_path") is None]
+
+    def _unfinished_items(self) -> list[QTreeWidgetItem]:
+        # The rows Convert acts on -- the same "never confirmed finished"
+        # test _unfinished_queue_snapshot uses above, so a failed or
+        # never-run row is retried and a finished one is never re-encoded
+        # into a "name (1).mp4" copy (UI finish-gate review, 2026-10-07).
+        items = (self.queue_list.topLevelItem(i) for i in range(self.queue_list.topLevelItemCount()))
+        return [item for item in items
+                if (item.data(STATUS_COL, Qt.UserRole) or {}).get("_completed_output_path") is None]
 
     def _schedule_session_save(self):
         # Restarting an already-running QTimer (Qt's own documented
@@ -786,14 +795,21 @@ class _QueueControllerMixin:
         # text was never phase-owned before, so nothing could stomp it.
         if self._start_when_ready or not self._queue_editable:
             return
-        count = self.queue_list.topLevelItemCount()
+        # Counts only rows still to convert: after a run, finished rows stay
+        # in the list as a record, but Convert must not offer to redo them.
+        count = len(self._unfinished_items())
         self.start_btn.setText("Convert" if count == 0 else f"Convert {count} Video{'s' if count != 1 else ''}")
         # Error prevention (2026-09-25 UI audit): with nothing queued, Convert
         # used to stay clickable and only answer "Queue is empty" in the
         # status line. Every queue mutation and the idle/finished phases
         # already route through here, so this keeps the state current.
         self.start_btn.setEnabled(count > 0)
-        self.start_btn.setToolTip("" if count > 0 else "Add videos to the queue first")
+        if count > 0:
+            self.start_btn.setToolTip("")
+        elif self.queue_list.topLevelItemCount() == 0:
+            self.start_btn.setToolTip("Add videos to the queue first")
+        else:
+            self.start_btn.setToolTip("All videos converted — add more videos")
 
     def _refresh_idle_controls(self):
         """What add_files()/_remove_selected()/_clear_queue()/
@@ -928,6 +944,8 @@ class _QueueControllerMixin:
         if self.queue_list.topLevelItemCount() == 0:
             self._set_status("Queue is empty")
             return
+        if not self._unfinished_items():
+            return  # every row is already converted; the button is disabled with the reason
         if self._pending_analysis_items:
             # A file added moments ago whose ~20s interlace sample (or
             # duration/audio probe) hasn't landed yet still has whatever
@@ -985,15 +1003,15 @@ class _QueueControllerMixin:
         # not just mid-idle. A no-op whenever nothing is actually pending.
         if not self._start_when_ready:
             return
-        if self.queue_list.topLevelItemCount() == 0:
-            # The user cleared/removed everything out from under a
-            # pending Convert -- honoring that stale request once its
-            # now-irrelevant probes eventually land would be the wrong
-            # state to end up in, even though TranscodeQueue.start([])
-            # itself degrades harmlessly.
+        if not self._unfinished_items():
+            # The user cleared/removed everything still to convert out
+            # from under a pending Convert -- honoring that stale request
+            # once its now-irrelevant probes eventually land would be the
+            # wrong state to end up in, even though TranscodeQueue.start([])
+            # itself degrades harmlessly. Finished rows may remain.
             self._start_when_ready = False
             self._apply_run_phase_visuals("idle")
-            self._set_status("Queue is empty")
+            self._set_status("Queue is empty" if self.queue_list.topLevelItemCount() == 0 else "Idle")
             return
         # Still has files: begins right away if the removed/undone rows
         # were the only thing left outstanding, otherwise just refreshes
@@ -1006,8 +1024,10 @@ class _QueueControllerMixin:
             )
 
     def _begin_conversion(self):
-        jobs = [self.queue_list.topLevelItem(i).data(STATUS_COL, Qt.UserRole)
-                 for i in range(self.queue_list.topLevelItemCount())]
+        # Unfinished rows only -- see _unfinished_items. Finished rows keep
+        # their icon and result text untouched below.
+        pending = self._unfinished_items()
+        jobs = [item.data(STATUS_COL, Qt.UserRole) for item in pending]
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._apply_run_phase_visuals("converting")
         self._set_queue_editable(False)
@@ -1016,10 +1036,11 @@ class _QueueControllerMixin:
         # is locked for the run's duration (_set_queue_editable(False)), so
         # this position-based snapshot stays valid throughout -- job_started's
         # 1-based index is enough to look up which row is now running.
-        self._running_items = [self.queue_list.topLevelItem(i) for i in range(self.queue_list.topLevelItemCount())]
+        self._running_items = pending
         for item in self._running_items:
             self._clear_status_icon(item)  # clear any status icon left from a previous run
             item.setText(RESULT_COL, "Ready")  # clear a previous run's result too
+            item.setData(VIDEO_COL, FAILURE_REASON_ROLE, None)  # and a previous failure's reason
         # Otherwise a new run's very first job, if it fails preflight
         # before job_started ever reaches it, would get blamed on
         # whatever item _current_running_item was still pointing at from
@@ -1061,7 +1082,7 @@ class _QueueControllerMixin:
         # without needing to know what that text actually is.
         self._set_status(self._base_status_text)
 
-    def _set_status(self, text: str):
+    def _set_status(self, text: str, *, headline: bool = False):
         # Every status_label update goes through here (not
         # status_label.setText directly) so toggling "Stop After Current
         # Video" (self.pause_after_check, now in the Queue menu, not a
@@ -1071,6 +1092,12 @@ class _QueueControllerMixin:
         # in one place, rather than every call site needing to remember
         # to check this itself.
         self._base_status_text = text
+        # A finished run's outcome is a status headline (DESIGN.md: icon +
+        # sentence, section-title weight); every other status is body text.
+        if bool(self.status_label.property("headline")) != headline:
+            self.status_label.setProperty("headline", headline)
+            self.status_label.style().unpolish(self.status_label)
+            self.status_label.style().polish(self.status_label)
         if self.pause_after_check.isChecked():
             # Genuinely informative even at rest (a pending one-shot
             # intent the user just set) -- shown in full despite the
@@ -1217,10 +1244,11 @@ class _QueueControllerMixin:
         if self._current_running_item is not None:
             self._set_status_icon(self._current_running_item, "status_warning")
             self._current_running_item.setToolTip(STATUS_COL, reason)
-            # Short in the visible column -- the real reason can be long
-            # (a raw ffmpeg error line) and already lives in the tooltip
-            # just set above, and in the log.
+            # Short in the Status column; the reason itself shows on the
+            # row's second line (FAILURE_REASON_ROLE, elided there) so it
+            # reads without hovering, and in full in the tooltip and log.
             self._current_running_item.setText(RESULT_COL, "Failed")
+            self._current_running_item.setData(VIDEO_COL, FAILURE_REASON_ROLE, reason)
             self._schedule_session_save()
 
     @staticmethod
@@ -1263,11 +1291,11 @@ class _QueueControllerMixin:
             # cancelled before the rest finished) -- "the user stopped it"
             # is the more relevant fact to lead with either way.
             if self._run_cancelled:
-                self._set_status("Conversion Stopped")
+                self._set_status("Conversion Stopped", headline=True)
             elif self._run_failed_count > 0:
-                self._set_status("Completed with Issues")
+                self._set_status("⚠ Completed with Issues", headline=True)
             else:
-                self._set_status("✓ Conversion Complete")
+                self._set_status("✓ Conversion Complete", headline=True)
         else:
             # Zero-success runs used to say "Idle" unconditionally --
             # accurate for "nothing was ever queued", misleading for "3
@@ -1280,9 +1308,9 @@ class _QueueControllerMixin:
             # before, just a truthful status instead of a blank one.
             self._apply_run_phase_visuals("idle")
             if self._run_cancelled:
-                self._set_status("Conversion Stopped")
+                self._set_status("Conversion Stopped", headline=True)
             elif self._run_failed_count > 0:
-                self._set_status("Conversion Failed")
+                self._set_status("⚠ Conversion Failed", headline=True)
             else:
                 self._set_status("Idle")
         # A safety-net flush for "job stops" in general -- a cancel mid-run

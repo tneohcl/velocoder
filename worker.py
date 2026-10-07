@@ -17,6 +17,12 @@ AMD_VENDOR_ID = "0x1002"
 GPU_VENDOR_IDS = {"intel": INTEL_VENDOR_ID, "amd": AMD_VENDOR_ID}
 BITRATE_RC_MODES = {"VBR", "bitrate"}
 _OUT_TIME_RE = re.compile(r"^out_time=(\d+):(\d+):(\d+)\.(\d+)$")
+# ffmpeg stderr lines that state why an encode failed. "Conversion
+# failed!" matches too but says nothing, so summarize_ffmpeg_failure skips it.
+_FFMPEG_ERROR_RE = re.compile(
+    r"error|failed|invalid|cannot|could not|unable|not supported|no such|denied|no usable",
+    re.IGNORECASE,
+)
 
 # Fraction of sampled frames idet must classify as interlaced (TFF+BFF) for
 # auto-detect to enable deinterlacing. Both real-world cases seen so far
@@ -82,6 +88,17 @@ _VALIDATION_RC_ARGS = {
     "amd": ["-rc_mode", "CQP", "-qp", "26"],
 }
 _VALIDATION_TIMEOUT_SECONDS = 10
+
+
+def summarize_ffmpeg_failure(stderr_lines: list[str], exit_code: int) -> str:
+    """The job-failed reason for a non-zero ffmpeg exit: its last real error
+    line (minus the " @ 0x..." pointer noise), so the queue row can say why
+    instead of just "ffmpeg exited 1"."""
+    for line in reversed(stderr_lines):
+        line = line.strip()
+        if line and line != "Conversion failed!" and _FFMPEG_ERROR_RE.search(line):
+            return f"{re.sub(r' @ 0x[0-9a-f]+', '', line)} (ffmpeg exited {exit_code})"
+    return f"ffmpeg exited {exit_code}"
 
 
 def validate_hevc_encode(render_node: str, vendor: str) -> str | None:
@@ -692,6 +709,8 @@ class TranscodeQueue(QObject):
         self._pause_requested = False
         self._paused = False
         self._stats_buffer: dict = {}
+        # The current job's last few stderr lines, for summarize_ffmpeg_failure.
+        self._recent_log: list[str] = []
         # Every final output path handed out this run, so two jobs that
         # would otherwise both want e.g. shot01.mp4 (different source
         # folders, same stem) get disambiguated instead of the second one
@@ -869,6 +888,7 @@ class TranscodeQueue(QObject):
         )
 
         self._stats_buffer = {}
+        self._recent_log = []
         try:
             self._duration = probe_duration(input_path)
             audio_codec = probe_audio_codec(input_path, job["audio_track"])
@@ -976,6 +996,7 @@ class TranscodeQueue(QObject):
         for line in data.splitlines():
             if line.strip():
                 self.job_log.emit(line)
+                self._recent_log = self._recent_log[-19:] + [line]
 
     def _on_finished(self, input_path: Path, temp_output_path: Path, final_output_path: Path, exit_code: int, exit_status):
         self._process = None
@@ -997,7 +1018,7 @@ class TranscodeQueue(QObject):
             self.job_failed.emit(str(input_path), "stopped by user")
         else:
             self._cleanup_partial(temp_output_path)
-            self.job_failed.emit(str(input_path), f"ffmpeg exited {exit_code}")
+            self.job_failed.emit(str(input_path), summarize_ffmpeg_failure(self._recent_log, exit_code))
         # Not a plain _run_next() -- this is a real job actually finishing
         # (success or failure both count), exactly the point "pause after
         # this file" means. The two _run_next() calls inside _run_next()

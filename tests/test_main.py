@@ -5542,7 +5542,10 @@ class TestScopeLabelNeverWidensTheColumn(unittest.TestCase):
     LONG_NAME = "The.Very.Long.Documentary.Name.Season.01.Episode.07.The.Return.Of.The.Long.Filename.2160p.WEB-DL.DDP5.1.Atmos.HDR10.HEVC-GROUP.mkv"
 
     def _window_with_long_name_selected(self):
-        window = main_window.MainWindow()
+        # GPUs pinned present: without one (CI runners) the Processing row is
+        # hidden, and a hidden button's geometry is a meaningless 640x480.
+        with patch.object(ffmpeg, "find_render_node", return_value="/dev/dri/renderD128"):
+            window = main_window.MainWindow()
         window.resize(1186, 720)
         window.show()
         item = _queue_row(window, self.LONG_NAME)
@@ -5566,7 +5569,8 @@ class TestScopeLabelNeverWidensTheColumn(unittest.TestCase):
         window = self._window_with_long_name_selected()
         viewport = window._left_panel_scroll.viewport()
         for btn in (window.quality_smaller_btn, window.quality_balanced_btn, window.quality_better_btn,
-                    window.processing_cpu_btn):
+                    window.processing_cpu_btn, window.processing_amd_btn):
+            self.assertTrue(btn.isVisible(), btn.text())
             right = btn.mapTo(viewport, btn.rect().topRight()).x()
             self.assertLessEqual(right, viewport.width(), btn.text())
             self.assertGreater(btn.width(), 0)

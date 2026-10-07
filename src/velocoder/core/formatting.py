@@ -4,8 +4,6 @@ straightforward move: plain functions here, directly unit-testable without
 building a QApplication/MainWindow, which they now are."""
 from pathlib import Path
 
-from PySide6.QtWidgets import QSlider
-
 from velocoder.core import ffmpeg
 from velocoder.core.constants import ENCODERS, RESOLUTIONS
 
@@ -48,7 +46,9 @@ def hardware_status_text() -> str:
     return "No VAAPI render node detected — hardware encoding unavailable"
 
 
-def fraction_of(slider: QSlider) -> float:
+def fraction_of(slider) -> float:
+    # Any slider-like object (a QSlider in practice): only minimum(),
+    # maximum() and value() are read, so core/ stays free of Qt imports.
     lo, hi = slider.minimum(), slider.maximum()
     return (slider.value() - lo) / (hi - lo) if hi > lo else 0.0
 

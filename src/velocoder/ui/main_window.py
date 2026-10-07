@@ -24,7 +24,7 @@ from velocoder.core.constants import (
     encoder_profile_key, QUALITY_RANGES, X265_PRESETS, X265_TUNES, X264_TUNES, RESOLUTIONS,
     AUDIO_BITRATES, AUDIO_TRACK_LABELS, APP_NAME,
 )
-from velocoder.core.ffmpeg import TranscodeQueue, BITRATE_RC_MODES
+from velocoder.core.ffmpeg import BITRATE_RC_MODES
 from velocoder.ui.about_dialogs import AboutDialog
 from velocoder.ui.help_window import HelpWindow
 from velocoder.ui.queue_widget import (
@@ -38,6 +38,7 @@ from velocoder.ui.theming import (
 )
 from velocoder.ui.ui_builder import _UiBuilderMixin
 from velocoder.ui.queue_controller import _QueueControllerMixin
+from velocoder.ui.transcode_queue import TranscodeQueue
 
 # The app's one fixed starting point now that there's no Presets UI to
 # choose one from -- see __init__'s startup-default block. Was "720p CPU

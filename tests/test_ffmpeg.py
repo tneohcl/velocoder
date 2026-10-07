@@ -22,12 +22,17 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 from velocoder.core import ffmpeg  # noqa: E402
+from velocoder.ui import transcode_queue  # noqa: E402
 
-from PySide6.QtCore import QCoreApplication, QEventLoop, QProcess, QTimer  # noqa: E402
+from PySide6.QtCore import QEventLoop, QProcess, QTimer  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
 # TranscodeQueue tests drive a real QProcess, which needs a running Qt event
-# loop -- QCoreApplication (no GUI needed here, unlike main_window.py's tests).
-_app = QCoreApplication.instance() or QCoreApplication([])
+# loop. A full QApplication (offscreen), not a bare QCoreApplication: the
+# chunked runner can put these tests in the same process as the widget
+# tests, and a QCoreApplication created first makes every QWidget abort.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+_app = QApplication.instance() or QApplication([])
 
 # Captured before setUpModule's stub replaces it, for the tests that
 # exercise the real validation encode itself.
@@ -70,7 +75,7 @@ def _has_vendor_render_node(vendor_id: str) -> bool:
 HAS_AMD_VAAPI = _has_vendor_render_node(ffmpeg.AMD_VENDOR_ID)
 
 
-def _run_queue_and_collect(queue: "ffmpeg.TranscodeQueue", jobs, output_dir, timeout_ms=15000):
+def _run_queue_and_collect(queue: "transcode_queue.TranscodeQueue", jobs, output_dir, timeout_ms=15000):
     """Run a TranscodeQueue to completion, collecting every job_* signal
     emission as (event_name, args) tuples for direct assertion. Guards
     against a hung ffmpeg/ffprobe wedging the test suite forever."""
@@ -385,7 +390,7 @@ class TestQueueAudioBitrateReservation(unittest.TestCase):
             **x265_settings(rc_mode="bitrate", quality_value=100, audio_bitrate="96k",
                              audio_copy_if_compatible=True),
         }
-        queue = ffmpeg.TranscodeQueue()
+        queue = transcode_queue.TranscodeQueue()
         log_lines = []
         loop = QEventLoop()
         queue.job_log.connect(log_lines.append)
@@ -946,7 +951,7 @@ class TestEmitStats(unittest.TestCase):
     encode running, unlike most of TranscodeQueue's own behavior."""
 
     def _emit(self, stats_buffer: dict, duration: float) -> dict:
-        queue = ffmpeg.TranscodeQueue()
+        queue = transcode_queue.TranscodeQueue()
         queue._stats_buffer = stats_buffer
         queue._duration = duration
         received = []
@@ -1135,7 +1140,7 @@ class TestOutputPathCollisionGuard(unittest.TestCase):
                 check=True, timeout=30,
             )
             job = {"path": clip, **x265_settings(container="mp4")}
-            queue = ffmpeg.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             events = _run_queue_and_collect(queue, [job], tmpdir)
 
             self.assertTrue(clip.exists(), "source file must survive")
@@ -1169,7 +1174,7 @@ class TestOutputPathCollisionGuard(unittest.TestCase):
             out_dir.mkdir()
             jobs = [{"path": clip_a, **x265_settings(container="mp4")},
                     {"path": clip_b, **x265_settings(container="mp4")}]
-            queue = ffmpeg.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             events = _run_queue_and_collect(queue, jobs, out_dir)
 
             finished = sorted(e[1][1] for e in events if e[0] == "job_finished")
@@ -1211,7 +1216,7 @@ class TestJobStartedFiresBeforeAnyFailureForThatJob(unittest.TestCase):
                 {"path": good_clip, **x265_settings(container="mp4")},
                 {"path": bad_clip, **x265_settings(container="mp4")},
             ]
-            queue = ffmpeg.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             events = _run_queue_and_collect(queue, jobs, tmpdir)
 
             self.assertEqual(
@@ -1248,7 +1253,7 @@ class TestAtomicOutputRename(unittest.TestCase):
             )
             out_dir = tmpdir / "out"
             out_dir.mkdir()
-            queue = ffmpeg.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             _run_queue_and_collect(queue, [{"path": clip, **x265_settings(container="mp4")}], out_dir)
 
             names = [p.name for p in out_dir.iterdir()]
@@ -1271,7 +1276,7 @@ class TestAtomicOutputRename(unittest.TestCase):
             preexisting = out_dir / "broken.mp4"
             preexisting.write_bytes(b"a completed output from a previous, unrelated run")
 
-            queue = ffmpeg.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             events = _run_queue_and_collect(queue, [{"path": clip, **x265_settings(container="mp4")}], out_dir)
 
             self.assertTrue(any(e[0] == "job_failed" for e in events), events)
@@ -1323,7 +1328,7 @@ class TestProcessFailedToStart(unittest.TestCase):
             old_path = os.environ.get("PATH", "")
             os.environ["PATH"] = str(fakebin)
             try:
-                queue = ffmpeg.TranscodeQueue()
+                queue = transcode_queue.TranscodeQueue()
                 events = []
                 loop = QEventLoop()
                 queue.job_failed.connect(lambda *a: events.append(("job_failed", a)))
@@ -1378,7 +1383,7 @@ class TestMissingAudioTrackWarning(unittest.TestCase):
             # Not the shared _run_queue_and_collect helper -- it doesn't
             # connect job_log at all (most callers never need per-line
             # ffmpeg output), and this test specifically needs to see it.
-            queue = ffmpeg.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             log_lines = []
             finished = []
             loop = QEventLoop()
@@ -1420,7 +1425,7 @@ class TestStopRaceFix(unittest.TestCase):
             temp_output = tmpdir / ".done.transcoding.mp4"
             final_output = tmpdir / "done.mp4"
             temp_output.write_bytes(b"pretend this is a completed encode")
-            queue = ffmpeg.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             queue._jobs = []  # nothing queued after this one
             queue._stopped = True  # simulate: Stop was clicked
             events = []
@@ -1442,7 +1447,7 @@ class TestStopRaceFix(unittest.TestCase):
             temp_output = tmpdir / ".partial.transcoding.mp4"
             final_output = tmpdir / "partial.mp4"
             temp_output.write_bytes(b"partial data from a killed ffmpeg")
-            queue = ffmpeg.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             queue._jobs = []
             queue._stopped = True
             events = []
@@ -1476,7 +1481,7 @@ class TestPauseResume(unittest.TestCase):
     def test_pause_request_halts_after_the_current_job_finishes(self):
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
         try:
-            queue = ffmpeg.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             # _index = 0, not 1 -- _run_next() dispatches self._jobs[self._index]
             # and only increments _index *after*, so "next.mkv would run next if
             # not paused" means it's sitting at _jobs[_index] itself, still
@@ -1514,7 +1519,7 @@ class TestPauseResume(unittest.TestCase):
         # whether a pause happened to be armed.
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
         try:
-            queue = ffmpeg.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             queue._jobs = []  # nothing left -- this was the last job
             queue.request_pause()
             paused_events = []
@@ -1536,7 +1541,7 @@ class TestPauseResume(unittest.TestCase):
     def test_no_pause_requested_continues_normally(self):
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
         try:
-            queue = ffmpeg.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             queue._jobs = []  # nothing left -- confirms the normal all_finished path still fires
             all_finished_events = []
             queue.all_finished.connect(lambda: all_finished_events.append(True))
@@ -1551,7 +1556,7 @@ class TestPauseResume(unittest.TestCase):
     def test_cancel_pause_request_before_it_takes_effect(self):
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
         try:
-            queue = ffmpeg.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             queue._jobs = []
             queue.request_pause()
             queue.cancel_pause_request()  # e.g. user unchecked the box before this job finished
@@ -1570,7 +1575,7 @@ class TestPauseResume(unittest.TestCase):
     def test_resume_continues_from_the_same_index_not_a_fresh_run(self):
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
         try:
-            queue = ffmpeg.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             queue._jobs = [{"path": Path("a.mkv")}, {"path": Path("b.mkv")}, {"path": Path("c.mkv")}]
             queue._index = 2  # a.mkv and b.mkv already ran
             queue._paused = True
@@ -1596,7 +1601,7 @@ class TestPauseResume(unittest.TestCase):
         # notice _stopped and emit all_finished on its own (that only
         # happens from _advance_or_pause, already returned out of for
         # good once a pause takes effect), so stop() has to do it directly.
-        queue = ffmpeg.TranscodeQueue()
+        queue = transcode_queue.TranscodeQueue()
         queue._jobs = [{"path": Path("a.mkv")}]
         queue._index = 1
         queue._paused = True
@@ -1614,7 +1619,7 @@ class TestPauseResume(unittest.TestCase):
         # finished/errorOccurred signal to arrive before all_finished is
         # appropriate; stop() must not short-circuit that by emitting it
         # immediately just because _paused happens to be False here too.
-        queue = ffmpeg.TranscodeQueue()
+        queue = transcode_queue.TranscodeQueue()
         queue._process = QProcess()
         queue._process.setProgram("sleep")
         queue._process.setArguments(["5"])
@@ -1641,7 +1646,7 @@ class TestPauseResume(unittest.TestCase):
             _make_clip(clip_b)
             jobs = [{"path": clip_a, **x265_settings()}, {"path": clip_b, **x265_settings()}]
 
-            queue = ffmpeg.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             events = []
             loop = QEventLoop()
             queue.job_finished.connect(lambda *a: events.append(("job_finished", a)))
@@ -1705,7 +1710,7 @@ class TestProbeDurationGuarded(unittest.TestCase):
                 check=True, timeout=30,
             )
             job = {"path": clip, **x265_settings()}
-            queue = ffmpeg.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             with patch("velocoder.core.ffmpeg.probe_duration", side_effect=FileNotFoundError("ffprobe not found")):
                 events = _run_queue_and_collect(queue, [job], tmpdir)
             failed = [e for e in events if e[0] == "job_failed"]

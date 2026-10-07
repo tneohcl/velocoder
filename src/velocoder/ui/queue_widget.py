@@ -1,4 +1,4 @@
-"""The drag-drop queue list widget, split out of main.py -- fully
+"""The drag-drop queue list widget, split out of main_window.py -- fully
 self-contained (only needs a files-dropped callback), so it has no
 MainWindow coupling to carry along."""
 from pathlib import Path
@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QHeaderView, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTreeWidget,
 )
 
-from theming import _current_theme_palette, _fuzzy_text_color
+from velocoder.ui.theming import _current_theme_palette, _fuzzy_text_color
 
 # Queue table columns -- source-file properties only; output settings live
 # in the right-hand panel and apply live to whatever row is selected
@@ -45,9 +45,9 @@ STATUS_COL = VIDEO_COL
 # dozens of existing call sites); the subtitle uses this role instead.
 VIDEO_SUBTITLE_ROLE = Qt.UserRole + 1
 # Source-probed audio track count (int, or None until probed) -- written
-# by queue_controller.py's _on_source_probed, read by main.py's
+# by queue_controller.py's _on_source_probed, read by main_window.py's
 # _refresh_audio_track_choices to keep the Track dropdown from ever
-# offering an index the selected file(s) don't actually have (worker.py
+# offering an index the selected file(s) don't actually have (ffmpeg.py
 # deliberately skips mapping a nonexistent track rather than failing the
 # job, which used to mean picking one silently produced audio-less
 # output instead of an error). +4, not +2/+3 -- those are

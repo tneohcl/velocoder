@@ -1,4 +1,4 @@
-"""Regression tests for worker.py (the ffmpeg command builder + queue engine).
+"""Regression tests for ffmpeg.py (the ffmpeg command builder + queue engine).
 
 Run with:  python3 -m unittest discover -s tests -v
 (from the transcoder/ root, plain stdlib unittest -- no extra install needed)
@@ -20,18 +20,23 @@ from pathlib import Path
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
-import worker  # noqa: E402
+sys.path.insert(0, str(REPO_ROOT / "src"))
+from velocoder.core import ffmpeg  # noqa: E402
+from velocoder.ui import transcode_queue  # noqa: E402
 
-from PySide6.QtCore import QCoreApplication, QEventLoop, QProcess, QTimer  # noqa: E402
+from PySide6.QtCore import QEventLoop, QProcess, QTimer  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
 # TranscodeQueue tests drive a real QProcess, which needs a running Qt event
-# loop -- QCoreApplication (no GUI needed here, unlike main.py's tests).
-_app = QCoreApplication.instance() or QCoreApplication([])
+# loop. A full QApplication (offscreen), not a bare QCoreApplication: the
+# chunked runner can put these tests in the same process as the widget
+# tests, and a QCoreApplication created first makes every QWidget abort.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+_app = QApplication.instance() or QApplication([])
 
 # Captured before setUpModule's stub replaces it, for the tests that
 # exercise the real validation encode itself.
-_real_validate_hevc_encode = worker.validate_hevc_encode
+_real_validate_hevc_encode = ffmpeg.validate_hevc_encode
 _module_patches = []
 
 
@@ -41,7 +46,7 @@ def setUpModule():
     # frame validation encode on top of that would just fail and hide
     # every faked GPU. Default to "the driver works"; tests that care
     # about a failing driver override this locally.
-    _module_patches.append(patch.object(worker, "validate_hevc_encode", return_value=None))
+    _module_patches.append(patch.object(ffmpeg, "validate_hevc_encode", return_value=None))
     for p in _module_patches:
         p.start()
 
@@ -56,7 +61,7 @@ HAS_VAAPI = Path("/dev/dri/by-path").exists()
 
 def _has_vendor_render_node(vendor_id: str) -> bool:
     try:
-        worker.find_render_node(vendor_id)
+        ffmpeg.find_render_node(vendor_id)
         return True
     except RuntimeError:
         return False
@@ -67,10 +72,10 @@ def _has_vendor_render_node(vendor_id: str) -> bool:
 # Intel iGPU and a real discrete AMD GPU (confirmed via vainfo + real
 # encodes, see constants.RC_MODES's comment), but a machine with only one
 # or the other shouldn't spuriously run/skip the wrong vendor's tests.
-HAS_AMD_VAAPI = _has_vendor_render_node(worker.AMD_VENDOR_ID)
+HAS_AMD_VAAPI = _has_vendor_render_node(ffmpeg.AMD_VENDOR_ID)
 
 
-def _run_queue_and_collect(queue: "worker.TranscodeQueue", jobs, output_dir, timeout_ms=15000):
+def _run_queue_and_collect(queue: "transcode_queue.TranscodeQueue", jobs, output_dir, timeout_ms=15000):
     """Run a TranscodeQueue to completion, collecting every job_* signal
     emission as (event_name, args) tuples for direct assertion. Guards
     against a hung ffmpeg/ffprobe wedging the test suite forever."""
@@ -139,12 +144,12 @@ class _MockedRenderNodeMixin:
     "some encoder" fixture, not because the test is actually about VAAPI, so
     a real render node (this dev box's Intel iGPU, absent on a CI runner
     with no GPU at all) is not required. Mirrors the per-test
-    patch.object(worker, "find_render_node") pattern TestGpuVendorSelection
+    patch.object(ffmpeg, "find_render_node") pattern TestGpuVendorSelection
     already uses below, just applied once per class instead of per test."""
 
     def setUp(self):
         super().setUp()
-        patcher = patch.object(worker, "find_render_node", return_value="/dev/dri/renderD128")
+        patcher = patch.object(ffmpeg, "find_render_node", return_value="/dev/dri/renderD128")
         self.addCleanup(patcher.stop)
         patcher.start()
 
@@ -171,13 +176,13 @@ class ClipTestCase(unittest.TestCase):
 
 class TestBuildArgsVaapi(_MockedRenderNodeMixin, ClipTestCase):
     def test_icq_uses_global_quality(self):
-        args = worker.build_args(vaapi_settings(rc_mode="ICQ", quality_value=30), self.clip, self.out_path)
+        args = ffmpeg.build_args(vaapi_settings(rc_mode="ICQ", quality_value=30), self.clip, self.out_path)
         self.assertIn("-global_quality", args)
         self.assertEqual(args[args.index("-global_quality") + 1], "30")
         self.assertNotIn("-qp", args)
 
     def test_cqp_uses_qp_not_global_quality(self):
-        args = worker.build_args(vaapi_settings(rc_mode="CQP", quality_value=24), self.clip, self.out_path)
+        args = ffmpeg.build_args(vaapi_settings(rc_mode="CQP", quality_value=24), self.clip, self.out_path)
         self.assertIn("-qp", args)
         self.assertEqual(args[args.index("-qp") + 1], "24")
         self.assertNotIn("-global_quality", args)
@@ -189,7 +194,7 @@ class TestBuildArgsVaapi(_MockedRenderNodeMixin, ClipTestCase):
         # length, so the expected number is exact: 100MB over 80s is
         # 8192*100/80 = 10240 kbps total, minus the 160k reserved for the
         # (real, aac) audio track it's copying = 10080.
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             vaapi_settings(rc_mode="VBR", quality_value=100),
             self.clip, self.out_path, duration_seconds=80,
         )
@@ -197,13 +202,13 @@ class TestBuildArgsVaapi(_MockedRenderNodeMixin, ClipTestCase):
         self.assertEqual(args[args.index("-b:v") + 1], "10080k")
 
     def test_10bit_uses_p010le_and_main10_profile(self):
-        args = worker.build_args(vaapi_settings(bit_depth=10), self.clip, self.out_path)
+        args = ffmpeg.build_args(vaapi_settings(bit_depth=10), self.clip, self.out_path)
         vf = args[args.index("-vf") + 1]
         self.assertIn("format=p010le", vf)
         self.assertEqual(args[args.index("-profile:v") + 1], "main10")
 
     def test_8bit_uses_nv12_and_main_profile(self):
-        args = worker.build_args(vaapi_settings(bit_depth=8), self.clip, self.out_path)
+        args = ffmpeg.build_args(vaapi_settings(bit_depth=8), self.clip, self.out_path)
         vf = args[args.index("-vf") + 1]
         self.assertIn("format=nv12", vf)
         self.assertEqual(args[args.index("-profile:v") + 1], "main")
@@ -212,11 +217,11 @@ class TestBuildArgsVaapi(_MockedRenderNodeMixin, ClipTestCase):
         # HEVC on this hardware only exposes the non-low-power EncSlice
         # entrypoint (confirmed via vainfo) -- -low_power would just fail.
         for rc_mode in ("ICQ", "CQP", "VBR"):
-            args = worker.build_args(vaapi_settings(rc_mode=rc_mode), self.clip, self.out_path)
+            args = ffmpeg.build_args(vaapi_settings(rc_mode=rc_mode), self.clip, self.out_path)
             self.assertNotIn("-low_power", args)
 
     def test_uses_vaapi_device_and_hevc_vaapi_codec(self):
-        args = worker.build_args(vaapi_settings(), self.clip, self.out_path)
+        args = ffmpeg.build_args(vaapi_settings(), self.clip, self.out_path)
         self.assertIn("-vaapi_device", args)
         self.assertEqual(args[args.index("-c:v") + 1], "hevc_vaapi")
 
@@ -233,7 +238,7 @@ class TestBuildArgsVaapi(_MockedRenderNodeMixin, ClipTestCase):
         # reconfiguration then succeeds instead (confirmed against the
         # same file: the "Reconfiguring filter graph" log line still
         # appears, encoding just continues past it now).
-        args = worker.build_args(vaapi_settings(), self.clip, self.out_path)
+        args = ffmpeg.build_args(vaapi_settings(), self.clip, self.out_path)
         self.assertIn("-noautoscale", args)
 
 
@@ -268,7 +273,7 @@ class TestBuildArgsAudioBitrateReservation(unittest.TestCase):
              "-c:v", "libx264", "-c:a", "aac", "-b:a", "256k", "-shortest", str(cls.clip)],
             check=True, timeout=30,
         )
-        cls.real_audio_kbps = worker.probe_audio_bitrate_kbps(cls.clip)
+        cls.real_audio_kbps = ffmpeg.probe_audio_bitrate_kbps(cls.clip)
 
     @classmethod
     def tearDownClass(cls):
@@ -283,19 +288,19 @@ class TestBuildArgsAudioBitrateReservation(unittest.TestCase):
         self.assertLess(self.real_audio_kbps, 400)
 
     def test_probe_returns_none_for_a_track_that_does_not_exist(self):
-        self.assertIsNone(worker.probe_audio_bitrate_kbps(self.clip, track_index=5))
+        self.assertIsNone(ffmpeg.probe_audio_bitrate_kbps(self.clip, track_index=5))
 
     def test_copied_audio_reserves_the_real_source_bitrate_not_the_configured_one(self):
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             x265_settings(rc_mode="bitrate", quality_value=100, audio_bitrate="96k",
                           audio_copy_if_compatible=True),
             self.clip, self.tmpdir / "out.mp4", duration_seconds=80,
         )
-        expected_video_kbps = worker.target_size_to_bitrate_kbps(100, 80, self.real_audio_kbps)
+        expected_video_kbps = ffmpeg.target_size_to_bitrate_kbps(100, 80, self.real_audio_kbps)
         self.assertEqual(args[args.index("-b:v") + 1], f"{expected_video_kbps}k")
         # Confirms this genuinely differs from the old (buggy) behavior,
         # not a coincidence where the two numbers happen to match.
-        wrong_kbps_using_configured_bitrate = worker.target_size_to_bitrate_kbps(100, 80, 96)
+        wrong_kbps_using_configured_bitrate = ffmpeg.target_size_to_bitrate_kbps(100, 80, 96)
         self.assertNotEqual(expected_video_kbps, wrong_kbps_using_configured_bitrate)
 
     def test_transcoded_audio_still_reserves_the_configured_bitrate(self):
@@ -303,12 +308,12 @@ class TestBuildArgsAudioBitrateReservation(unittest.TestCase):
         # source codec -- the configured audio_bitrate is the correct
         # (and only knowable ahead of time) number to reserve here, since
         # that's genuinely what the real output will use.
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             x265_settings(rc_mode="bitrate", quality_value=100, audio_bitrate="96k",
                           audio_copy_if_compatible=False),
             self.clip, self.tmpdir / "out.mp4", duration_seconds=80,
         )
-        expected_video_kbps = worker.target_size_to_bitrate_kbps(100, 80, 96)
+        expected_video_kbps = ffmpeg.target_size_to_bitrate_kbps(100, 80, 96)
         self.assertEqual(args[args.index("-b:v") + 1], f"{expected_video_kbps}k")
 
     def test_forced_downmix_still_reserves_the_configured_bitrate(self):
@@ -320,27 +325,27 @@ class TestBuildArgsAudioBitrateReservation(unittest.TestCase):
         # clip -- its own sine-wave audio is genuinely mono, and
         # probe_audio=True would just re-probe and overwrite a caller-
         # supplied audio_channels with that real (non-6) value.
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             x265_settings(rc_mode="bitrate", quality_value=100, audio_bitrate="96k",
                           audio_copy_if_compatible=True, audio_downmix_stereo=True),
             self.clip, self.tmpdir / "out.mp4", duration_seconds=80,
             probe_audio=False, audio_codec="aac", audio_channels=6,
         )
-        expected_video_kbps = worker.target_size_to_bitrate_kbps(100, 80, 96)
+        expected_video_kbps = ffmpeg.target_size_to_bitrate_kbps(100, 80, 96)
         self.assertEqual(args[args.index("-b:v") + 1], f"{expected_video_kbps}k")
 
     def test_caller_supplied_audio_source_bitrate_skips_the_probe(self):
         # Same pattern as duration_seconds -- a caller that already knows
         # the value (a cached preview, say) can skip a redundant ffprobe.
-        with patch.object(worker, "probe_audio_bitrate_kbps") as mock_probe:
-            args = worker.build_args(
+        with patch.object(ffmpeg, "probe_audio_bitrate_kbps") as mock_probe:
+            args = ffmpeg.build_args(
                 x265_settings(rc_mode="bitrate", quality_value=100, audio_bitrate="96k",
                               audio_copy_if_compatible=True),
                 self.clip, self.tmpdir / "out.mp4", duration_seconds=80,
                 audio_source_bitrate_kbps=640,
             )
             mock_probe.assert_not_called()
-        expected_video_kbps = worker.target_size_to_bitrate_kbps(100, 80, 640)
+        expected_video_kbps = ffmpeg.target_size_to_bitrate_kbps(100, 80, 640)
         self.assertEqual(args[args.index("-b:v") + 1], f"{expected_video_kbps}k")
 
 
@@ -369,8 +374,8 @@ class TestQueueAudioBitrateReservation(unittest.TestCase):
              "-c:v", "libx264", "-c:a", "aac", "-b:a", "256k", "-shortest", str(cls.clip)],
             check=True, timeout=30,
         )
-        cls.real_audio_kbps = worker.probe_audio_bitrate_kbps(cls.clip)
-        cls.real_duration = worker.probe_duration(cls.clip)
+        cls.real_audio_kbps = ffmpeg.probe_audio_bitrate_kbps(cls.clip)
+        cls.real_duration = ffmpeg.probe_duration(cls.clip)
 
     @classmethod
     def tearDownClass(cls):
@@ -385,7 +390,7 @@ class TestQueueAudioBitrateReservation(unittest.TestCase):
             **x265_settings(rc_mode="bitrate", quality_value=100, audio_bitrate="96k",
                              audio_copy_if_compatible=True),
         }
-        queue = worker.TranscodeQueue()
+        queue = transcode_queue.TranscodeQueue()
         log_lines = []
         loop = QEventLoop()
         queue.job_log.connect(log_lines.append)
@@ -398,15 +403,15 @@ class TestQueueAudioBitrateReservation(unittest.TestCase):
         loop.exec()
 
         ffmpeg_line = next((line for line in log_lines if line.startswith("ffmpeg ")), "")
-        expected_video_kbps = worker.target_size_to_bitrate_kbps(100, self.real_duration, self.real_audio_kbps)
-        wrong_kbps_using_configured_bitrate = worker.target_size_to_bitrate_kbps(100, self.real_duration, 96)
+        expected_video_kbps = ffmpeg.target_size_to_bitrate_kbps(100, self.real_duration, self.real_audio_kbps)
+        wrong_kbps_using_configured_bitrate = ffmpeg.target_size_to_bitrate_kbps(100, self.real_duration, 96)
         self.assertIn(f"-b:v {expected_video_kbps}k", ffmpeg_line, ffmpeg_line)
         self.assertNotEqual(expected_video_kbps, wrong_kbps_using_configured_bitrate)
 
 
 class TestBuildArgsX265(ClipTestCase):
     def test_crf_uses_crf_flag(self):
-        args = worker.build_args(x265_settings(rc_mode="CRF", quality_value=20), self.clip, self.out_path)
+        args = ffmpeg.build_args(x265_settings(rc_mode="CRF", quality_value=20), self.clip, self.out_path)
         self.assertIn("-crf", args)
         self.assertEqual(args[args.index("-crf") + 1], "20")
         self.assertNotIn("-b:v", args)
@@ -414,7 +419,7 @@ class TestBuildArgsX265(ClipTestCase):
     def test_bitrate_mode_uses_bv_not_crf(self):
         # Same size->kbps conversion as VBR above (see its comment): 100MB
         # over 80s minus 160k reserved audio = 10080k.
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             x265_settings(rc_mode="bitrate", quality_value=100),
             self.clip, self.out_path, duration_seconds=80,
         )
@@ -423,19 +428,19 @@ class TestBuildArgsX265(ClipTestCase):
         self.assertNotIn("-crf", args)
 
     def test_10bit_uses_yuv420p10le(self):
-        args = worker.build_args(x265_settings(bit_depth=10), self.clip, self.out_path)
+        args = ffmpeg.build_args(x265_settings(bit_depth=10), self.clip, self.out_path)
         self.assertEqual(args[args.index("-pix_fmt") + 1], "yuv420p10le")
 
     def test_8bit_uses_yuv420p(self):
-        args = worker.build_args(x265_settings(bit_depth=8), self.clip, self.out_path)
+        args = ffmpeg.build_args(x265_settings(bit_depth=8), self.clip, self.out_path)
         self.assertEqual(args[args.index("-pix_fmt") + 1], "yuv420p")
 
     def test_speed_maps_to_preset_flag(self):
-        args = worker.build_args(x265_settings(speed="veryslow"), self.clip, self.out_path)
+        args = ffmpeg.build_args(x265_settings(speed="veryslow"), self.clip, self.out_path)
         self.assertEqual(args[args.index("-preset") + 1], "veryslow")
 
     def test_no_vaapi_device_for_cpu_encoder(self):
-        args = worker.build_args(x265_settings(), self.clip, self.out_path)
+        args = ffmpeg.build_args(x265_settings(), self.clip, self.out_path)
         self.assertNotIn("-vaapi_device", args)
 
     def test_no_noautoscale_for_cpu_encoder(self):
@@ -444,7 +449,7 @@ class TestBuildArgsX265(ClipTestCase):
         # has no such surface in its pipeline at all, so there's nothing
         # here for the flag to fix, and it shouldn't carry an untested
         # behavior change for a path that was never broken.
-        args = worker.build_args(x265_settings(), self.clip, self.out_path)
+        args = ffmpeg.build_args(x265_settings(), self.clip, self.out_path)
         self.assertNotIn("-noautoscale", args)
 
 
@@ -456,24 +461,24 @@ class TestBuildArgsX264(ClipTestCase):
     libx264 -- would fail the job outright if it were ever sent there)."""
 
     def test_uses_libx264_not_libx265(self):
-        args = worker.build_args(x264_settings(), self.clip, self.out_path)
+        args = ffmpeg.build_args(x264_settings(), self.clip, self.out_path)
         self.assertEqual(args[args.index("-c:v") + 1], "libx264")
 
     def test_no_x265_params(self):
         # The one thing that's actually different from the x265 path
         # structurally, not just a different flag value -- see the
-        # comment on this exact branch in worker.py's build_args.
-        args = worker.build_args(x264_settings(), self.clip, self.out_path)
+        # comment on this exact branch in ffmpeg.py's build_args.
+        args = ffmpeg.build_args(x264_settings(), self.clip, self.out_path)
         self.assertNotIn("-x265-params", args)
 
     def test_crf_uses_crf_flag(self):
-        args = worker.build_args(x264_settings(rc_mode="CRF", quality_value=20), self.clip, self.out_path)
+        args = ffmpeg.build_args(x264_settings(rc_mode="CRF", quality_value=20), self.clip, self.out_path)
         self.assertIn("-crf", args)
         self.assertEqual(args[args.index("-crf") + 1], "20")
         self.assertNotIn("-b:v", args)
 
     def test_bitrate_mode_uses_bv_not_crf(self):
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             x264_settings(rc_mode="bitrate", quality_value=100),
             self.clip, self.out_path, duration_seconds=80,
         )
@@ -482,17 +487,17 @@ class TestBuildArgsX264(ClipTestCase):
         self.assertNotIn("-crf", args)
 
     def test_10bit_uses_yuv420p10le(self):
-        args = worker.build_args(x264_settings(bit_depth=10), self.clip, self.out_path)
+        args = ffmpeg.build_args(x264_settings(bit_depth=10), self.clip, self.out_path)
         self.assertEqual(args[args.index("-pix_fmt") + 1], "yuv420p10le")
 
     def test_8bit_uses_yuv420p(self):
-        args = worker.build_args(x264_settings(bit_depth=8), self.clip, self.out_path)
+        args = ffmpeg.build_args(x264_settings(bit_depth=8), self.clip, self.out_path)
         self.assertEqual(args[args.index("-pix_fmt") + 1], "yuv420p")
 
     def test_speed_maps_to_preset_flag(self):
         # Same ultrafast..placebo preset names as libx265 -- confirmed
         # against this exact ffmpeg build, not assumed.
-        args = worker.build_args(x264_settings(speed="veryslow"), self.clip, self.out_path)
+        args = ffmpeg.build_args(x264_settings(speed="veryslow"), self.clip, self.out_path)
         self.assertEqual(args[args.index("-preset") + 1], "veryslow")
 
     def test_x264_only_tune_value_passes_through(self):
@@ -501,11 +506,11 @@ class TestBuildArgsX264(ClipTestCase):
         # -- build_args itself doesn't validate tune values against either
         # list, it just passes through whatever string it's given, so this
         # confirms the plumbing carries an x264-only value correctly.
-        args = worker.build_args(x264_settings(tune="film"), self.clip, self.out_path)
+        args = ffmpeg.build_args(x264_settings(tune="film"), self.clip, self.out_path)
         self.assertEqual(args[args.index("-tune") + 1], "film")
 
     def test_no_vaapi_device_for_cpu_encoder(self):
-        args = worker.build_args(x264_settings(), self.clip, self.out_path)
+        args = ffmpeg.build_args(x264_settings(), self.clip, self.out_path)
         self.assertNotIn("-vaapi_device", args)
 
     def test_real_encode_produces_h264_output(self):
@@ -513,7 +518,7 @@ class TestBuildArgsX264(ClipTestCase):
         # -- confirms libx264 is actually a valid -c:v value in this
         # build and the whole pipeline (scale/pix_fmt/preset/crf) is
         # genuinely accepted together, not just individually plausible.
-        args = worker.build_args(x264_settings(), self.clip, self.out_path)
+        args = ffmpeg.build_args(x264_settings(), self.clip, self.out_path)
         result = subprocess.run(args, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         probe = subprocess.run(
@@ -533,27 +538,27 @@ class TestSizeToBitrate(unittest.TestCase):
     def test_basic_conversion(self):
         # 100MB over 80s = 8192*100/80 = 10240 total kbps, minus 160
         # reserved for audio = 10080.
-        self.assertEqual(worker.target_size_to_bitrate_kbps(100, 80, 160), 10080)
+        self.assertEqual(ffmpeg.target_size_to_bitrate_kbps(100, 80, 160), 10080)
 
     def test_zero_duration_returns_zero_not_a_crash(self):
-        self.assertEqual(worker.target_size_to_bitrate_kbps(100, 0, 160), 0)
+        self.assertEqual(ffmpeg.target_size_to_bitrate_kbps(100, 0, 160), 0)
 
     def test_negative_duration_returns_zero(self):
-        self.assertEqual(worker.target_size_to_bitrate_kbps(100, -5, 160), 0)
+        self.assertEqual(ffmpeg.target_size_to_bitrate_kbps(100, -5, 160), 0)
 
     def test_audio_alone_exceeding_target_clamps_to_zero_not_negative(self):
         # 1MB over 60s is only ~136 kbps total -- less than the 160
         # reserved for audio alone. A negative video bitrate would be
         # nonsensical (and likely reject at the ffmpeg level); 0 is at
         # least a legible "this target is too small" signal.
-        self.assertEqual(worker.target_size_to_bitrate_kbps(1, 60, 160), 0)
+        self.assertEqual(ffmpeg.target_size_to_bitrate_kbps(1, 60, 160), 0)
 
     def test_no_audio_reserves_nothing(self):
-        self.assertEqual(worker.target_size_to_bitrate_kbps(100, 80, 0), 10240)
+        self.assertEqual(ffmpeg.target_size_to_bitrate_kbps(100, 80, 0), 10240)
 
     def test_audio_bitrate_kbps_parses_k_suffix(self):
-        self.assertEqual(worker.audio_bitrate_kbps("160k"), 160)
-        self.assertEqual(worker.audio_bitrate_kbps("96k"), 96)
+        self.assertEqual(ffmpeg.audio_bitrate_kbps("160k"), 160)
+        self.assertEqual(ffmpeg.audio_bitrate_kbps("96k"), 96)
 
 
 class TestTargetSizeTooSmallRejected(unittest.TestCase):
@@ -570,7 +575,7 @@ class TestTargetSizeTooSmallRejected(unittest.TestCase):
 
     def test_raises_when_target_too_small_for_duration_and_audio(self):
         with self.assertRaises(ValueError):
-            worker.build_args(
+            ffmpeg.build_args(
                 x265_settings(rc_mode="bitrate", quality_value=0.001),
                 Path("in.mkv"), Path("out.mp4"), duration_seconds=7200, probe_audio=False, audio_codec="aac",
             )
@@ -579,7 +584,7 @@ class TestTargetSizeTooSmallRejected(unittest.TestCase):
         # Same shape as the too-small case above, just a target that's
         # actually big enough -- confirms this isn't rejecting every
         # bitrate-family request, only the ones that would derive to 0.
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             x265_settings(rc_mode="bitrate", quality_value=100),
             Path("in.mkv"), Path("out.mp4"), duration_seconds=80, probe_audio=False, audio_codec="aac",
         )
@@ -588,53 +593,53 @@ class TestTargetSizeTooSmallRejected(unittest.TestCase):
 
 class TestBuildArgsCommon(_MockedRenderNodeMixin, ClipTestCase):
     def test_resolution_clamps_to_source_no_upscale(self):
-        args = worker.build_args(vaapi_settings(width=99999, height=99999), self.clip, self.out_path)
+        args = ffmpeg.build_args(vaapi_settings(width=99999, height=99999), self.clip, self.out_path)
         vf = args[args.index("-vf") + 1]
         self.assertIn("min(99999,iw)", vf)
         self.assertIn("force_original_aspect_ratio=decrease", vf)
 
     def test_drops_subtitle_and_data_streams(self):
-        args = worker.build_args(vaapi_settings(), self.clip, self.out_path)
+        args = ffmpeg.build_args(vaapi_settings(), self.clip, self.out_path)
         self.assertIn("-sn", args)
         self.assertIn("-dn", args)
 
     def test_video_map_excludes_attached_pics(self):
         # Regression check: must be capital '0:V:0', not '0:v:0' -- lowercase
         # would also match embedded cover-art streams as "the video track".
-        args = worker.build_args(vaapi_settings(), self.clip, self.out_path)
+        args = ffmpeg.build_args(vaapi_settings(), self.clip, self.out_path)
         self.assertIn("0:V:0", args)
 
     def test_uses_progress_pipe_for_gui_progress_bar(self):
-        args = worker.build_args(vaapi_settings(), self.clip, self.out_path)
+        args = ffmpeg.build_args(vaapi_settings(), self.clip, self.out_path)
         self.assertIn("-progress", args)
         self.assertEqual(args[args.index("-progress") + 1], "pipe:1")
 
     def test_mp4_container_includes_faststart(self):
-        args = worker.build_args(vaapi_settings(container="mp4"), self.clip, self.out_path)
+        args = ffmpeg.build_args(vaapi_settings(container="mp4"), self.clip, self.out_path)
         self.assertIn("-movflags", args)
 
     def test_mkv_container_omits_faststart(self):
         # movflags is a mov/mp4-muxer-private option -- ffmpeg silently
         # ignores it elsewhere, but it shouldn't appear in the mkv command
-        # line at all (see worker.build_args' comment on this).
-        args = worker.build_args(vaapi_settings(container="mkv"), self.clip, self.out_path)
+        # line at all (see ffmpeg.build_args' comment on this).
+        args = ffmpeg.build_args(vaapi_settings(container="mkv"), self.clip, self.out_path)
         self.assertNotIn("-movflags", args)
 
 
 class TestTune(_MockedRenderNodeMixin, ClipTestCase):
     def test_none_omits_tune_flag(self):
-        args = worker.build_args(x265_settings(tune="None"), self.clip, self.out_path)
+        args = ffmpeg.build_args(x265_settings(tune="None"), self.clip, self.out_path)
         self.assertNotIn("-tune", args)
 
     def test_value_adds_tune_flag(self):
-        args = worker.build_args(x265_settings(tune="animation"), self.clip, self.out_path)
+        args = ffmpeg.build_args(x265_settings(tune="animation"), self.clip, self.out_path)
         self.assertIn("-tune", args)
         self.assertEqual(args[args.index("-tune") + 1], "animation")
 
     def test_ignored_for_vaapi_encoder(self):
         # -tune is an x265-only concept -- hevc_vaapi has no equivalent
         # option, so it must never appear even if the field is set.
-        args = worker.build_args(vaapi_settings(tune="animation"), self.clip, self.out_path)
+        args = ffmpeg.build_args(vaapi_settings(tune="animation"), self.clip, self.out_path)
         self.assertNotIn("-tune", args)
 
     def test_film_is_deliberately_not_offered(self):
@@ -642,7 +647,7 @@ class TestTune(_MockedRenderNodeMixin, ClipTestCase):
         # preset/tune (null)/film." -- film is a real x265 tune name
         # elsewhere but invalid here, so constants.X265_TUNES must not
         # list it (regression check on the constants, not just build_args).
-        from constants import X265_TUNES
+        from velocoder.core.constants import X265_TUNES
         self.assertNotIn("film", X265_TUNES)
 
 
@@ -650,13 +655,13 @@ class TestAudioSelection(_MockedRenderNodeMixin, ClipTestCase):
     tracks = (("aac", 440), ("ac3", 880))
 
     def test_copies_compatible_codec(self):
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             vaapi_settings(audio_track=0, audio_copy_if_compatible=True), self.clip, self.out_path
         )
         self.assertEqual(args[args.index("-c:a") + 1], "copy")
 
     def test_selects_requested_track_index(self):
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             vaapi_settings(audio_track=1, audio_copy_if_compatible=True), self.clip, self.out_path
         )
         self.assertIn("0:a:1", args)
@@ -665,7 +670,7 @@ class TestAudioSelection(_MockedRenderNodeMixin, ClipTestCase):
         # Track 1 is ac3, which IS normally copy-compatible -- confirm the
         # "copy if compatible" checkbox actually overrides it when off,
         # rather than being silently ignored.
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             vaapi_settings(audio_track=1, audio_copy_if_compatible=False), self.clip, self.out_path
         )
         self.assertEqual(args[args.index("-c:a") + 1], "aac")
@@ -692,14 +697,14 @@ class TestAudioDownmix(_MockedRenderNodeMixin, unittest.TestCase):
     """
 
     def test_adds_ac_2_when_transcoding(self):
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             vaapi_settings(audio_downmix_stereo=True, audio_copy_if_compatible=False),
             Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="mp3", audio_channels=6,
         )
         self.assertEqual(args[args.index("-ac") + 1], "2")
 
     def test_omits_ac_flag_when_downmix_is_off(self):
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             vaapi_settings(audio_downmix_stereo=False, audio_copy_if_compatible=False),
             Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="mp3", audio_channels=6,
         )
@@ -712,7 +717,7 @@ class TestAudioDownmix(_MockedRenderNodeMixin, unittest.TestCase):
         # that, the same way audio_copy_if_compatible=False does in
         # TestAudioSelection above. Silently keeping -c:a copy here would
         # mean checking "downmix to stereo" just quietly does nothing.
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             vaapi_settings(audio_downmix_stereo=True, audio_copy_if_compatible=True),
             Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="aac", audio_channels=6,
         )
@@ -720,7 +725,7 @@ class TestAudioDownmix(_MockedRenderNodeMixin, unittest.TestCase):
         self.assertEqual(args[args.index("-ac") + 1], "2")
 
     def test_default_is_off_and_does_not_affect_a_normal_copy(self):
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             vaapi_settings(audio_copy_if_compatible=True), Path("in.mkv"), Path("out.mp4"),
             probe_audio=False, audio_codec="aac", audio_channels=6,
         )
@@ -733,7 +738,7 @@ class TestAudioDownmix(_MockedRenderNodeMixin, unittest.TestCase):
         # source with the box checked still forced an unnecessary
         # transcode, and a mono source would have been *upmixed* to two
         # channels, the opposite of what "downmix" means.
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             vaapi_settings(audio_downmix_stereo=True, audio_copy_if_compatible=True),
             Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="aac", audio_channels=2,
         )
@@ -741,7 +746,7 @@ class TestAudioDownmix(_MockedRenderNodeMixin, unittest.TestCase):
         self.assertNotIn("-ac", args)
 
     def test_no_effect_on_a_mono_source(self):
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             vaapi_settings(audio_downmix_stereo=True, audio_copy_if_compatible=True),
             Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="aac", audio_channels=1,
         )
@@ -752,7 +757,7 @@ class TestAudioDownmix(_MockedRenderNodeMixin, unittest.TestCase):
         # audio_channels=None (never probed, or genuinely unreported) must
         # not be read as "assume it needs downmixing" -- the safe default
         # is "don't force it" when it isn't actually known to be warranted.
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             vaapi_settings(audio_downmix_stereo=True, audio_copy_if_compatible=True),
             Path("in.mkv"), Path("out.mp4"), probe_audio=False, audio_codec="aac", audio_channels=None,
         )
@@ -782,7 +787,7 @@ class TestAudioDownmix(_MockedRenderNodeMixin, unittest.TestCase):
             self.assertEqual(probe_in.stdout.strip(), "6")  # confirm the fixture itself is really 6ch
 
             out = tmpdir / "downmixed.mp4"
-            args = worker.build_args(x265_settings(audio_downmix_stereo=True), clip, out)
+            args = ffmpeg.build_args(x265_settings(audio_downmix_stereo=True), clip, out)
             result = subprocess.run(args, capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr[-2000:])
             probe_out = subprocess.run(
@@ -803,14 +808,14 @@ class TestCommandPreview(_MockedRenderNodeMixin, unittest.TestCase):
     """
 
     def test_skips_probe_and_uses_given_audio_codec(self):
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             vaapi_settings(), Path("input.ext"), Path("output.mp4"),
             probe_audio=False, audio_codec="aac",
         )
         self.assertEqual(args[args.index("-c:a") + 1], "copy")  # aac is copy-compatible
 
     def test_none_audio_codec_omits_audio_flags(self):
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             vaapi_settings(), Path("input.ext"), Path("output.mp4"),
             probe_audio=False, audio_codec=None,
         )
@@ -824,7 +829,7 @@ class TestCommandPreview(_MockedRenderNodeMixin, unittest.TestCase):
     def test_never_touches_the_filesystem(self):
         # A path that can't possibly exist -- if this tried to probe it,
         # ffprobe would fail/hang on a subprocess call against a bogus path.
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             vaapi_settings(), Path("/nonexistent/does-not-exist.mkv"), Path("/nonexistent/out.mp4"),
             probe_audio=False, audio_codec="ac3",
         )
@@ -837,22 +842,22 @@ class TestIdetHelpers(unittest.TestCase):
     covered in test_main.py, since it's GUI-driven async wiring."""
 
     def test_build_idet_args_caps_sample_duration(self):
-        args = worker.build_idet_args(Path("in.mkv"), sample_seconds=15)
+        args = ffmpeg.build_idet_args(Path("in.mkv"), sample_seconds=15)
         self.assertIn("-t", args)
         self.assertEqual(args[args.index("-t") + 1], "15")
         self.assertIn("idet", args[args.index("-vf") + 1])
 
     def test_parse_idet_output_all_interlaced(self):
         stderr = "[Parsed_idet_0] Multi frame detection: TFF:   100 BFF:     0 Progressive:     0 Undetermined:     0\n"
-        self.assertEqual(worker.parse_idet_output(stderr), 1.0)
+        self.assertEqual(ffmpeg.parse_idet_output(stderr), 1.0)
 
     def test_parse_idet_output_all_progressive(self):
         stderr = "[Parsed_idet_0] Multi frame detection: TFF:     0 BFF:     0 Progressive:   100 Undetermined:     0\n"
-        self.assertEqual(worker.parse_idet_output(stderr), 0.0)
+        self.assertEqual(ffmpeg.parse_idet_output(stderr), 0.0)
 
     def test_parse_idet_output_mixed(self):
         stderr = "[Parsed_idet_0] Multi frame detection: TFF:    30 BFF:    20 Progressive:    50 Undetermined:     0\n"
-        self.assertEqual(worker.parse_idet_output(stderr), 0.5)
+        self.assertEqual(ffmpeg.parse_idet_output(stderr), 0.5)
 
     def test_parse_idet_output_uses_last_line_not_first(self):
         # idet logs one line per filter instance in the graph; the final one
@@ -863,10 +868,10 @@ class TestIdetHelpers(unittest.TestCase):
             "Multi frame detection: TFF:     0 BFF:     0 Progressive:     0 Undetermined:     0\n"
             "Multi frame detection: TFF:   100 BFF:     0 Progressive:     0 Undetermined:     0\n"
         )
-        self.assertEqual(worker.parse_idet_output(stderr), 1.0)
+        self.assertEqual(ffmpeg.parse_idet_output(stderr), 1.0)
 
     def test_parse_idet_output_no_stats_returns_zero(self):
-        self.assertEqual(worker.parse_idet_output("ffmpeg: command not found\n"), 0.0)
+        self.assertEqual(ffmpeg.parse_idet_output("ffmpeg: command not found\n"), 0.0)
 
 
 class TestSourceProbeHelpers(unittest.TestCase):
@@ -876,7 +881,7 @@ class TestSourceProbeHelpers(unittest.TestCase):
     split as TestIdetHelpers above."""
 
     def test_build_probe_args_is_header_only(self):
-        args = worker.build_probe_args(Path("in.mkv"))
+        args = ffmpeg.build_probe_args(Path("in.mkv"))
         self.assertNotIn("-vf", args)  # no decoding -- contrast build_idet_args
         self.assertIn("-show_entries", args)
         self.assertIn("in.mkv", args)
@@ -893,7 +898,7 @@ class TestSourceProbeHelpers(unittest.TestCase):
                 {"codec_type": "audio", "codec_name": "ac3", "channels": 2},
             ],
         })
-        info = worker.parse_probe_output(stdout)
+        info = ffmpeg.parse_probe_output(stdout)
         self.assertEqual(info["duration"], 125.5)
         self.assertEqual(info["video_codec"], "hevc")
         self.assertEqual(info["width"], 1920)
@@ -908,7 +913,7 @@ class TestSourceProbeHelpers(unittest.TestCase):
             "format": {"duration": "10"},
             "streams": [{"codec_type": "audio", "codec_name": "mp3", "channels": 2}],
         })
-        info = worker.parse_probe_output(stdout)
+        info = ffmpeg.parse_probe_output(stdout)
         self.assertNotIn("video_codec", info)
         self.assertEqual(info["audio_codec"], "mp3")
 
@@ -918,15 +923,15 @@ class TestSourceProbeHelpers(unittest.TestCase):
             "streams": [{"codec_type": "video", "codec_name": "h264", "width": 640,
                          "height": 480, "r_frame_rate": "30/1"}],
         })
-        info = worker.parse_probe_output(stdout)
+        info = ffmpeg.parse_probe_output(stdout)
         self.assertNotIn("audio_codec", info)
         self.assertEqual(info["video_codec"], "h264")
 
     def test_parse_probe_output_malformed_json_returns_empty(self):
-        self.assertEqual(worker.parse_probe_output("not json"), {})
+        self.assertEqual(ffmpeg.parse_probe_output("not json"), {})
 
     def test_parse_probe_output_empty_string_returns_empty(self):
-        self.assertEqual(worker.parse_probe_output(""), {})
+        self.assertEqual(ffmpeg.parse_probe_output(""), {})
 
     def test_frame_rate_zero_denominator_is_zero_not_a_crash(self):
         # A still-image "stream" some containers report alongside the real
@@ -936,7 +941,7 @@ class TestSourceProbeHelpers(unittest.TestCase):
             "streams": [{"codec_type": "video", "codec_name": "mjpeg", "width": 100,
                          "height": 100, "r_frame_rate": "0/0"}],
         })
-        info = worker.parse_probe_output(stdout)
+        info = ffmpeg.parse_probe_output(stdout)
         self.assertEqual(info["frame_rate"], 0.0)
 
 
@@ -946,7 +951,7 @@ class TestEmitStats(unittest.TestCase):
     encode running, unlike most of TranscodeQueue's own behavior."""
 
     def _emit(self, stats_buffer: dict, duration: float) -> dict:
-        queue = worker.TranscodeQueue()
+        queue = transcode_queue.TranscodeQueue()
         queue._stats_buffer = stats_buffer
         queue._duration = duration
         received = []
@@ -1000,7 +1005,7 @@ class TestNonMatchingAspectRatio(unittest.TestCase):
 
     def test_x265_encode_succeeds_with_even_dimensions(self):
         out = self.tmpdir / "scope_x265.mp4"
-        args = worker.build_args(x265_settings(width=1280, height=720), self.clip, out)
+        args = ffmpeg.build_args(x265_settings(width=1280, height=720), self.clip, out)
         self.assertIn("force_divisible_by=2", args[args.index("-vf") + 1])
         result = subprocess.run(args, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
@@ -1016,7 +1021,7 @@ class TestNonMatchingAspectRatio(unittest.TestCase):
     @unittest.skipUnless(HAS_VAAPI, "no VAAPI render node on this machine")
     def test_vaapi_encode_succeeds_with_even_dimensions(self):
         out = self.tmpdir / "scope_vaapi.mp4"
-        args = worker.build_args(vaapi_settings(width=1280, height=720), self.clip, out)
+        args = ffmpeg.build_args(vaapi_settings(width=1280, height=720), self.clip, out)
         self.assertIn("force_divisible_by=2", args[args.index("-vf") + 1])
         result = subprocess.run(args, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
@@ -1036,17 +1041,17 @@ def _detect_interlace_fraction(path: Path, sample_seconds: float = 9999) -> floa
     are frequently wrong (this feature exists because of exactly that, on a
     real user file: tagged yuv420p(progressive), 100% TFF by idet).
 
-    Reuses worker.parse_idet_output for the parsing itself -- this is a test
+    Reuses ffmpeg.parse_idet_output for the parsing itself -- this is a test
     helper for checking *outputs of an encode*, not the same job as
-    worker.build_idet_args/parse_idet_output (which drive the GUI's
+    ffmpeg.build_idet_args/parse_idet_output (which drive the GUI's
     pre-encode auto-detect), but the underlying idet-output parsing is
     identical and shouldn't be maintained in two places.
     """
     result = subprocess.run(
-        worker.build_idet_args(path, sample_seconds=sample_seconds),
+        ffmpeg.build_idet_args(path, sample_seconds=sample_seconds),
         capture_output=True, text=True, timeout=30,
     )
-    return worker.parse_idet_output(result.stderr)
+    return ffmpeg.parse_idet_output(result.stderr)
 
 
 class TestDeinterlace(unittest.TestCase):
@@ -1076,11 +1081,11 @@ class TestDeinterlace(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def test_off_by_default_and_leaves_filter_chain_unchanged(self):
-        args = worker.build_args(x265_settings(deinterlace=False), self.clip, self.tmpdir / "out.mp4")
+        args = ffmpeg.build_args(x265_settings(deinterlace=False), self.clip, self.tmpdir / "out.mp4")
         self.assertNotIn("bwdif", args[args.index("-vf") + 1])
 
     def test_x265_deinterlace_uses_send_frame_not_the_frame_doubling_default(self):
-        args = worker.build_args(x265_settings(deinterlace=True), self.clip, self.tmpdir / "out.mp4")
+        args = ffmpeg.build_args(x265_settings(deinterlace=True), self.clip, self.tmpdir / "out.mp4")
         vf = args[args.index("-vf") + 1]
         # bwdif's own default (send_field) doubles the frame rate -- one
         # output frame per field. That's not what this checkbox promises.
@@ -1089,7 +1094,7 @@ class TestDeinterlace(unittest.TestCase):
 
     def test_x265_deinterlace_actually_fixes_a_real_interlaced_file(self):
         out = self.tmpdir / "x265_deint.mp4"
-        args = worker.build_args(x265_settings(width=640, height=480, deinterlace=True), self.clip, out)
+        args = ffmpeg.build_args(x265_settings(width=640, height=480, deinterlace=True), self.clip, out)
         result = subprocess.run(args, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
         # Source is 100% interlaced (asserted in setUpClass); real deinterlacers
@@ -1102,13 +1107,13 @@ class TestDeinterlace(unittest.TestCase):
         # remove interlacing -- proves the improvement above comes from
         # bwdif, not incidentally from libx265's own encoding.
         out = self.tmpdir / "x265_no_deint.mp4"
-        args = worker.build_args(x265_settings(width=640, height=480, deinterlace=False), self.clip, out)
+        args = ffmpeg.build_args(x265_settings(width=640, height=480, deinterlace=False), self.clip, out)
         subprocess.run(args, check=True, capture_output=True, timeout=30)
         self.assertGreater(_detect_interlace_fraction(out), 0.8)
 
     @unittest.skipUnless(HAS_VAAPI, "no VAAPI render node on this machine")
     def test_vaapi_deinterlace_runs_after_hwupload_before_scale(self):
-        args = worker.build_args(vaapi_settings(deinterlace=True), self.clip, self.tmpdir / "out.mp4")
+        args = ffmpeg.build_args(vaapi_settings(deinterlace=True), self.clip, self.tmpdir / "out.mp4")
         vf = args[args.index("-vf") + 1]
         self.assertIn("deinterlace_vaapi=rate=frame", vf)
         self.assertLess(vf.index("hwupload"), vf.index("deinterlace_vaapi"))
@@ -1117,7 +1122,7 @@ class TestDeinterlace(unittest.TestCase):
     @unittest.skipUnless(HAS_VAAPI, "no VAAPI render node on this machine")
     def test_vaapi_deinterlace_actually_fixes_a_real_interlaced_file(self):
         out = self.tmpdir / "vaapi_deint.mp4"
-        args = worker.build_args(vaapi_settings(width=640, height=480, deinterlace=True), self.clip, out)
+        args = ffmpeg.build_args(vaapi_settings(width=640, height=480, deinterlace=True), self.clip, out)
         result = subprocess.run(args, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
         self.assertLess(_detect_interlace_fraction(out), 0.15)
@@ -1135,7 +1140,7 @@ class TestOutputPathCollisionGuard(unittest.TestCase):
                 check=True, timeout=30,
             )
             job = {"path": clip, **x265_settings(container="mp4")}
-            queue = worker.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             events = _run_queue_and_collect(queue, [job], tmpdir)
 
             self.assertTrue(clip.exists(), "source file must survive")
@@ -1169,7 +1174,7 @@ class TestOutputPathCollisionGuard(unittest.TestCase):
             out_dir.mkdir()
             jobs = [{"path": clip_a, **x265_settings(container="mp4")},
                     {"path": clip_b, **x265_settings(container="mp4")}]
-            queue = worker.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             events = _run_queue_and_collect(queue, jobs, out_dir)
 
             finished = sorted(e[1][1] for e in events if e[0] == "job_finished")
@@ -1211,7 +1216,7 @@ class TestJobStartedFiresBeforeAnyFailureForThatJob(unittest.TestCase):
                 {"path": good_clip, **x265_settings(container="mp4")},
                 {"path": bad_clip, **x265_settings(container="mp4")},
             ]
-            queue = worker.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             events = _run_queue_and_collect(queue, jobs, tmpdir)
 
             self.assertEqual(
@@ -1248,7 +1253,7 @@ class TestAtomicOutputRename(unittest.TestCase):
             )
             out_dir = tmpdir / "out"
             out_dir.mkdir()
-            queue = worker.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             _run_queue_and_collect(queue, [{"path": clip, **x265_settings(container="mp4")}], out_dir)
 
             names = [p.name for p in out_dir.iterdir()]
@@ -1271,7 +1276,7 @@ class TestAtomicOutputRename(unittest.TestCase):
             preexisting = out_dir / "broken.mp4"
             preexisting.write_bytes(b"a completed output from a previous, unrelated run")
 
-            queue = worker.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             events = _run_queue_and_collect(queue, [{"path": clip, **x265_settings(container="mp4")}], out_dir)
 
             self.assertTrue(any(e[0] == "job_failed" for e in events), events)
@@ -1323,7 +1328,7 @@ class TestProcessFailedToStart(unittest.TestCase):
             old_path = os.environ.get("PATH", "")
             os.environ["PATH"] = str(fakebin)
             try:
-                queue = worker.TranscodeQueue()
+                queue = transcode_queue.TranscodeQueue()
                 events = []
                 loop = QEventLoop()
                 queue.job_failed.connect(lambda *a: events.append(("job_failed", a)))
@@ -1378,7 +1383,7 @@ class TestMissingAudioTrackWarning(unittest.TestCase):
             # Not the shared _run_queue_and_collect helper -- it doesn't
             # connect job_log at all (most callers never need per-line
             # ffmpeg output), and this test specifically needs to see it.
-            queue = worker.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             log_lines = []
             finished = []
             loop = QEventLoop()
@@ -1420,7 +1425,7 @@ class TestStopRaceFix(unittest.TestCase):
             temp_output = tmpdir / ".done.transcoding.mp4"
             final_output = tmpdir / "done.mp4"
             temp_output.write_bytes(b"pretend this is a completed encode")
-            queue = worker.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             queue._jobs = []  # nothing queued after this one
             queue._stopped = True  # simulate: Stop was clicked
             events = []
@@ -1442,7 +1447,7 @@ class TestStopRaceFix(unittest.TestCase):
             temp_output = tmpdir / ".partial.transcoding.mp4"
             final_output = tmpdir / "partial.mp4"
             temp_output.write_bytes(b"partial data from a killed ffmpeg")
-            queue = worker.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             queue._jobs = []
             queue._stopped = True
             events = []
@@ -1476,7 +1481,7 @@ class TestPauseResume(unittest.TestCase):
     def test_pause_request_halts_after_the_current_job_finishes(self):
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
         try:
-            queue = worker.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             # _index = 0, not 1 -- _run_next() dispatches self._jobs[self._index]
             # and only increments _index *after*, so "next.mkv would run next if
             # not paused" means it's sitting at _jobs[_index] itself, still
@@ -1514,7 +1519,7 @@ class TestPauseResume(unittest.TestCase):
         # whether a pause happened to be armed.
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
         try:
-            queue = worker.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             queue._jobs = []  # nothing left -- this was the last job
             queue.request_pause()
             paused_events = []
@@ -1536,7 +1541,7 @@ class TestPauseResume(unittest.TestCase):
     def test_no_pause_requested_continues_normally(self):
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
         try:
-            queue = worker.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             queue._jobs = []  # nothing left -- confirms the normal all_finished path still fires
             all_finished_events = []
             queue.all_finished.connect(lambda: all_finished_events.append(True))
@@ -1551,7 +1556,7 @@ class TestPauseResume(unittest.TestCase):
     def test_cancel_pause_request_before_it_takes_effect(self):
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
         try:
-            queue = worker.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             queue._jobs = []
             queue.request_pause()
             queue.cancel_pause_request()  # e.g. user unchecked the box before this job finished
@@ -1570,7 +1575,7 @@ class TestPauseResume(unittest.TestCase):
     def test_resume_continues_from_the_same_index_not_a_fresh_run(self):
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_test_"))
         try:
-            queue = worker.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             queue._jobs = [{"path": Path("a.mkv")}, {"path": Path("b.mkv")}, {"path": Path("c.mkv")}]
             queue._index = 2  # a.mkv and b.mkv already ran
             queue._paused = True
@@ -1596,7 +1601,7 @@ class TestPauseResume(unittest.TestCase):
         # notice _stopped and emit all_finished on its own (that only
         # happens from _advance_or_pause, already returned out of for
         # good once a pause takes effect), so stop() has to do it directly.
-        queue = worker.TranscodeQueue()
+        queue = transcode_queue.TranscodeQueue()
         queue._jobs = [{"path": Path("a.mkv")}]
         queue._index = 1
         queue._paused = True
@@ -1614,7 +1619,7 @@ class TestPauseResume(unittest.TestCase):
         # finished/errorOccurred signal to arrive before all_finished is
         # appropriate; stop() must not short-circuit that by emitting it
         # immediately just because _paused happens to be False here too.
-        queue = worker.TranscodeQueue()
+        queue = transcode_queue.TranscodeQueue()
         queue._process = QProcess()
         queue._process.setProgram("sleep")
         queue._process.setArguments(["5"])
@@ -1641,7 +1646,7 @@ class TestPauseResume(unittest.TestCase):
             _make_clip(clip_b)
             jobs = [{"path": clip_a, **x265_settings()}, {"path": clip_b, **x265_settings()}]
 
-            queue = worker.TranscodeQueue()
+            queue = transcode_queue.TranscodeQueue()
             events = []
             loop = QEventLoop()
             queue.job_finished.connect(lambda *a: events.append(("job_finished", a)))
@@ -1705,8 +1710,8 @@ class TestProbeDurationGuarded(unittest.TestCase):
                 check=True, timeout=30,
             )
             job = {"path": clip, **x265_settings()}
-            queue = worker.TranscodeQueue()
-            with patch("worker.probe_duration", side_effect=FileNotFoundError("ffprobe not found")):
+            queue = transcode_queue.TranscodeQueue()
+            with patch("velocoder.core.ffmpeg.probe_duration", side_effect=FileNotFoundError("ffprobe not found")):
                 events = _run_queue_and_collect(queue, [job], tmpdir)
             failed = [e for e in events if e[0] == "job_failed"]
             self.assertEqual(len(failed), 1)
@@ -1717,30 +1722,30 @@ class TestProbeDurationGuarded(unittest.TestCase):
 class TestFindRenderNode(unittest.TestCase):
     @unittest.skipUnless(HAS_VAAPI, "no /dev/dri/by-path on this machine")
     def test_resolves_intel_node_when_present(self):
-        node = worker.find_render_node(worker.INTEL_VENDOR_ID)
+        node = ffmpeg.find_render_node(ffmpeg.INTEL_VENDOR_ID)
         self.assertTrue(Path(node).exists())
 
     @unittest.skipUnless(HAS_VAAPI, "no /dev/dri/by-path on this machine")
     def test_unknown_vendor_raises(self):
         with self.assertRaises(RuntimeError):
-            worker.find_render_node("0xdead")
+            ffmpeg.find_render_node("0xdead")
 
     @unittest.skipUnless(HAS_AMD_VAAPI, "no AMD render node on this machine")
     def test_resolves_amd_node_when_present(self):
-        node = worker.find_render_node(worker.AMD_VENDOR_ID)
+        node = ffmpeg.find_render_node(ffmpeg.AMD_VENDOR_ID)
         self.assertTrue(Path(node).exists())
 
     @unittest.skipUnless(HAS_VAAPI and HAS_AMD_VAAPI, "needs both vendors present")
     def test_intel_and_amd_resolve_to_different_nodes(self):
         self.assertNotEqual(
-            worker.find_render_node(worker.INTEL_VENDOR_ID),
-            worker.find_render_node(worker.AMD_VENDOR_ID),
+            ffmpeg.find_render_node(ffmpeg.INTEL_VENDOR_ID),
+            ffmpeg.find_render_node(ffmpeg.AMD_VENDOR_ID),
         )
 
 
 def _find_render_node_for(*present_vendors: str):
     """A find_render_node stand-in that only "resolves" the given vendor
-    ids (worker.INTEL_VENDOR_ID / worker.AMD_VENDOR_ID), raising for
+    ids (ffmpeg.INTEL_VENDOR_ID / ffmpeg.AMD_VENDOR_ID), raising for
     everything else -- same shape the real function raises for a vendor
     with no render node."""
     def _fake(vendor_id):
@@ -1759,31 +1764,31 @@ class TestDetectAvailableBackends(unittest.TestCase):
     installed wherever the suite runs."""
 
     def test_no_gpu_at_all_is_cpu_only(self):
-        with patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")):
-            backends = worker.detect_available_backends()
+        with patch.object(ffmpeg, "find_render_node", side_effect=RuntimeError("no render node")):
+            backends = ffmpeg.detect_available_backends()
         self.assertEqual([b.id for b in backends], ["cpu"])
 
     def test_intel_only(self):
-        with patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID)):
-            backends = worker.detect_available_backends()
+        with patch.object(ffmpeg, "find_render_node", side_effect=_find_render_node_for(ffmpeg.INTEL_VENDOR_ID)):
+            backends = ffmpeg.detect_available_backends()
         self.assertEqual([b.id for b in backends], ["cpu", "intel"])
 
     def test_amd_only(self):
-        with patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.AMD_VENDOR_ID)):
-            backends = worker.detect_available_backends()
+        with patch.object(ffmpeg, "find_render_node", side_effect=_find_render_node_for(ffmpeg.AMD_VENDOR_ID)):
+            backends = ffmpeg.detect_available_backends()
         self.assertEqual([b.id for b in backends], ["cpu", "amd"])
 
     def test_both_intel_and_amd(self):
         with patch.object(
-            worker, "find_render_node",
-            side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID),
+            ffmpeg, "find_render_node",
+            side_effect=_find_render_node_for(ffmpeg.INTEL_VENDOR_ID, ffmpeg.AMD_VENDOR_ID),
         ):
-            backends = worker.detect_available_backends()
+            backends = ffmpeg.detect_available_backends()
         self.assertEqual([b.id for b in backends], ["cpu", "intel", "amd"])
 
     def test_cpu_is_always_first_regardless_of_which_vendors_are_present(self):
-        with patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.AMD_VENDOR_ID)):
-            backends = worker.detect_available_backends()
+        with patch.object(ffmpeg, "find_render_node", side_effect=_find_render_node_for(ffmpeg.AMD_VENDOR_ID)):
+            backends = ffmpeg.detect_available_backends()
         self.assertEqual(backends[0].id, "cpu")
 
 
@@ -1793,23 +1798,23 @@ class TestBestAvailableEngineReusesDetection(unittest.TestCase):
     never disagree about what's actually present."""
 
     def test_no_gpu_falls_back_to_cpu(self):
-        with patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")):
-            self.assertEqual(worker.best_available_engine(), ("libx265", None))
+        with patch.object(ffmpeg, "find_render_node", side_effect=RuntimeError("no render node")):
+            self.assertEqual(ffmpeg.best_available_engine(), ("libx265", None))
 
     def test_intel_only_prefers_intel(self):
-        with patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID)):
-            self.assertEqual(worker.best_available_engine(), ("hevc_vaapi", "intel"))
+        with patch.object(ffmpeg, "find_render_node", side_effect=_find_render_node_for(ffmpeg.INTEL_VENDOR_ID)):
+            self.assertEqual(ffmpeg.best_available_engine(), ("hevc_vaapi", "intel"))
 
     def test_amd_only_prefers_amd(self):
-        with patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.AMD_VENDOR_ID)):
-            self.assertEqual(worker.best_available_engine(), ("hevc_vaapi", "amd"))
+        with patch.object(ffmpeg, "find_render_node", side_effect=_find_render_node_for(ffmpeg.AMD_VENDOR_ID)):
+            self.assertEqual(ffmpeg.best_available_engine(), ("hevc_vaapi", "amd"))
 
     def test_both_present_still_prefers_intel(self):
         with patch.object(
-            worker, "find_render_node",
-            side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID),
+            ffmpeg, "find_render_node",
+            side_effect=_find_render_node_for(ffmpeg.INTEL_VENDOR_ID, ffmpeg.AMD_VENDOR_ID),
         ):
-            self.assertEqual(worker.best_available_engine(), ("hevc_vaapi", "intel"))
+            self.assertEqual(ffmpeg.best_available_engine(), ("hevc_vaapi", "intel"))
 
 
 def _validate_failing_for(*broken_vendors: str):
@@ -1826,13 +1831,13 @@ class TestDetectHardwareValidation(unittest.TestCase):
     never be offered (nor picked by Automatic), only reported."""
 
     def _detect(self, present, broken):
-        with patch.object(worker, "find_render_node", side_effect=_find_render_node_for(*present)), \
-             patch.object(worker, "validate_hevc_encode", side_effect=_validate_failing_for(*broken)):
-            return worker.detect_hardware()
+        with patch.object(ffmpeg, "find_render_node", side_effect=_find_render_node_for(*present)), \
+             patch.object(ffmpeg, "validate_hevc_encode", side_effect=_validate_failing_for(*broken)):
+            return ffmpeg.detect_hardware()
 
     def test_broken_intel_is_reported_not_offered(self):
         backends, unusable = self._detect(
-            (worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID), ("intel",),
+            (ffmpeg.INTEL_VENDOR_ID, ffmpeg.AMD_VENDOR_ID), ("intel",),
         )
         self.assertEqual([b.id for b in backends], ["cpu", "amd"])
         self.assertEqual([(g.id, g.display_name, g.reason) for g in unusable],
@@ -1840,34 +1845,34 @@ class TestDetectHardwareValidation(unittest.TestCase):
 
     def test_automatic_skips_a_broken_intel_for_a_working_amd(self):
         backends, _unusable = self._detect(
-            (worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID), ("intel",),
+            (ffmpeg.INTEL_VENDOR_ID, ffmpeg.AMD_VENDOR_ID), ("intel",),
         )
-        self.assertEqual(worker.best_available_engine(backends), ("hevc_vaapi", "amd"))
+        self.assertEqual(ffmpeg.best_available_engine(backends), ("hevc_vaapi", "amd"))
 
     def test_every_gpu_broken_falls_back_to_cpu(self):
         backends, unusable = self._detect(
-            (worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID), ("intel", "amd"),
+            (ffmpeg.INTEL_VENDOR_ID, ffmpeg.AMD_VENDOR_ID), ("intel", "amd"),
         )
         self.assertEqual([b.id for b in backends], ["cpu"])
         self.assertEqual([g.id for g in unusable], ["intel", "amd"])
-        self.assertEqual(worker.best_available_engine(backends), ("libx265", None))
+        self.assertEqual(ffmpeg.best_available_engine(backends), ("libx265", None))
 
     def test_no_render_node_is_neither_offered_nor_reported(self):
         # Nothing to validate and nothing worth telling the user about --
         # the machine just doesn't have that vendor's GPU.
-        with patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")), \
-             patch.object(worker, "validate_hevc_encode") as mock_validate:
-            backends, unusable = worker.detect_hardware()
+        with patch.object(ffmpeg, "find_render_node", side_effect=RuntimeError("no render node")), \
+             patch.object(ffmpeg, "validate_hevc_encode") as mock_validate:
+            backends, unusable = ffmpeg.detect_hardware()
         self.assertEqual([b.id for b in backends], ["cpu"])
         self.assertEqual(unusable, [])
         mock_validate.assert_not_called()
 
     def test_validates_each_gpu_on_its_own_resolved_render_node(self):
         with patch.object(
-            worker, "find_render_node",
-            side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID),
-        ), patch.object(worker, "validate_hevc_encode", return_value=None) as mock_validate:
-            worker.detect_hardware()
+            ffmpeg, "find_render_node",
+            side_effect=_find_render_node_for(ffmpeg.INTEL_VENDOR_ID, ffmpeg.AMD_VENDOR_ID),
+        ), patch.object(ffmpeg, "validate_hevc_encode", return_value=None) as mock_validate:
+            ffmpeg.detect_hardware()
         self.assertEqual(
             [c.args for c in mock_validate.call_args_list],
             [("/dev/dri/renderD0", "intel"), ("/dev/dri/renderD1", "amd")],
@@ -1875,10 +1880,10 @@ class TestDetectHardwareValidation(unittest.TestCase):
 
     def test_detect_available_backends_is_just_the_usable_list(self):
         with patch.object(
-            worker, "find_render_node",
-            side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID),
-        ), patch.object(worker, "validate_hevc_encode", side_effect=_validate_failing_for("amd")):
-            backends = worker.detect_available_backends()
+            ffmpeg, "find_render_node",
+            side_effect=_find_render_node_for(ffmpeg.INTEL_VENDOR_ID, ffmpeg.AMD_VENDOR_ID),
+        ), patch.object(ffmpeg, "validate_hevc_encode", side_effect=_validate_failing_for("amd")):
+            backends = ffmpeg.detect_available_backends()
         self.assertEqual([b.id for b in backends], ["cpu", "intel"])
 
 
@@ -1890,7 +1895,7 @@ class TestValidateHevcEncode(unittest.TestCase):
         completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         for key, value in run_result.items():
             setattr(completed, key, value)
-        with patch.object(worker.subprocess, "run", return_value=completed) as mock_run:
+        with patch.object(ffmpeg.subprocess, "run", return_value=completed) as mock_run:
             error = _real_validate_hevc_encode("/dev/dri/renderD128", vendor)
         return error, mock_run.call_args[0][0]
 
@@ -1921,12 +1926,12 @@ class TestValidateHevcEncode(unittest.TestCase):
         self.assertNotIn("ICQ", args)
 
     def test_missing_ffmpeg_is_an_error_not_a_crash(self):
-        with patch.object(worker.subprocess, "run", side_effect=FileNotFoundError("ffmpeg")):
+        with patch.object(ffmpeg.subprocess, "run", side_effect=FileNotFoundError("ffmpeg")):
             error = _real_validate_hevc_encode("/dev/dri/renderD128", "intel")
         self.assertIn("could not run ffmpeg", error)
 
     def test_timeout_is_an_error_not_a_crash(self):
-        with patch.object(worker.subprocess, "run", side_effect=subprocess.TimeoutExpired("ffmpeg", 10)):
+        with patch.object(ffmpeg.subprocess, "run", side_effect=subprocess.TimeoutExpired("ffmpeg", 10)):
             error = _real_validate_hevc_encode("/dev/dri/renderD128", "intel")
         self.assertIn("timed out", error)
 
@@ -1948,17 +1953,17 @@ class TestGpuVendorSelection(ClipTestCase):
         # of this app always used, not raise a KeyError.
         settings = vaapi_settings()
         self.assertNotIn("gpu_vendor", settings)
-        with patch.object(worker, "find_render_node") as mock_find:
+        with patch.object(ffmpeg, "find_render_node") as mock_find:
             mock_find.return_value = "/dev/dri/renderD999"
-            worker.build_args(settings, self.clip, self.out_path)
-        mock_find.assert_called_once_with(worker.INTEL_VENDOR_ID)
+            ffmpeg.build_args(settings, self.clip, self.out_path)
+        mock_find.assert_called_once_with(ffmpeg.INTEL_VENDOR_ID)
 
     def test_amd_vendor_opens_the_amd_device(self):
         settings = vaapi_settings(gpu_vendor="amd", rc_mode="CQP")
-        with patch.object(worker, "find_render_node") as mock_find:
+        with patch.object(ffmpeg, "find_render_node") as mock_find:
             mock_find.return_value = "/dev/dri/renderD999"
-            worker.build_args(settings, self.clip, self.out_path)
-        mock_find.assert_called_once_with(worker.AMD_VENDOR_ID)
+            ffmpeg.build_args(settings, self.clip, self.out_path)
+        mock_find.assert_called_once_with(ffmpeg.AMD_VENDOR_ID)
 
 
 class TestIntegrationRealEncode(unittest.TestCase):
@@ -1980,7 +1985,7 @@ class TestIntegrationRealEncode(unittest.TestCase):
         # so width is the binding constraint -- expect exactly 320x180,
         # not an upscale and not a naive same-aspect assumption.
         out = self.tmpdir / "vaapi_out.mp4"
-        args = worker.build_args(vaapi_settings(width=320, height=320), self.clip, out)
+        args = ffmpeg.build_args(vaapi_settings(width=320, height=320), self.clip, out)
         result = subprocess.run(args, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
         probe = subprocess.run(
@@ -1998,7 +2003,7 @@ class TestIntegrationRealEncode(unittest.TestCase):
         # mode"), unlike Intel's iHD driver which is what the rest of this
         # suite's VAAPI tests exercise.
         out = self.tmpdir / "amd_vaapi_out.mp4"
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             vaapi_settings(gpu_vendor="amd", rc_mode="CQP", width=320, height=320),
             self.clip, out,
         )
@@ -2014,7 +2019,7 @@ class TestIntegrationRealEncode(unittest.TestCase):
 
     def test_x265_encode_runs_and_transcodes_incompatible_audio(self):
         out = self.tmpdir / "x265_out.mp4"
-        args = worker.build_args(x265_settings(width=320, height=240), self.clip, out)
+        args = ffmpeg.build_args(x265_settings(width=320, height=240), self.clip, out)
         result = subprocess.run(args, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
         probe = subprocess.run(
@@ -2040,13 +2045,13 @@ class TestFailureReason(unittest.TestCase):
             "Conversion failed!",
         ]
         self.assertEqual(
-            worker.summarize_ffmpeg_failure(lines, 1),
+            ffmpeg.summarize_ffmpeg_failure(lines, 1),
             "[vost#0:0/hevc_vaapi] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height. (ffmpeg exited 1)",
         )
 
     def test_falls_back_to_the_exit_code(self):
-        self.assertEqual(worker.summarize_ffmpeg_failure(["frame=  10 fps=0.0"], 187), "ffmpeg exited 187")
-        self.assertEqual(worker.summarize_ffmpeg_failure([], 1), "ffmpeg exited 1")
+        self.assertEqual(ffmpeg.summarize_ffmpeg_failure(["frame=  10 fps=0.0"], 187), "ffmpeg exited 187")
+        self.assertEqual(ffmpeg.summarize_ffmpeg_failure([], 1), "ffmpeg exited 1")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QIcon  # noqa: E402
@@ -25,9 +25,9 @@ from PySide6.QtTest import QTest  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
 
-import about_dialogs  # noqa: E402
-from constants import APP_NAME, APP_ORGANIZATION, APP_VERSION  # noqa: E402
-from worker import ProcessingBackend, UnusableGpu  # noqa: E402
+from velocoder.ui import about_dialogs  # noqa: E402
+from velocoder.core.constants import APP_NAME, APP_ORGANIZATION, APP_VERSION  # noqa: E402
+from velocoder.core.ffmpeg import ProcessingBackend, UnusableGpu  # noqa: E402
 
 
 class TestSystemInfoText(unittest.TestCase):

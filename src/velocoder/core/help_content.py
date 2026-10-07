@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-HELP_DIR = Path(__file__).parent / "help"
+HELP_DIR = Path(__file__).parent.parent / "help"
 IMAGES_DIR = HELP_DIR / "images"
 
 # ![alt](path) or ![alt](path "caption") -- path is resolved against

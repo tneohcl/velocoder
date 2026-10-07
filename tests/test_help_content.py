@@ -10,8 +10,8 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
-import help_content  # noqa: E402
+sys.path.insert(0, str(REPO_ROOT / "src"))
+from velocoder.core import help_content  # noqa: E402
 
 
 class TestLoadTopics(unittest.TestCase):

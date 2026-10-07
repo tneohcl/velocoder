@@ -10,7 +10,7 @@ below is the only place quality numbers live now, not a preset list.
 #
 # APP_ORGANIZATION is a *display* name only (About's copyright line) --
 # deliberately NOT threaded into QSettings(...)/app.setOrganizationName(...)
-# in main.py. Those two control where this app's config file and
+# in main_window.py. Those two control where this app's config file and
 # session.json (session.py, via QStandardPaths.AppDataLocation) actually
 # live on disk; changing that string would silently orphan every
 # existing user's saved theme/geometry/queue the moment this shipped,
@@ -18,9 +18,7 @@ below is the only place quality numbers live now, not a preset list.
 # exact (org, app) pair given. Those two keep using APP_NAME, matching
 # the literal "VeloCoder"/"VeloCoder" pair already in use before this
 # constant existed.
-APP_NAME = "VeloCoder"
-APP_VERSION = "1.0.0"
-APP_ORGANIZATION = "ODCS App Studio"
+from velocoder import APP_NAME, APP_ORGANIZATION, APP_VERSION  # noqa: F401  (defined once, in the package)
 
 VIDEO_FILTER = "Video files (*.mkv *.mp4 *.avi *.mov *.m4v *.ts *.wmv);;All files (*)"
 AUDIO_TRACK_LABELS = ["Track 1", "Track 2", "Track 3", "Track 4"]
@@ -37,7 +35,7 @@ AUDIO_TRACK_LABELS = ["Track 1", "Track 2", "Track 3", "Track 4"]
 # The CPU row's own id ("libx265") is really just a placeholder/default,
 # not necessarily what actually runs -- CODECS below is a second,
 # independent axis (H.265 vs H.264) that only applies to the CPU engine;
-# main.py's _current_encoder_id() resolves the two together into the real
+# main_window.py's _current_encoder_id() resolves the two together into the real
 # ffmpeg codec. Hardware stays HEVC-only here (no h264_vaapi wired up),
 # which is exactly why this isn't a single flat "4 combined choices"
 # list -- codec choice would be meaningless noise on the Intel/AMD rows.
@@ -48,11 +46,11 @@ ENCODERS = [
 ]
 
 # (ffmpeg codec id, display label) -- the CPU engine's own second axis,
-# a separate Format-box control (main.py/ui_builder.py) rather than
+# a separate Format-box control (main_window.py/ui_builder.py) rather than
 # folded into ENCODERS above as more flat rows: confirmed direct testing
 # against this ffmpeg build that libx264 shares almost the entire
 # settings surface libx265 already exposes (CRF/bitrate rate control,
-# 10-bit, tune, the same ultrafast..placebo preset names) -- worker.py's
+# 10-bit, tune, the same ultrafast..placebo preset names) -- ffmpeg.py's
 # build_args treats it as a second software path alongside libx265, not
 # a separate one. Meaningless for hardware (VAAPI is HEVC-only here), so
 # this control is disabled -- not just hidden, since "H.265 (HEVC)" is

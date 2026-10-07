@@ -4,10 +4,8 @@ straightforward move: plain functions here, directly unit-testable without
 building a QApplication/MainWindow, which they now are."""
 from pathlib import Path
 
-from PySide6.QtWidgets import QSlider
-
-import worker
-from constants import ENCODERS, RESOLUTIONS
+from velocoder.core import ffmpeg
+from velocoder.core.constants import ENCODERS, RESOLUTIONS
 
 
 def display_path(path: Path) -> str:
@@ -39,7 +37,7 @@ def hardware_status_text() -> str:
     found = []
     for vendor, label in (("intel", "Intel iGPU"), ("amd", "AMD GPU")):
         try:
-            node = worker.find_render_node(worker.GPU_VENDOR_IDS[vendor])
+            node = ffmpeg.find_render_node(ffmpeg.GPU_VENDOR_IDS[vendor])
             found.append(f"{label} ({node})")
         except RuntimeError:
             pass
@@ -48,7 +46,9 @@ def hardware_status_text() -> str:
     return "No VAAPI render node detected — hardware encoding unavailable"
 
 
-def fraction_of(slider: QSlider) -> float:
+def fraction_of(slider) -> float:
+    # Any slider-like object (a QSlider in practice): only minimum(),
+    # maximum() and value() are read, so core/ stays free of Qt imports.
     lo, hi = slider.minimum(), slider.maximum()
     return (slider.value() - lo) / (hi - lo) if hi > lo else 0.0
 
@@ -170,7 +170,7 @@ def format_run_summary(
 def settings_summary(job: dict) -> str:
     """Human-readable multi-line rendering of a queue row's chosen output
     settings, for the queue table's hover tooltip -- distinct from the
-    Effective Command preview (main.py), which shows the raw ffmpeg argv
+    Effective Command preview (main_window.py), which shows the raw ffmpeg argv
     for a technical reader; this is the friendly summary for everyone
     else."""
     encoder = job.get("encoder")
@@ -187,11 +187,11 @@ def settings_summary(job: dict) -> str:
         # libx264 from libx265 the way the old combined combo entries
         # did. Built directly from the real codec id instead -- display
         # only, not tied to an actual combo entry anymore now that
-        # codec is main.py's own separate Format -- Codec control.
+        # codec is main_window.py's own separate Format -- Codec control.
         encoder_label = "CPU (x264)" if encoder == "libx264" else "CPU (x265)"
 
     rc_mode = job.get("rc_mode")
-    if rc_mode in worker.BITRATE_RC_MODES:
+    if rc_mode in ffmpeg.BITRATE_RC_MODES:
         rate_line = f"Target size: {job.get('quality_value')} MB"
     else:
         rate_line = f"{rc_mode} {job.get('quality_value')}"

@@ -1,5 +1,5 @@
 """Widget-construction methods, split out of MainWindow into a mixin --
-this is the bulk of what made main.py huge: every settings control, the
+this is the bulk of what made main_window.py huge: every settings control, the
 left/right panel shells, the collapsible-group helper, and the command
 preview box. Nothing here holds its own state; everything lands on
 `self` (the composed MainWindow instance) exactly as it did before the
@@ -20,16 +20,16 @@ from PySide6.QtWidgets import (
     QSizePolicy, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
-import formatting
-from constants import (
+from velocoder.core import formatting
+from velocoder.core.constants import (
     AUDIO_BITRATES, AUDIO_TRACK_LABELS, CODECS, CONTAINERS, ENCODERS, RC_MODE_FRIENDLY,
     RESOLUTIONS, X265_PRESETS, X265_TUNES,
 )
-from queue_widget import (
+from velocoder.ui.queue_widget import (
     DropTreeWidget, VIDEO_COL, DURATION_COL, SIZE_COL,
     RESULT_COL, QUEUE_COLUMN_HEADERS,
 )
-from theming import _NoItemFocusRectStyle
+from velocoder.ui.theming import _NoItemFocusRectStyle
 
 PANEL_MARGIN = 8
 # The settings column is fixed-width (see _build_ui); the toolbar title
@@ -271,12 +271,12 @@ class _UiBuilderMixin:
         # hardware status is silent now even when no acceleration exists
         # at all -- CPU is a completely valid, unremarkable Automatic
         # outcome, not something worth greeting a non-technical user with
-        # on startup (main.py's __init__ has the fuller reasoning).
+        # on startup (main_window.py's __init__ has the fuller reasoning).
         #
         # self.theme_combo is still built here, still populated and set
         # to the current choice exactly as before -- just never added to
         # the (now nonexistent) status bar. _open_settings_dialog
-        # (main.py) reparents this exact widget into its dialog on
+        # (main_window.py) reparents this exact widget into its dialog on
         # demand, same lazy-reparent pattern _show_log_window uses for
         # log_view; every existing test/call site that already expects
         # self.theme_combo to exist right after construction still finds
@@ -346,11 +346,11 @@ class _UiBuilderMixin:
         # Effective Command no longer sits in the main layout at all, even
         # collapsed -- "Copy FFmpeg Command" (Edit menu, built in
         # _build_menu_bar) is now the only exposed entry point for it,
-        # since _copy_command_to_clipboard (main.py) already reads
+        # since _copy_command_to_clipboard (main_window.py) already reads
         # self._last_preview_args directly rather than this widget's own
         # text. self.command_preview itself still gets constructed and
         # still keeps receiving every _update_command_preview() call
-        # exactly as before (main.py has no reason to know it isn't
+        # exactly as before (main_window.py has no reason to know it isn't
         # visible) -- just never added to a layout, so nothing shows it.
         self._build_command_preview()
         # tabs is the last real content here now -- an explicit trailing
@@ -374,7 +374,7 @@ class _UiBuilderMixin:
         # panel); only vertical overflow (Expert expanded) is the real
         # concern here.
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        # Kept for _update_left_panel_min_height (main.py) -- reported
+        # Kept for _update_left_panel_min_height (main_window.py) -- reported
         # live, explicitly accepting the tradeoff: shrinking the window
         # below what this panel's *current* state (Expert collapsed or
         # expanded) actually needs should be refused outright rather than
@@ -470,7 +470,7 @@ class _UiBuilderMixin:
 
     def _build_command_preview(self):
         # Not shown anywhere in the main window (see _build_left_panel's
-        # own comment) -- constructed only so main.py's
+        # own comment) -- constructed only so main_window.py's
         # _update_command_preview keeps a real widget to call
         # setPlainText() on exactly as before. No parent, no layout;
         # "Copy FFmpeg Command" (Edit menu, _build_menu_bar)
@@ -490,7 +490,7 @@ class _UiBuilderMixin:
         H.265/H.264 choice, Compatibility would just be a second control
         describing substantially the same decision. Each button is a thin
         remote control over the exact same settings Expert's own (now
-        hidden-but-live) encoder_combo/codec_combo drive -- see main.py's
+        hidden-but-live) encoder_combo/codec_combo drive -- see main_window.py's
         _on_processing_choice, which goes through _apply_settings_to_
         controls exactly like every other Normal control here."""
         group = QGroupBox("Encoding")
@@ -512,7 +512,7 @@ class _UiBuilderMixin:
         self.processing_button_group = QButtonGroup(self)
         # Intel/AMD only exist as attributes at all when that vendor's
         # hardware was actually detected -- _sync_normal_video_controls
-        # (main.py) guards every reference to them for exactly this
+        # (main_window.py) guards every reference to them for exactly this
         # reason.
         self.processing_intel_btn = None
         self.processing_amd_btn = None
@@ -523,7 +523,7 @@ class _UiBuilderMixin:
         }
         # Cached once in MainWindow.__init__, not re-probed here -- this
         # session's hardware is fixed for its whole lifetime (no hot-plug
-        # monitoring), and _resolved_engine_vendor (main.py) checks
+        # monitoring), and _resolved_engine_vendor (main_window.py) checks
         # against this exact same snapshot, so Automatic's silent pick
         # and this row's own button set can never disagree.
         detected = self._available_backends
@@ -565,7 +565,7 @@ class _UiBuilderMixin:
         # H.265/H.264 -- only meaningful for the CPU engine (no h264_vaapi
         # wired up, hardware is HEVC-only here), so it's disabled and
         # forced to H.265 whenever Processing above is set to a hardware
-        # engine -- see main.py's _on_encoder_changed, which this cascades
+        # engine -- see main_window.py's _on_encoder_changed, which this cascades
         # into exactly like encoder_combo's own (now hidden) change does.
         self.codec_combo = QComboBox()
         for value, label in CODECS:
@@ -587,7 +587,7 @@ class _UiBuilderMixin:
         )
         self.codec_combo.currentIndexChanged.connect(self._on_codec_changed)
         form.addRow("Codec:", self.codec_combo)
-        # Shown only while a GPU engine is selected (main.py, next to
+        # Shown only while a GPU engine is selected (main_window.py, next to
         # codec_combo.setEnabled): the combo is locked to H.265 then, and a
         # greyed-out control with no stated reason was flagged in the
         # 2026-09-25 UI audit. Same caption style as the tier captions.
@@ -708,7 +708,7 @@ class _UiBuilderMixin:
         self._target_size_field = self._capped_row(target_size_row)
         form.addRow("Target Size:", self._target_size_field)
         # Only one of Quality/Target Size is ever visible at a time
-        # (is_bitrate in main.py's _on_rc_mode_changed, which toggles
+        # (is_bitrate in main_window.py's _on_rc_mode_changed, which toggles
         # both rows via self.quality_form.setRowVisible) -- Mode above
         # picks which.
 
@@ -814,7 +814,7 @@ class _UiBuilderMixin:
         # whatever's currently selected in the queue -- both are real,
         # frequently-used states (see _on_queue_selection_changed/add_files)
         # with identical-looking controls either way. _update_settings_
-        # scope_label (main.py) keeps this and audio_scope_label below in
+        # scope_label (main_window.py) keeps this and audio_scope_label below in
         # sync with the real selection state.
         self.video_scope_label = _ElidedLabel()
         self.video_scope_label.setObjectName("scopeLabel")
@@ -868,7 +868,7 @@ class _UiBuilderMixin:
         # should show the real underlying modes (ICQ/CQP/VBR/CRF/bitrate,
         # RC_MODES' own technical labels, constants.py) instead of a
         # second friendly abstraction -- removing duplication, not adding
-        # an option. main.py's _on_rc_mode_changed/_sync_mode_buttons_to_
+        # an option. main_window.py's _on_rc_mode_changed/_sync_mode_buttons_to_
         # combo still keep this and Normal's Mode toggle in sync in both
         # directions.
         self.rc_mode_combo = QComboBox(expert_content)
@@ -996,7 +996,7 @@ class _UiBuilderMixin:
         form.addRow("Encoding Speed:", speed_group)
 
         # Initial population matches whichever encoder the app actually
-        # starts on (libx265 at construction time -- see main.py's
+        # starts on (libx265 at construction time -- see main_window.py's
         # __init__ order) -- immediately repopulated by _on_encoder_changed
         # regardless, which also handles switching to X264_TUNES, so this
         # is just a reasonable non-empty starting point, not load-bearing.
@@ -1069,7 +1069,7 @@ class _UiBuilderMixin:
 
         # See video_scope_label's own comment (_build_video_tab) -- same
         # label, kept in sync with it by _update_settings_scope_label
-        # (main.py), just a second instance since a widget can't sit in
+        # (main_window.py), just a second instance since a widget can't sit in
         # two tabs' layouts at once.
         self.audio_scope_label = _ElidedLabel()
         self.audio_scope_label.setObjectName("scopeLabel")
@@ -1329,7 +1329,7 @@ class _UiBuilderMixin:
         # nothing to "pause after" while idle or already paused.
 
         self.status_label = QLabel("Idle")
-        # Matches what _set_status("Idle") itself would do (main.py) --
+        # Matches what _set_status("Idle") itself would do (main_window.py) --
         # this initial text is set directly here, not through that
         # method, so the hidden-at-rest state has to be established
         # here too rather than waiting for the first real _set_status

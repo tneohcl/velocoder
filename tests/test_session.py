@@ -12,13 +12,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
 
-import session  # noqa: E402
+from velocoder.ui import session  # noqa: E402
 
 
 class TestSessionFilePath(unittest.TestCase):

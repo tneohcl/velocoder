@@ -17,27 +17,28 @@ from PySide6.QtWidgets import (
     QMessageBox, QVBoxLayout,
 )
 
-import worker
-import formatting
-from constants import (
+from velocoder.core import ffmpeg
+from velocoder.core import formatting
+from velocoder.core.constants import (
     ENCODERS, RC_MODES, RC_MODE_FRIENDLY, QUALITY_TIERS,
     encoder_profile_key, QUALITY_RANGES, X265_PRESETS, X265_TUNES, X264_TUNES, RESOLUTIONS,
     AUDIO_BITRATES, AUDIO_TRACK_LABELS, APP_NAME,
 )
-from worker import TranscodeQueue, BITRATE_RC_MODES
-from about_dialogs import AboutDialog
-from help_window import HelpWindow
-from queue_widget import (
+from velocoder.core.ffmpeg import BITRATE_RC_MODES
+from velocoder.ui.about_dialogs import AboutDialog
+from velocoder.ui.help_window import HelpWindow
+from velocoder.ui.queue_widget import (
     VIDEO_COL, DURATION_COL, SIZE_COL,
     RESULT_COL, STATUS_COL, AUDIO_TRACK_COUNT_ROLE, QUEUE_COLUMN_HEADERS,
 )
-from theming import (
+from velocoder.ui.theming import (
     _current_theme_palette, _system_accent_tokens, _load_stylesheet,
     _ComboPopupBackgroundFilter, _FocusVisibleFilter, _ComboWheelBlockFilter,
     _validate_theme_choice, _resolve_theme,
 )
-from ui_builder import _UiBuilderMixin
-from queue_controller import _QueueControllerMixin
+from velocoder.ui.ui_builder import _UiBuilderMixin
+from velocoder.ui.queue_controller import _QueueControllerMixin
+from velocoder.ui.transcode_queue import TranscodeQueue
 
 # The app's one fixed starting point now that there's no Presets UI to
 # choose one from -- see __init__'s startup-default block. Was "720p CPU
@@ -47,7 +48,7 @@ from queue_controller import _QueueControllerMixin
 # up in. Values match that preset exactly except width/height (overridden
 # to "Keep Original" immediately below, same as the specialist build
 # already did) and encoder/gpu_vendor (overridden to whatever
-# worker.best_available_engine() picks on this machine, same as
+# ffmpeg.best_available_engine() picks on this machine, same as
 # "Automatic" already did on click there).
 DEFAULT_SETTINGS = {
     "encoder": "libx265",
@@ -233,7 +234,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # failed the validation encode is logged here (launch.sh sends
         # stdout to the debug log) and listed in System Information, but
         # never offered as a Processing choice.
-        self._available_backends, self._unusable_gpus = worker.detect_hardware()
+        self._available_backends, self._unusable_gpus = ffmpeg.detect_hardware()
         self._available_backend_ids = {b.id for b in self._available_backends}
         for gpu in self._unusable_gpus:
             print(f"Hardware: {gpu.display_name} GPU found but its validation encode failed: {gpu.reason}")
@@ -278,7 +279,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # (already "Keep Original" in ui_builder.py, but a belt-and-
         # suspenders override here too) and encoder/gpu_vendor, which
         # DEFAULT_SETTINGS hardcodes to CPU/libx265 -- this picks whatever
-        # worker.best_available_engine() finds on the machine actually
+        # ffmpeg.best_available_engine() finds on the machine actually
         # running the app instead, same as clicking Processing's own
         # Automatic button does, just run once at startup instead of
         # waiting for one.
@@ -506,7 +507,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # System Information until the next full restart).
         AboutDialog(
             self, _app_icon(), self._available_backends,
-            _resolve_theme(self._theme_choice).capitalize(), worker.ffmpeg_version(),
+            _resolve_theme(self._theme_choice).capitalize(), ffmpeg.ffmpeg_version(),
             unusable_gpus=self._unusable_gpus,
         ).exec()
 
@@ -570,13 +571,13 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         regardless of real hardware (Expert's encoder_combo isn't filtered
         by detected capability -- that's Phase 4's job, not this pass'),
         so a vendor named there can still be one this machine never had a
-        render node for. Resolves through the same worker.best_available_
+        render node for. Resolves through the same ffmpeg.best_available_
         engine() Automatic already uses rather than leaving a selection
         build_args would later fail a real job on. A real, currently-
         available combo (including plain CPU, vendor None) passes through
         unchanged."""
         if engine == "hevc_vaapi" and vendor not in self._available_backend_ids:
-            return worker.best_available_engine(self._available_backends)
+            return ffmpeg.best_available_engine(self._available_backends)
         return engine, vendor
 
     def _current_encoder_id(self) -> str:
@@ -1055,7 +1056,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
 
     def _on_processing_choice(self, choice: str):
         if choice == "automatic":
-            engine, vendor = worker.best_available_engine(self._available_backends)
+            engine, vendor = ffmpeg.best_available_engine(self._available_backends)
         elif choice == "cpu":
             # Whatever Codec (H.265/H.264) already holds -- switching
             # engine back to CPU shouldn't silently change codec too.
@@ -1202,7 +1203,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         """Limits Track's choices to what was actually source-probed for
         the selected queue row(s) -- picking a track index a file doesn't
         have used to silently produce audio-less output instead of an
-        error (worker.py deliberately skips mapping a nonexistent audio
+        error (ffmpeg.py deliberately skips mapping a nonexistent audio
         track rather than failing the whole job). That gap mattered less
         while Track was Expert-only; now that it's a primary Normal
         control, offering an index that can't possibly work isn't
@@ -1263,7 +1264,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
                     self._preview_audio_channels(first_path, settings["audio_track"])
                     if settings.get("audio_downmix_stereo") else None
                 )
-                args = worker.build_args(
+                args = ffmpeg.build_args(
                     settings, first_path, output_path,
                     probe_audio=False, audio_codec=audio_codec, audio_channels=audio_channels,
                     duration_seconds=self._preview_duration(first_path),
@@ -1276,7 +1277,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
                 # resolve to anything, if a bitrate-family mode needs it)
                 # rather than assert values that would misrepresent what
                 # actually happens.
-                args = worker.build_args(
+                args = ffmpeg.build_args(
                     settings, Path("input.ext"), output_path,
                     probe_audio=False, audio_codec=None,
                 )
@@ -1317,24 +1318,24 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
     def _preview_audio_codec(self, path: Path, track_index: int) -> str | None:
         key = (path, track_index)
         if key not in self._preview_audio_cache:
-            self._preview_audio_cache[key] = worker.probe_audio_codec(path, track_index)
+            self._preview_audio_cache[key] = ffmpeg.probe_audio_codec(path, track_index)
         return self._preview_audio_cache[key]
 
     def _preview_audio_channels(self, path: Path, track_index: int) -> int | None:
         key = (path, track_index)
         if key not in self._preview_audio_channels_cache:
-            self._preview_audio_channels_cache[key] = worker.probe_audio_channels(path, track_index)
+            self._preview_audio_channels_cache[key] = ffmpeg.probe_audio_channels(path, track_index)
         return self._preview_audio_channels_cache[key]
 
     def _preview_audio_source_bitrate(self, path: Path, track_index: int) -> int | None:
         key = (path, track_index)
         if key not in self._preview_audio_source_bitrate_cache:
-            self._preview_audio_source_bitrate_cache[key] = worker.probe_audio_bitrate_kbps(path, track_index)
+            self._preview_audio_source_bitrate_cache[key] = ffmpeg.probe_audio_bitrate_kbps(path, track_index)
         return self._preview_audio_source_bitrate_cache[key]
 
     def _preview_duration(self, path: Path) -> float:
         if path not in self._preview_duration_cache:
-            self._preview_duration_cache[path] = worker.probe_duration(path)
+            self._preview_duration_cache[path] = ffmpeg.probe_duration(path)
         return self._preview_duration_cache[path]
 
     def _update_size_estimate_label(self, settings: dict):
@@ -1360,7 +1361,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         if duration <= 0:
             self.size_estimate_label.setText("Couldn't read this video's duration")
             return
-        # Same will_copy_audio reasoning as worker.build_args (which this
+        # Same will_copy_audio reasoning as ffmpeg.build_args (which this
         # label doesn't call directly, so the condition has to be
         # reproduced here) -- Automatic can copy an already-compatible
         # source through untouched, and that copied track's real bitrate
@@ -1386,10 +1387,10 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             reserved_audio_kbps = 0
         elif will_copy_audio:
             source_kbps = self._preview_audio_source_bitrate(first_path, settings["audio_track"])
-            reserved_audio_kbps = source_kbps if source_kbps is not None else worker.audio_bitrate_kbps(settings["audio_bitrate"])
+            reserved_audio_kbps = source_kbps if source_kbps is not None else ffmpeg.audio_bitrate_kbps(settings["audio_bitrate"])
         else:
-            reserved_audio_kbps = worker.audio_bitrate_kbps(settings["audio_bitrate"])
-        video_kbps = worker.target_size_to_bitrate_kbps(settings["quality_value"], duration, reserved_audio_kbps)
+            reserved_audio_kbps = ffmpeg.audio_bitrate_kbps(settings["audio_bitrate"])
+        video_kbps = ffmpeg.target_size_to_bitrate_kbps(settings["quality_value"], duration, reserved_audio_kbps)
         if video_kbps <= 0:
             # Same threshold build_args() itself now refuses to encode
             # against (raises rather than silently emitting "-b:v 0k",
@@ -1414,7 +1415,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
             "quality_value": self.size_spin.value() if is_bitrate else self.quality_slider.value(),
             # != "hevc_vaapi", not == "libx265" -- libx264 also drives
             # speed_x265_slider (same ultrafast..placebo preset names,
-            # confirmed shared in worker.py's build_args docstring),
+            # confirmed shared in ffmpeg.py's build_args docstring),
             # not the VAAPI compression_level slider. Reading the wrong
             # one for libx264 was a real bug: it fell through to
             # speed_slider (str(int), an out-of-range compression_level
@@ -1552,7 +1553,7 @@ def main():
     # Needed for QStandardPaths.AppDataLocation (session.py's
     # session_file_path) to resolve to a real, sensible per-app directory
     # -- unset, Qt falls back to deriving it from the executable name,
-    # which for a plain "python3 main.py" invocation is "python3", not
+    # which for a plain "python -m velocoder" invocation is "python3", not
     # anything VeloCoder-specific. Matches QSettings(APP_NAME, APP_NAME)'s
     # own naming below (MainWindow.__init__) -- APP_NAME specifically,
     # not constants.APP_ORGANIZATION; see that constant's own comment
@@ -1581,7 +1582,3 @@ def main():
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()

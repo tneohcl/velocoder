@@ -12,8 +12,8 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
-import presets  # noqa: E402
+sys.path.insert(0, str(REPO_ROOT / "src"))
+from velocoder.core import presets  # noqa: E402
 
 
 class TestLoadBuiltinPresets(unittest.TestCase):

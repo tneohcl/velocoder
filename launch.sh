@@ -1,8 +1,9 @@
 #!/bin/bash
+# Runs VeloCoder from this source tree (the menu entry points here).
 # Shares the transcoder venv (identical dependencies -- PySide6 etc. --
 # no reason to duplicate a ~500MB install for a sibling app).
+here="$(cd "$(dirname "$0")" && pwd)"
 source /mnt/data/tools/venv/transcoder/bin/activate
-cd /mnt/data/tools/velocoder
 
 # Deliberately no isolated XDG_CONFIG_HOME -- overriding it also hides
 # kdeglobals and the rest of the real KDE session config from Qt's own
@@ -16,4 +17,4 @@ cd /mnt/data/tools/velocoder
 
 LOG=/tmp/velocoder_debug.log
 echo "===== launch $(date '+%Y-%m-%d %H:%M:%S') =====" >> "$LOG"
-python3 main.py >> "$LOG" 2>&1
+PYTHONPATH="$here/src${PYTHONPATH:+:$PYTHONPATH}" python3 -m velocoder >> "$LOG" 2>&1

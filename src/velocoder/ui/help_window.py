@@ -1,7 +1,7 @@
 """Non-modal, built-in Help window -- search field + category/topic tree
 on the left, article viewer on the right. Fully self-contained, no
 MainWindow coupling (same design intent as queue_widget.py's own
-docstring) -- main.py's _show_help_window is the only thing that
+docstring) -- main_window.py's _show_help_window is the only thing that
 constructs one, as a lazy singleton (same pattern as _log_window/
 _settings_dialog there).
 """
@@ -12,9 +12,9 @@ from PySide6.QtWidgets import (
     QTextBrowser, QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
 )
 
-import help_content
-from constants import APP_NAME
-from theming import _current_theme_palette
+from velocoder.core import help_content
+from velocoder.core.constants import APP_NAME
+from velocoder.ui.theming import _current_theme_palette
 
 _TOPIC_ID_ROLE = Qt.UserRole + 1
 # topic_tree runs at indentation()==0 (see _RoundedSelectionDelegate's
@@ -102,9 +102,9 @@ class HelpWindow(QWidget):
         # a plain QWidget doesn't match the app's QMainWindow/QDialog
         # background rule on its own.
         self.setObjectName("helpWindow")
-        # Same (org, app) pair main.py's own QSettings uses -- a separate
+        # Same (org, app) pair main_window.py's own QSettings uses -- a separate
         # QSettings instance pointed at the identical backing store, not
-        # a separate settings file. This module never imports main.py
+        # a separate settings file. This module never imports main_window.py
         # (would be circular), so it can't just reuse MainWindow's
         # existing instance.
         self._qsettings = QSettings(APP_NAME, APP_NAME)
@@ -355,7 +355,7 @@ class HelpWindow(QWidget):
         )
 
     def refresh_theme(self):
-        # Called from main.py's _apply_theme/_on_system_theme_changed --
+        # Called from main_window.py's _apply_theme/_on_system_theme_changed --
         # _load_stylesheet reloading the app-level QSS alone doesn't
         # touch already-rendered rich-text HTML content, so whatever's
         # currently displayed -- a real article, or the no-results

@@ -34,8 +34,10 @@ jobs:
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
             libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
 
-      - name: Install Python dependencies
-        run: pip install -r requirements.txt
+      # Installing the package itself (not just its dependencies) also
+      # checks that pyproject.toml builds and ships its data files.
+      - name: Install VeloCoder and its dependencies
+        run: pip install .
 
       # Run in small batches, each a fresh process -- a single long-lived
       # process running the whole suite accumulates Qt/PySide6 resources

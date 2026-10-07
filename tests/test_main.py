@@ -1,4 +1,4 @@
-"""Regression tests for main.py (the PySide6 GUI).
+"""Regression tests for main_window.py (the PySide6 GUI).
 
 Run with:  python3 -m unittest discover -s tests -v
 Runs headless via the "offscreen" Qt platform plugin (set below) -- no
@@ -19,7 +19,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "src"))
+STYLE_QSS = REPO_ROOT / "src" / "velocoder" / "ui" / "assets" / "style.qss"
 
 from PySide6.QtCore import (  # noqa: E402
     QEvent, QEventLoop, QMimeData, QPoint, QPointF, QRect, QSize, Qt, QTimer, QUrl,
@@ -33,22 +34,22 @@ from PySide6.QtTest import QTest  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
 
-import formatting  # noqa: E402
-import help_window  # noqa: E402
-import main  # noqa: E402
-import presets  # noqa: E402
-import queue_controller  # noqa: E402
-import queue_widget  # noqa: E402
-import session  # noqa: E402
-import theming  # noqa: E402
-import worker  # noqa: E402
+from velocoder.core import formatting  # noqa: E402
+from velocoder.ui import help_window  # noqa: E402
+from velocoder.ui import main_window  # noqa: E402
+from velocoder.core import presets  # noqa: E402
+from velocoder.ui import queue_controller  # noqa: E402
+from velocoder.ui import queue_widget  # noqa: E402
+from velocoder.ui import session  # noqa: E402
+from velocoder.ui import theming  # noqa: E402
+from velocoder.core import ffmpeg  # noqa: E402
 
 _session_patches = []
 
 
 def setUpModule():
     # Every bare MainWindow() construction in this whole file now calls
-    # _restore_session (main.py.__init__), which calls session.
+    # _restore_session (main_window.py.__init__), which calls session.
     # load_session() -- and every queue mutation schedules session.
     # save_session() a moment later. Unlike QSettings' own scalar keys
     # (theme/geometry/expert-state, tolerated ambient real values
@@ -71,7 +72,7 @@ def setUpModule():
     # render node paths), so the real one-frame encode on top of that
     # would just fail and hide every faked GPU. Default to "the driver
     # works"; TestUnusableGpu below overrides it locally.
-    _session_patches.append(patch.object(worker, "validate_hevc_encode", return_value=None))
+    _session_patches.append(patch.object(ffmpeg, "validate_hevc_encode", return_value=None))
     for p in _session_patches:
         p.start()
 
@@ -92,7 +93,7 @@ def _empty_qsettings():
     has nothing to do with what a test asserting a *default* means."""
     def _empty_store(key, default=None):
         return default
-    with patch.object(main.QSettings, "value", side_effect=_empty_store):
+    with patch.object(main_window.QSettings, "value", side_effect=_empty_store):
         yield
 
 
@@ -142,7 +143,7 @@ def _wait_for_detection(window, timeout_ms=15000):
     poll_timer = QTimer()
 
     def check():
-        still_running = any(p.state() != main.QProcess.NotRunning for p in window._detection_processes)
+        still_running = any(p.state() != main_window.QProcess.NotRunning for p in window._detection_processes)
         if not still_running:
             loop.quit()
 
@@ -155,7 +156,7 @@ def _wait_for_detection(window, timeout_ms=15000):
     timeout_timer.stop()
 
 
-def _add_dummy_item(window, name: str, **overrides) -> "main.QTreeWidgetItem":
+def _add_dummy_item(window, name: str, **overrides) -> "main_window.QTreeWidgetItem":
     """Add a queue item bypassing add_files() -- no on-disk file needed
     (add_files requires path.is_file()) and no real detection subprocess
     spawned, for tests that only care about the selection/settings sync."""
@@ -182,12 +183,12 @@ class _FakeApp:
 class TestStylesheetLoading(unittest.TestCase):
     def test_missing_file_does_not_crash_startup(self):
         app = _FakeApp()
-        main._load_stylesheet(app, style_path=Path("/nonexistent/style.qss"))  # must not raise
+        main_window._load_stylesheet(app, style_path=Path("/nonexistent/style.qss"))  # must not raise
         self.assertIsNone(app.received)
 
     def test_real_stylesheet_file_loads(self):
         app = _FakeApp()
-        main._load_stylesheet(app, style_path=REPO_ROOT / "style.qss")
+        main_window._load_stylesheet(app, style_path=STYLE_QSS)
         self.assertIn("QPushButton", app.received)
 
     def test_form_fields_use_focus_visible_not_plain_focus(self):
@@ -204,7 +205,7 @@ class TestStylesheetLoading(unittest.TestCase):
         # about _FocusVisibleFilter's own Python-side logic (already
         # covered by TestFocusVisibleFilter below) was wrong.
         app = _FakeApp()
-        main._load_stylesheet(app, style_path=REPO_ROOT / "style.qss")
+        main_window._load_stylesheet(app, style_path=STYLE_QSS)
         self.assertIn('QComboBox[focusVisible="true"]', app.received)
         self.assertIn('QLineEdit[focusVisible="true"]', app.received)
         self.assertIn('QSpinBox[focusVisible="true"]', app.received)
@@ -228,7 +229,7 @@ class TestStylesheetLoading(unittest.TestCase):
         # guard on the stylesheet text itself, same pattern as the
         # focus-visible test above.
         app = _FakeApp()
-        main._load_stylesheet(app, style_path=REPO_ROOT / "style.qss")
+        main_window._load_stylesheet(app, style_path=STYLE_QSS)
         self.assertIn("QComboBox:disabled", app.received)
         self.assertIn("QLineEdit:disabled", app.received)
         self.assertIn("QSpinBox:disabled", app.received)
@@ -243,7 +244,7 @@ class TestStylesheetLoading(unittest.TestCase):
         # -- see _load_stylesheet's own comment on why tokens are sorted
         # longest-first before substitution.
         app = _FakeApp()
-        main._load_stylesheet(app, "dark", style_path=REPO_ROOT / "style.qss")
+        main_window._load_stylesheet(app, "dark", style_path=STYLE_QSS)
         self.assertNotIn("$", app.received)
 
     def test_dark_and_light_produce_different_output(self):
@@ -252,15 +253,15 @@ class TestStylesheetLoading(unittest.TestCase):
         # so it's no longer a token that tells the two themes apart.
         # BG_WINDOW still is.
         dark_app, light_app = _FakeApp(), _FakeApp()
-        main._load_stylesheet(dark_app, "dark", style_path=REPO_ROOT / "style.qss")
-        main._load_stylesheet(light_app, "light", style_path=REPO_ROOT / "style.qss")
+        main_window._load_stylesheet(dark_app, "dark", style_path=STYLE_QSS)
+        main_window._load_stylesheet(light_app, "light", style_path=STYLE_QSS)
         self.assertNotEqual(dark_app.received, light_app.received)
         self.assertIn(theming.themes.DARK["BG_WINDOW"], dark_app.received)
         self.assertIn(theming.themes.LIGHT["BG_WINDOW"], light_app.received)
 
     def test_unknown_theme_name_falls_back_to_dark(self):
         app = _FakeApp()
-        main._load_stylesheet(app, "not-a-real-theme", style_path=REPO_ROOT / "style.qss")
+        main_window._load_stylesheet(app, "not-a-real-theme", style_path=STYLE_QSS)
         self.assertIn(theming.themes.DARK["BG_WINDOW"], app.received)
 
 
@@ -288,30 +289,30 @@ class TestSystemAccentTokens(unittest.TestCase):
 
     def test_derives_accent_from_system_palette(self):
         app = _AccentFakeApp(QColor("#308cc6"))
-        tokens = main._system_accent_tokens(app)
+        tokens = main_window._system_accent_tokens(app)
         self.assertEqual(tokens["ACCENT"], "#308cc6")
 
     def test_falls_back_to_a_fixed_blue_when_palette_is_black(self):
         # A real desktop session's accent is never actually pure black --
         # treated as "nothing resolved" rather than a legitimate choice.
         app = _AccentFakeApp(QColor(0, 0, 0))
-        tokens = main._system_accent_tokens(app)
+        tokens = main_window._system_accent_tokens(app)
         self.assertEqual(tokens["ACCENT"], "#4fa8e0")
 
     def test_hover_and_pressed_are_distinct_from_the_base_accent(self):
         app = _AccentFakeApp(QColor("#308cc6"))
-        tokens = main._system_accent_tokens(app)
+        tokens = main_window._system_accent_tokens(app)
         self.assertNotEqual(tokens["ACCENT_HOVER"], tokens["ACCENT"])
         self.assertNotEqual(tokens["ACCENT_PRESSED"], tokens["ACCENT"])
 
     def test_picks_white_text_for_a_dark_accent(self):
         app = _AccentFakeApp(QColor("#1a1a1a"))
-        tokens = main._system_accent_tokens(app)
+        tokens = main_window._system_accent_tokens(app)
         self.assertEqual(tokens["TEXT_ON_ACCENT"], "#ffffff")
 
     def test_picks_near_black_text_for_a_light_accent(self):
         app = _AccentFakeApp(QColor("#f0f0f0"))
-        tokens = main._system_accent_tokens(app)
+        tokens = main_window._system_accent_tokens(app)
         self.assertEqual(tokens["TEXT_ON_ACCENT"], "#0d1117")
 
     def test_check_icon_matches_text_on_accent_not_theme(self):
@@ -329,30 +330,30 @@ class TestSystemAccentTokens(unittest.TestCase):
         # it; a dark accent needs light (check_light.svg) -- same pairing
         # as TEXT_ON_ACCENT itself, tested above.
         light_accent_app = _AccentFakeApp(QColor("#f0f0f0"))
-        self.assertEqual(main._system_accent_tokens(light_accent_app)["CHECK_ICON"], "check_dark.svg")
+        self.assertEqual(main_window._system_accent_tokens(light_accent_app)["CHECK_ICON"], "check_dark.svg")
         dark_accent_app = _AccentFakeApp(QColor("#1a1a1a"))
-        self.assertEqual(main._system_accent_tokens(dark_accent_app)["CHECK_ICON"], "check_light.svg")
+        self.assertEqual(main_window._system_accent_tokens(dark_accent_app)["CHECK_ICON"], "check_light.svg")
 
 
 class TestResolveTheme(unittest.TestCase):
     def test_dark_and_light_pass_through_unchanged(self):
-        self.assertEqual(main._resolve_theme("dark"), "dark")
-        self.assertEqual(main._resolve_theme("light"), "light")
+        self.assertEqual(main_window._resolve_theme("dark"), "dark")
+        self.assertEqual(main_window._resolve_theme("light"), "light")
 
     def test_system_resolves_light(self):
-        with patch.object(main.QApplication, "instance") as mock_instance:
-            mock_instance.return_value.styleHints.return_value.colorScheme.return_value = main.Qt.ColorScheme.Light
-            self.assertEqual(main._resolve_theme("system"), "light")
+        with patch.object(main_window.QApplication, "instance") as mock_instance:
+            mock_instance.return_value.styleHints.return_value.colorScheme.return_value = main_window.Qt.ColorScheme.Light
+            self.assertEqual(main_window._resolve_theme("system"), "light")
 
     def test_system_resolves_dark_for_anything_else(self):
         # Covers both a real Dark preference and Unknown (a platform that
         # doesn't expose one, or -- confirmed directly -- this app's own
         # offscreen/headless test environment) -- either way, falls back to
         # dark rather than erroring or guessing.
-        for scheme in (main.Qt.ColorScheme.Dark, main.Qt.ColorScheme.Unknown):
-            with patch.object(main.QApplication, "instance") as mock_instance:
+        for scheme in (main_window.Qt.ColorScheme.Dark, main_window.Qt.ColorScheme.Unknown):
+            with patch.object(main_window.QApplication, "instance") as mock_instance:
                 mock_instance.return_value.styleHints.return_value.colorScheme.return_value = scheme
-                self.assertEqual(main._resolve_theme("system"), "dark")
+                self.assertEqual(main_window._resolve_theme("system"), "dark")
 
 
 class TestThemeIntegration(unittest.TestCase):
@@ -362,19 +363,19 @@ class TestThemeIntegration(unittest.TestCase):
         # -- this fork's whole premise is Mac-style conventions over an
         # app-specific opinion.
         with _empty_qsettings():
-            window = main.MainWindow()
+            window = main_window.MainWindow()
         self.assertEqual(window._theme_choice, "system")
         self.assertEqual(window.theme_combo.currentData(), "system")
 
     def test_menu_bar_has_the_standard_menus(self):
         # ODCS App Studio rule: a menu bar everywhere, with stable menus,
         # so every command is discoverable where people look for it.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertEqual([a.text() for a in window.menuBar().actions()],
                          ["&File", "&Edit", "&Queue", "&View", "&Help"])
 
     def test_view_menu_theme_choices_follow_the_theme_setting(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         light = next(a for a in window.theme_actions.actions() if a.data() == "light")
         with patch.object(window, "_apply_theme"):
             light.trigger()
@@ -387,11 +388,11 @@ class TestThemeIntegration(unittest.TestCase):
         # via a real corrupted config file, since it's a pure function with
         # nothing QSettings-specific about the fallback logic itself.
         for bogus in (None, "", "not-a-theme", 42, "Dark"):  # case-sensitive too
-            self.assertEqual(main._validate_theme_choice(bogus), "dark")
+            self.assertEqual(main_window._validate_theme_choice(bogus), "dark")
 
     def test_valid_choices_pass_through_unchanged(self):
         for value in ("dark", "light", "system"):
-            self.assertEqual(main._validate_theme_choice(value), value)
+            self.assertEqual(main_window._validate_theme_choice(value), value)
 
     def test_apply_theme_updates_choice_and_persists(self):
         # Mocking setValue rather than using a real (even if scratch)
@@ -400,21 +401,21 @@ class TestThemeIntegration(unittest.TestCase):
         # QSettings itself round-trips a value, which every other persisted
         # bit of window state in this app (geometry, collapsed sections)
         # already relies on unverified at this level too.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with patch.object(window._qsettings, "setValue") as mock_set:
             window._apply_theme("light")
         self.assertEqual(window._theme_choice, "light")
         mock_set.assert_called_once_with("theme_choice", "light")
 
     def test_system_theme_signal_only_reapplies_when_choice_is_system(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._theme_choice = "dark"
-        with patch.object(main, "_load_stylesheet") as mock_load:
-            window._on_system_theme_changed(main.Qt.ColorScheme.Light)
+        with patch.object(main_window, "_load_stylesheet") as mock_load:
+            window._on_system_theme_changed(main_window.Qt.ColorScheme.Light)
             mock_load.assert_not_called()
         window._theme_choice = "system"
-        with patch.object(main, "_load_stylesheet") as mock_load:
-            window._on_system_theme_changed(main.Qt.ColorScheme.Light)
+        with patch.object(main_window, "_load_stylesheet") as mock_load:
+            window._on_system_theme_changed(main_window.Qt.ColorScheme.Light)
             mock_load.assert_called_once()
 
     def test_footer_combo_reflects_persisted_choice(self):
@@ -423,8 +424,8 @@ class TestThemeIntegration(unittest.TestCase):
         # during __init__, from whatever QSettings handed back.
         def _fake_value(key, default=None):
             return "light" if key == "theme_choice" else default
-        with patch.object(main.QSettings, "value", side_effect=_fake_value):
-            window = main.MainWindow()
+        with patch.object(main_window.QSettings, "value", side_effect=_fake_value):
+            window = main_window.MainWindow()
         self.assertEqual(window.theme_combo.currentData(), "light")
 
     def test_selecting_the_combo_applies_the_theme(self):
@@ -434,10 +435,10 @@ class TestThemeIntegration(unittest.TestCase):
         # assert on) on whatever day that real choice already happens to
         # resolve to "light".
         with _empty_qsettings():
-            window = main.MainWindow()
+            window = main_window.MainWindow()
         light_index = window.theme_combo.findData("light")
         with patch.object(window._qsettings, "setValue"), \
-             patch.object(main, "_load_stylesheet") as mock_load:
+             patch.object(main_window, "_load_stylesheet") as mock_load:
             window.theme_combo.setCurrentIndex(light_index)
         self.assertEqual(window._theme_choice, "light")
         mock_load.assert_called_once()
@@ -445,7 +446,7 @@ class TestThemeIntegration(unittest.TestCase):
 
 class TestFuzzyTextColor(unittest.TestCase):
     """theming._fuzzy_text_color backs both the quality/speed/audio-bitrate
-    tier captions (main.py) and the empty-queue placeholder text
+    tier captions (main_window.py) and the empty-queue placeholder text
     (queue_widget.py). Palette roles are set directly on a plain QWidget
     here rather than depending on this machine's real Fusion defaults --
     those turned out to vary (confirmed empirically: identical RGB to
@@ -512,12 +513,12 @@ class TestStartupOrdering(unittest.TestCase):
     """rc_mode_combo must be populated before any preset gets applied."""
 
     def test_rc_mode_populated_after_construction(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertIsNotNone(window.rc_mode_combo.currentData())
         self.assertGreater(window.rc_mode_combo.count(), 0)
 
     def test_quality_label_has_no_none_placeholder(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertNotIn("None", window.quality_label.text())
 
 
@@ -537,7 +538,7 @@ class TestRateControlButtons(unittest.TestCase):
     docstring for the same reasoning already established there)."""
 
     def test_selecting_icq_by_text_for_vaapi(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.encoder_combo.setCurrentText("Intel (iGPU)")
         window.rc_mode_combo.setCurrentText("VBR (target bitrate)")  # move off the default first
         window.rc_mode_combo.setCurrentText("ICQ (quality, hardware)")
@@ -545,7 +546,7 @@ class TestRateControlButtons(unittest.TestCase):
         self.assertTrue(window.mode_quality_btn.isChecked())
 
     def test_selecting_vbr_for_vaapi_checks_normal_file_size_mode(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.encoder_combo.setCurrentText("Intel (iGPU)")
         window.rc_mode_combo.setCurrentText("VBR (target bitrate)")
         self.assertEqual(window.rc_mode_combo.currentData(), "VBR")
@@ -556,7 +557,7 @@ class TestRateControlButtons(unittest.TestCase):
         # button should read as selected, same "no exact match" handling
         # the Quality tier buttons already use for an in-between Expert
         # slider value.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.encoder_combo.setCurrentText("Intel (iGPU)")
         window.rc_mode_combo.setCurrentText("CQP (fixed quantizer)")
         self.assertEqual(window.rc_mode_combo.currentData(), "CQP")
@@ -564,14 +565,14 @@ class TestRateControlButtons(unittest.TestCase):
         self.assertFalse(window.mode_filesize_btn.isChecked())
 
     def test_selecting_bitrate_for_x265_checks_normal_file_size_mode(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.encoder_combo.setCurrentText("CPU")
         window.rc_mode_combo.setCurrentText("Target bitrate")
         self.assertEqual(window.rc_mode_combo.currentData(), "bitrate")
         self.assertTrue(window.mode_filesize_btn.isChecked())
 
     def test_cqp_not_offered_for_x265_no_equivalent(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.encoder_combo.setCurrentText("CPU")
         items = [window.rc_mode_combo.itemText(i) for i in range(window.rc_mode_combo.count())]
         self.assertEqual(items, ["CRF (quality)", "Target bitrate"])
@@ -581,7 +582,7 @@ class TestRateControlButtons(unittest.TestCase):
         # Mode after switching to x265 (CRF) -- the *concept* carries
         # over even though the underlying rc_mode value differs per
         # encoder.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.encoder_combo.setCurrentText("Intel (iGPU)")
         window.mode_quality_btn.click()
         window.encoder_combo.setCurrentText("CPU")
@@ -592,7 +593,7 @@ class TestRateControlButtons(unittest.TestCase):
         # CQP has no x265 equivalent -- RC_MODES["libx265"] simply doesn't
         # contain it, so switching encoders away from it lands on whatever
         # index 0 becomes (CRF), which Normal's Quality Mode should reflect.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.encoder_combo.setCurrentText("Intel (iGPU)")
         window.rc_mode_combo.setCurrentText("CQP (fixed quantizer)")
         window.encoder_combo.setCurrentText("CPU")
@@ -613,21 +614,21 @@ class TestSpeedSliderVisibility(unittest.TestCase):
         # isVisibleTo(window._video_expert_content), not isVisible() --
         # this whole form is never shown at all in this fork (see
         # TestRateControlButtons' own docstring for the full reasoning).
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window.encoder_combo.setCurrentText("CPU")
         self.assertTrue(window.speed_x265_slider.isVisibleTo(window._video_expert_content))
         self.assertFalse(window.speed_slider.isVisibleTo(window._video_expert_content))
 
     def test_vaapi_slider_shown_and_x265_slider_hidden_for_vaapi(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window.encoder_combo.setCurrentText("Intel (iGPU)")
         self.assertTrue(window.speed_slider.isVisibleTo(window._video_expert_content))
         self.assertFalse(window.speed_x265_slider.isVisibleTo(window._video_expert_content))
 
     def test_shared_labels_stay_visible_regardless_of_encoder(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         for encoder in ("CPU", "Intel (iGPU)", "AMD (GPU)"):
             window.encoder_combo.setCurrentText(encoder)
@@ -638,12 +639,12 @@ class TestSpeedSliderVisibility(unittest.TestCase):
 
 class TestTargetSizeSettings(unittest.TestCase):
     """quality_value means a target output size in MB, not literal kbps,
-    when rc_mode is a bitrate-family mode -- see worker.build_args's
+    when rc_mode is a bitrate-family mode -- see ffmpeg.build_args's
     docstring and TestSizeToBitrate in test_worker.py for the conversion
     itself. This covers the GUI's side of storing/round-tripping it."""
 
     def test_size_spin_value_flows_into_current_settings(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window.mode_filesize_btn.click()
         window.size_spin.setValue(750)
@@ -672,12 +673,12 @@ class TestTargetSizeSettings(unittest.TestCase):
         # "VBR"; forcing settings["encoder"] = "hevc_vaapi" doesn't help
         # either, since encoder_combo has no such item to switch to
         # there. Using the same RC_MODE_FRIENDLY[key]["file_size"] lookup
-        # main.py's own Mode-button handlers use keeps this correct
+        # main_window.py's own Mode-button handlers use keeps this correct
         # regardless of which encoder Automatic actually resolves to.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         settings = window._current_settings()
-        settings["rc_mode"] = main.RC_MODE_FRIENDLY[window._current_encoder_key()]["file_size"]
+        settings["rc_mode"] = main_window.RC_MODE_FRIENDLY[window._current_encoder_key()]["file_size"]
         settings["quality_value"] = 2500
         window._apply_settings_to_controls(settings)
         self.assertEqual(window.size_spin.value(), 2500)
@@ -687,17 +688,17 @@ class TestTargetSizeSettings(unittest.TestCase):
 
 class TestSizeEstimateLabel(unittest.TestCase):
     def test_hidden_in_quality_mode(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertFalse(window.size_estimate_label.isVisible())
 
     def test_prompts_for_a_file_when_queue_is_empty(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window.mode_filesize_btn.click()
         self.assertIn("Add a video", window.size_estimate_label.text())
 
     def test_shows_a_real_computed_estimate_for_a_queued_file(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
@@ -727,12 +728,12 @@ class TestSizeEstimateLabel(unittest.TestCase):
         # add_files() alone already populates _preview_duration_cache;
         # patching any later than this would just hit that cache and never
         # call the (patched) function at all.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
             _make_clip(clip, "aac")
-            with patch.object(worker, "probe_duration", side_effect=RuntimeError("boom")):
+            with patch.object(ffmpeg, "probe_duration", side_effect=RuntimeError("boom")):
                 window.add_files([clip])
                 _wait_for_detection(window)
                 window.mode_filesize_btn.click()  # must not raise
@@ -749,7 +750,7 @@ class TestSizeEstimateLabel(unittest.TestCase):
         # still plenty of bitrate for it -- the duration cache is set
         # directly to simulate a long file instead, the actual condition
         # ("target too small for this length") this is testing.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
@@ -764,7 +765,7 @@ class TestSizeEstimateLabel(unittest.TestCase):
         self.assertNotIn("kbps", text)
 
     def test_reserves_the_real_source_bitrate_when_audio_will_be_copied(self):
-        # Same bug/fix as worker.TestBuildArgsAudioBitrateReservation --
+        # Same bug/fix as ffmpeg.TestBuildArgsAudioBitrateReservation --
         # this label computes its own estimate independently of
         # build_args (it has to: build_args needs a real file on disk,
         # this label also needs to show something before Convert is ever
@@ -772,8 +773,8 @@ class TestSizeEstimateLabel(unittest.TestCase):
         # too, separately. MP4, not MKV -- ffprobe reports a real per-
         # stream bit_rate for MP4-muxed AAC but literally "N/A" for this
         # repo's own MKV test fixture (confirmed directly, see that same
-        # worker.py test class's own docstring).
-        window = main.MainWindow()
+        # ffmpeg.py test class's own docstring).
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mp4"
@@ -784,7 +785,7 @@ class TestSizeEstimateLabel(unittest.TestCase):
                  "-c:v", "libx264", "-c:a", "aac", "-b:a", "256k", "-shortest", str(clip)],
                 check=True, timeout=30,
             )
-            real_kbps = worker.probe_audio_bitrate_kbps(clip)
+            real_kbps = ffmpeg.probe_audio_bitrate_kbps(clip)
             self.assertIsNotNone(real_kbps, "MP4 should report a real per-stream bit_rate")
             window.add_files([clip])
             _wait_for_detection(window)
@@ -792,9 +793,9 @@ class TestSizeEstimateLabel(unittest.TestCase):
             window._preview_duration_cache[clip] = 80.0
             window.size_spin.setValue(100)  # triggers the recompute against the cached duration above
             text = window.size_estimate_label.text()
-        expected_kbps = worker.target_size_to_bitrate_kbps(100, 80.0, real_kbps)
-        wrong_kbps_using_configured_bitrate = worker.target_size_to_bitrate_kbps(
-            100, 80.0, worker.audio_bitrate_kbps(window._current_settings()["audio_bitrate"])
+        expected_kbps = ffmpeg.target_size_to_bitrate_kbps(100, 80.0, real_kbps)
+        wrong_kbps_using_configured_bitrate = ffmpeg.target_size_to_bitrate_kbps(
+            100, 80.0, ffmpeg.audio_bitrate_kbps(window._current_settings()["audio_bitrate"])
         )
         self.assertIn(f"{expected_kbps:,} kbps", text)
         self.assertNotEqual(expected_kbps, wrong_kbps_using_configured_bitrate)
@@ -812,13 +813,13 @@ class TestDiagnosticsRelocation(unittest.TestCase):
     on-demand window instead of it living inline."""
 
     def test_command_preview_widget_exists_but_is_not_shown_anywhere(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         self.assertIsNone(window.command_preview.parent())
         self.assertFalse(window.command_preview.isVisible())
 
     def test_copy_command_works_without_the_widget_ever_being_shown(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
             _make_clip(clip, "aac")
@@ -828,13 +829,13 @@ class TestDiagnosticsRelocation(unittest.TestCase):
         self.assertIn("ffmpeg", QApplication.clipboard().text())
 
     def test_log_view_exists_but_is_not_shown_until_requested(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         self.assertIsNone(window.log_view.parent())
         self.assertFalse(window.log_view.isVisible())
 
     def test_show_log_window_reparents_and_shows_the_real_log_view(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window.log_view.appendPlainText("a real log line")
         window._show_log_window()
@@ -843,7 +844,7 @@ class TestDiagnosticsRelocation(unittest.TestCase):
         self.assertIs(window.log_view.parent(), window._log_window)
 
     def test_show_log_window_reuses_the_same_window_on_repeated_calls(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._show_log_window()
         first = window._log_window
@@ -851,14 +852,14 @@ class TestDiagnosticsRelocation(unittest.TestCase):
         self.assertIs(window._log_window, first)
 
     def test_settings_dialog_hosts_the_real_theme_combo(self):
-        window = main.MainWindow()
-        with patch.object(main.QDialog, "exec", return_value=None) as mock_exec:
+        window = main_window.MainWindow()
+        with patch.object(main_window.QDialog, "exec", return_value=None) as mock_exec:
             window._open_settings_dialog()
         mock_exec.assert_called_once()
         # Reparented into the dialog just shown, not a second combo built
         # fresh -- selecting a theme from it must still reach the exact
         # same currentIndexChanged -> _apply_theme wiring from construction.
-        self.assertIsInstance(window.theme_combo.parent(), main.QDialog)
+        self.assertIsInstance(window.theme_combo.parent(), main_window.QDialog)
 
     def test_settings_dialog_reuses_the_same_dialog_on_repeated_opens(self):
         # Regression guard for a live crash: a fresh, uncached QDialog on
@@ -869,15 +870,15 @@ class TestDiagnosticsRelocation(unittest.TestCase):
         # on a later addRow call. Caching the dialog, same pattern as
         # _show_log_window above, means theme_combo is reparented exactly
         # once, ever.
-        window = main.MainWindow()
-        with patch.object(main.QDialog, "exec", return_value=None):
+        window = main_window.MainWindow()
+        with patch.object(main_window.QDialog, "exec", return_value=None):
             window._open_settings_dialog()
             first = window._settings_dialog
             window._open_settings_dialog()
         self.assertIs(window._settings_dialog, first)
 
     def test_footer_no_longer_has_theme_or_hardware_widgets(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertFalse(hasattr(window, "hw_status_label"))
         # theme_combo still exists (see the Settings dialog test above)
         # but isn't part of the status bar -- confirmed by the status
@@ -888,7 +889,7 @@ class TestDiagnosticsRelocation(unittest.TestCase):
 
 class TestCommandPreviewErrorHandling(unittest.TestCase):
     def test_no_vaapi_device_shows_message_not_crash(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         # Found by content, not a hardcoded index -- constants.ENCODERS'
         # own order (CPU/Intel/AMD, matching the dropdown) isn't the same
         # thing as "which one is VAAPI," and a previous version of this
@@ -896,11 +897,11 @@ class TestCommandPreviewErrorHandling(unittest.TestCase):
         # ran, just against the CPU encoder instead) the moment that order
         # changed to put CPU first.
         intel_index = next(
-            i for i, (encoder, vendor, _) in enumerate(main.ENCODERS)
+            i for i, (encoder, vendor, _) in enumerate(main_window.ENCODERS)
             if encoder == "hevc_vaapi" and vendor == "intel"
         )
         with patch.object(
-            main.worker, "find_render_node",
+            main_window.ffmpeg, "find_render_node",
             side_effect=RuntimeError("no render node found"),
         ):
             window.encoder_combo.setCurrentIndex(intel_index)  # triggers a rebuild + preview
@@ -922,7 +923,7 @@ class TestCommandPreviewAudioAccuracy(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def test_preview_reflects_real_source_codec(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.mp3_clip])
         preview_text = window.command_preview.toPlainText()
         # mp3 is never copy-compatible -- preview must show the real
@@ -931,7 +932,7 @@ class TestCommandPreviewAudioAccuracy(unittest.TestCase):
         self.assertNotIn("-c:a copy", preview_text)
 
     def test_empty_queue_omits_audio_flags_rather_than_guessing(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         preview_text = window.command_preview.toPlainText()
         self.assertNotIn("-c:a", preview_text)
 
@@ -944,7 +945,7 @@ class TestCommandPreviewAudioAccuracy(unittest.TestCase):
         # observable: aac is copy-compatible, mp3 forces a transcode.
         aac_clip = self.tmpdir / "aac_clip.mkv"
         _make_clip(aac_clip, "aac")
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([aac_clip, self.mp3_clip])
         _wait_for_detection(window)
 
@@ -962,24 +963,24 @@ class TestCommandPreviewAudioAccuracy(unittest.TestCase):
 
 class TestClearQueueConfirmation(unittest.TestCase):
     def test_declining_confirmation_keeps_the_queue(self):
-        window = main.MainWindow()
-        window.queue_list.addTopLevelItem(main.QTreeWidgetItem(["dummy"]))
-        with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.No):
+        window = main_window.MainWindow()
+        window.queue_list.addTopLevelItem(main_window.QTreeWidgetItem(["dummy"]))
+        with patch.object(main_window.QMessageBox, "question", return_value=main_window.QMessageBox.No):
             window._clear_queue()
         self.assertEqual(window.queue_list.topLevelItemCount(), 1)
 
     def test_confirming_clears_the_queue(self):
-        window = main.MainWindow()
-        item = main.QTreeWidgetItem(["dummy"])
-        item.setData(main.STATUS_COL, main.Qt.UserRole, {"path": Path("dummy.mkv"), **window._current_settings()})
+        window = main_window.MainWindow()
+        item = main_window.QTreeWidgetItem(["dummy"])
+        item.setData(main_window.STATUS_COL, main_window.Qt.UserRole, {"path": Path("dummy.mkv"), **window._current_settings()})
         window.queue_list.addTopLevelItem(item)
-        with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
+        with patch.object(main_window.QMessageBox, "question", return_value=main_window.QMessageBox.Yes):
             window._clear_queue()
         self.assertEqual(window.queue_list.topLevelItemCount(), 0)
 
     def test_empty_queue_skips_the_dialog_entirely(self):
-        window = main.MainWindow()
-        with patch.object(main.QMessageBox, "question") as mock_question:
+        window = main_window.MainWindow()
+        with patch.object(main_window.QMessageBox, "question") as mock_question:
             window._clear_queue()
         mock_question.assert_not_called()
 
@@ -997,9 +998,9 @@ class TestResultSizeFormatting(unittest.TestCase):
             out = tmpdir / "out.mp4"
             src.write_bytes(b"x" * 1000)
             out.write_bytes(b"x" * 250)  # 75% smaller
-            item = main.QTreeWidgetItem()
-            main.MainWindow._append_result_size(item, src, out)
-            self.assertIn("75% smaller", item.text(main.RESULT_COL))
+            item = main_window.QTreeWidgetItem()
+            main_window.MainWindow._append_result_size(item, src, out)
+            self.assertIn("75% smaller", item.text(main_window.RESULT_COL))
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -1010,16 +1011,16 @@ class TestResultSizeFormatting(unittest.TestCase):
             out = tmpdir / "out.mp4"
             src.write_bytes(b"x" * 100)
             out.write_bytes(b"x" * 200)  # larger output (e.g. a tiny/simple source)
-            item = main.QTreeWidgetItem()
-            main.MainWindow._append_result_size(item, src, out)
-            self.assertIn("larger", item.text(main.RESULT_COL))
+            item = main_window.QTreeWidgetItem()
+            main_window.MainWindow._append_result_size(item, src, out)
+            self.assertIn("larger", item.text(main_window.RESULT_COL))
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_missing_output_file_does_not_crash(self):
-        item = main.QTreeWidgetItem()
-        main.MainWindow._append_result_size(item, Path("/nonexistent/in.mkv"), Path("/nonexistent/out.mp4"))
-        self.assertEqual(item.text(main.RESULT_COL), "")  # left untouched
+        item = main_window.QTreeWidgetItem()
+        main_window.MainWindow._append_result_size(item, Path("/nonexistent/in.mkv"), Path("/nonexistent/out.mp4"))
+        self.assertEqual(item.text(main_window.RESULT_COL), "")  # left untouched
 
     def test_append_result_size_returns_byte_counts_on_success(self):
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_gui_test_"))
@@ -1028,15 +1029,15 @@ class TestResultSizeFormatting(unittest.TestCase):
             out = tmpdir / "out.mp4"
             src.write_bytes(b"x" * 1000)
             out.write_bytes(b"x" * 250)
-            item = main.QTreeWidgetItem()
-            result = main.MainWindow._append_result_size(item, src, out)
+            item = main_window.QTreeWidgetItem()
+            result = main_window.MainWindow._append_result_size(item, src, out)
             self.assertEqual(result, (1000, 250))
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_append_result_size_returns_none_on_missing_file(self):
-        item = main.QTreeWidgetItem()
-        result = main.MainWindow._append_result_size(item, Path("/nonexistent/in.mkv"), Path("/nonexistent/out.mp4"))
+        item = main_window.QTreeWidgetItem()
+        result = main_window.MainWindow._append_result_size(item, Path("/nonexistent/in.mkv"), Path("/nonexistent/out.mp4"))
         self.assertIsNone(result)
 
     def test_append_result_size_returns_none_when_input_size_is_zero(self):
@@ -1046,8 +1047,8 @@ class TestResultSizeFormatting(unittest.TestCase):
             out = tmpdir / "out.mp4"
             src.write_bytes(b"")
             out.write_bytes(b"x" * 100)
-            item = main.QTreeWidgetItem()
-            result = main.MainWindow._append_result_size(item, src, out)
+            item = main_window.QTreeWidgetItem()
+            result = main_window.MainWindow._append_result_size(item, src, out)
             self.assertIsNone(result)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -1081,19 +1082,19 @@ class TestAudioTrackChoices(unittest.TestCase):
     """Track (Normal, promoted from Expert) used to unconditionally offer
     Track 1-4 regardless of how many audio streams the selected file(s)
     actually have -- picking a nonexistent one silently produced audio-
-    less output instead of an error (worker.py deliberately skips mapping
+    less output instead of an error (ffmpeg.py deliberately skips mapping
     a track that isn't there rather than failing the whole job). Track
-    count is already probed (worker.parse_probe_output's own
+    count is already probed (ffmpeg.parse_probe_output's own
     audio_track_count, used since before this fix for the "+N more" queue
-    subtitle) -- _refresh_audio_track_choices (main.py) now also narrows
+    subtitle) -- _refresh_audio_track_choices (main_window.py) now also narrows
     audio_combo to it, keyed off queue_widget.AUDIO_TRACK_COUNT_ROLE."""
 
     def test_default_with_no_selection_offers_all_four(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertEqual(window.audio_combo.count(), 4)
 
     def test_selecting_a_single_track_file_narrows_to_one(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
@@ -1112,7 +1113,7 @@ class TestAudioTrackChoices(unittest.TestCase):
         # what a genuine multi-track source would have produced, the same
         # way other tests in this file set _preview_duration_cache
         # directly rather than constructing a real multi-hour clip.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
@@ -1135,7 +1136,7 @@ class TestAudioTrackChoices(unittest.TestCase):
         # applied to both selected rows at once (same reasoning
         # _sync_settings_to_selected_queue_items already applies to every
         # other shared setting).
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip_a = Path(tmp) / "a.mkv"
@@ -1154,7 +1155,7 @@ class TestAudioTrackChoices(unittest.TestCase):
         self.assertEqual(window.audio_combo.count(), 1)
 
     def test_stored_audio_track_past_the_narrowed_list_is_clamped_not_left_unset(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
@@ -1180,7 +1181,7 @@ class TestAudioTrackChoices(unittest.TestCase):
         # -- so the job itself kept pointing at a track that doesn't
         # exist even after the real probe landed and revealed the true
         # count, regardless of whether this row was ever selected.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window.audio_combo.setCurrentIndex(3)  # Track 4, queue still empty
         with tempfile.TemporaryDirectory() as tmp:
@@ -1193,7 +1194,7 @@ class TestAudioTrackChoices(unittest.TestCase):
         self.assertEqual(job["audio_track"], 0)
 
     def test_deselecting_back_to_nothing_restores_all_four(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
@@ -1218,12 +1219,12 @@ class TestSettingsScopeLabel(unittest.TestCase):
     in sync by _update_settings_scope_label) make that state explicit."""
 
     def test_no_selection_reads_as_settings_for_new_videos(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertEqual(window.video_scope_label.text(), "Settings for new videos")
         self.assertEqual(window.audio_scope_label.text(), "Settings for new videos")
 
     def test_one_selected_names_the_file(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "interview_01.mkv"
@@ -1235,7 +1236,7 @@ class TestSettingsScopeLabel(unittest.TestCase):
         self.assertEqual(window.video_scope_label.text(), 'Settings for "interview_01.mkv"')
 
     def test_multiple_selected_shows_a_count(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip_a = Path(tmp) / "a.mkv"
@@ -1250,7 +1251,7 @@ class TestSettingsScopeLabel(unittest.TestCase):
         self.assertEqual(window.video_scope_label.text(), "Settings for 2 selected videos")
 
     def test_deselecting_back_to_nothing_restores_the_new_videos_text(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
@@ -1279,7 +1280,7 @@ class TestPartialSettingsSyncOnMultiSelect(unittest.TestCase):
     own settings is left alone."""
 
     def test_changing_one_control_does_not_touch_an_unrelated_setting(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip_a = Path(tmp) / "a.mkv"
@@ -1316,7 +1317,7 @@ class TestPartialSettingsSyncOnMultiSelect(unittest.TestCase):
         # sets both rc_mode and quality_value together, and both must
         # still propagate as one unit, not just whichever the panel
         # happened to already differ on.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip_a = Path(tmp) / "a.mkv"
@@ -1345,7 +1346,7 @@ class TestPartialSettingsSyncOnMultiSelect(unittest.TestCase):
         # against whatever the very first selection happened to show,
         # which could make an unrelated, already-true value look like a
         # "change" the moment anything else is edited.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip_a = Path(tmp) / "a.mkv"
@@ -1378,34 +1379,34 @@ class TestAudioBitrateSlider(unittest.TestCase):
     round-trip through that index, not just "does a slider move"."""
 
     def test_default_is_160k(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertEqual(window._current_settings()["audio_bitrate"], "160k")
 
     def test_slider_value_round_trips_through_current_settings(self):
-        window = main.MainWindow()
-        window.audio_bitrate_slider.setValue(main.AUDIO_BITRATES.index("256k"))
+        window = main_window.MainWindow()
+        window.audio_bitrate_slider.setValue(main_window.AUDIO_BITRATES.index("256k"))
         self.assertEqual(window._current_settings()["audio_bitrate"], "256k")
         self.assertEqual(window.audio_bitrate_label.text(), "256k")
 
     def test_apply_settings_sets_the_slider_to_the_matching_index(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         settings = window._current_settings()
         window._apply_settings_to_controls({**settings, "audio_bitrate": "96k"})
-        self.assertEqual(window.audio_bitrate_slider.value(), main.AUDIO_BITRATES.index("96k"))
+        self.assertEqual(window.audio_bitrate_slider.value(), main_window.AUDIO_BITRATES.index("96k"))
 
     def test_apply_settings_falls_back_to_160k_for_an_unknown_value(self):
         # A queue job's settings dict could carry a bitrate string that's
         # no longer one of the five real stops -- the old combo's
         # setCurrentText() silently ignored that; .index() would crash
         # without this same defensive fallback in _apply_settings_to_controls.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         settings = window._current_settings()
         window._apply_settings_to_controls({**settings, "audio_bitrate": "not-a-real-bitrate"})
-        self.assertEqual(window.audio_bitrate_slider.value(), main.AUDIO_BITRATES.index("160k"))
+        self.assertEqual(window.audio_bitrate_slider.value(), main_window.AUDIO_BITRATES.index("160k"))
 
     def test_every_bitrate_has_its_own_tier_caption(self):
-        window = main.MainWindow()
-        for i in range(len(main.AUDIO_BITRATES)):
+        window = main_window.MainWindow()
+        for i in range(len(main_window.AUDIO_BITRATES)):
             window.audio_bitrate_slider.setValue(i)
             self.assertTrue(window.audio_bitrate_tier_label.text())
 
@@ -1419,14 +1420,14 @@ class TestX265SpeedSlider(unittest.TestCase):
     what actually needs locking in."""
 
     def test_default_is_medium(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.encoder_combo.setCurrentText("CPU")
         self.assertEqual(window._current_settings()["speed"], "medium")
 
     def test_slider_value_round_trips_through_current_settings(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.encoder_combo.setCurrentText("CPU")
-        window.speed_x265_slider.setValue(main.X265_PRESETS.index("veryslow"))
+        window.speed_x265_slider.setValue(main_window.X265_PRESETS.index("veryslow"))
         self.assertEqual(window._current_settings()["speed"], "veryslow")
         # The preset name used to have its own separate label next to
         # "Slower" -- discussed directly, dropped as redundant and folded
@@ -1434,27 +1435,27 @@ class TestX265SpeedSlider(unittest.TestCase):
         self.assertIn("(veryslow)", window.speed_tier_label.text())
 
     def test_apply_settings_sets_the_slider_to_the_matching_index(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.encoder_combo.setCurrentText("CPU")
         settings = window._current_settings()
         window._apply_settings_to_controls({**settings, "speed": "superfast"})
-        self.assertEqual(window.speed_x265_slider.value(), main.X265_PRESETS.index("superfast"))
+        self.assertEqual(window.speed_x265_slider.value(), main_window.X265_PRESETS.index("superfast"))
 
     def test_apply_settings_falls_back_to_medium_for_an_unknown_value(self):
         # Same defensive-fallback reasoning as Audio Bitrate -- a queue
         # job's settings dict could carry a preset name that isn't one of
         # X265_PRESETS; the old combo's setCurrentText() silently ignored
         # that, .index() would crash without this same fallback.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.encoder_combo.setCurrentText("CPU")
         settings = window._current_settings()
         window._apply_settings_to_controls({**settings, "speed": "not-a-real-preset"})
-        self.assertEqual(window.speed_x265_slider.value(), main.X265_PRESETS.index("medium"))
+        self.assertEqual(window.speed_x265_slider.value(), main_window.X265_PRESETS.index("medium"))
 
     def test_every_preset_has_its_own_tier_caption(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.encoder_combo.setCurrentText("CPU")
-        for i in range(len(main.X265_PRESETS)):
+        for i in range(len(main_window.X265_PRESETS)):
             window.speed_x265_slider.setValue(i)
             self.assertTrue(window.speed_tier_label.text())
 
@@ -1463,11 +1464,11 @@ class TestX265SpeedSlider(unittest.TestCase):
         # index 0, placebo at the end) -- opposite fraction direction from
         # the VAAPI slider's compression_level (1=slowest there), confirmed
         # explicitly here rather than just trusting the caption list order.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.encoder_combo.setCurrentText("CPU")
         window.speed_x265_slider.setValue(0)
         self.assertIn("Fast", window.speed_tier_label.text())
-        window.speed_x265_slider.setValue(len(main.X265_PRESETS) - 1)
+        window.speed_x265_slider.setValue(len(main_window.X265_PRESETS) - 1)
         self.assertIn("Maximum effort", window.speed_tier_label.text())
 
     def test_six_tiers_match_the_vaapi_slider_reversed(self):
@@ -1476,10 +1477,10 @@ class TestX265SpeedSlider(unittest.TestCase):
         # both engines just in opposite order -- confirmed here rather than
         # assumed, since a copy-paste ordering mistake between the two
         # _tier_label() calls wouldn't show up any other way.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.encoder_combo.setCurrentText("CPU")
         x265_captions = []
-        for i in range(len(main.X265_PRESETS)):
+        for i in range(len(main_window.X265_PRESETS)):
             window.speed_x265_slider.setValue(i)
             x265_captions.append(window.speed_tier_label.text())
 
@@ -1508,7 +1509,7 @@ class TestX264Codec(unittest.TestCase):
 
     Both controls resolve together into the one real ffmpeg encoder id
     via _current_encoder_id() -- shares speed_x265_slider with libx265
-    (same preset names, confirmed in worker.py), not the VAAPI
+    (same preset names, confirmed in ffmpeg.py), not the VAAPI
     compression_level slider, which _current_settings()/
     _apply_settings_to_controls() originally decided by checking
     `encoder == "libx265"` specifically. That was a real bug for
@@ -1540,19 +1541,19 @@ class TestX264Codec(unittest.TestCase):
     This machine's own best_available_engine() resolves to real
     hardware (confirmed directly: ('hevc_vaapi', 'intel')) -- MainWindow()
     starts on Intel, not CPU/libx265, by the app's own deliberate design
-    (Automatic resolves once at construction; see main.py). Any assertion
+    (Automatic resolves once at construction; see main_window.py). Any assertion
     here that implicitly wants a CPU/libx265 baseline needs
     encoder_combo.setCurrentText("CPU") first -- it can't rely on that
     being MainWindow()'s own out-of-the-box default, which is genuinely
     machine-dependent."""
 
     def _shown_window_with_expert_open(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         return window
 
     def test_codec_combo_offers_both(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         items = [window.codec_combo.itemText(i) for i in range(window.codec_combo.count())]
         self.assertIn("H.265 (HEVC)", items)
         self.assertIn("H.264 (AVC)", items)
@@ -1598,7 +1599,7 @@ class TestX264Codec(unittest.TestCase):
         window = self._shown_window_with_expert_open()
         window.encoder_combo.setCurrentText("CPU")
         window.codec_combo.setCurrentText("H.264 (AVC)")
-        window.speed_x265_slider.setValue(main.X265_PRESETS.index("veryslow"))
+        window.speed_x265_slider.setValue(main_window.X265_PRESETS.index("veryslow"))
         self.assertEqual(window._current_settings()["speed"], "veryslow")
 
     def test_applying_a_libx264_settings_dict_selects_cpu_and_h264(self):
@@ -1609,12 +1610,12 @@ class TestX264Codec(unittest.TestCase):
         # (harmlessly landing on CPU by coincidence) without ever
         # touching codec_combo, and separately crashed on
         # int("veryslow") for the speed slider.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         settings = {**window._current_settings(), "encoder": "libx264", "speed": "veryslow"}
         window._apply_settings_to_controls(settings)  # must not raise
         self.assertEqual(window.encoder_combo.currentText(), "CPU")
         self.assertEqual(window.codec_combo.currentText(), "H.264 (AVC)")
-        self.assertEqual(window.speed_x265_slider.value(), main.X265_PRESETS.index("veryslow"))
+        self.assertEqual(window.speed_x265_slider.value(), main_window.X265_PRESETS.index("veryslow"))
 
     def test_applying_a_vaapi_settings_dict_does_not_touch_codec_combo_state(self):
         window = self._shown_window_with_expert_open()
@@ -1643,7 +1644,7 @@ class TestX264Codec(unittest.TestCase):
         # genuinely doesn't need the CPU/Expert-open setup the rest of
         # this class needs -- it's checking the plain construction-time
         # default, not anything a real repopulation cascade produced.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         items = [window.tune_combo.itemText(i) for i in range(window.tune_combo.count())]
         self.assertNotIn("film", items)
         self.assertNotIn("stillimage", items)
@@ -1667,7 +1668,7 @@ class TestX264Codec(unittest.TestCase):
         self.assertEqual(window.tune_combo.currentText(), "grain")
 
     def test_build_args_omits_x265_params_for_x264(self):
-        # Full round trip through the GUI layer, not just worker.py's own
+        # Full round trip through the GUI layer, not just ffmpeg.py's own
         # TestBuildArgsX264 (which constructs the settings dict by hand)
         # -- confirms _current_settings() -> build_args actually connects
         # correctly end to end.
@@ -1675,7 +1676,7 @@ class TestX264Codec(unittest.TestCase):
         window.encoder_combo.setCurrentText("CPU")
         window.codec_combo.setCurrentText("H.264 (AVC)")
         settings = window._current_settings()
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             settings, Path("in.mkv"), Path("out.mp4"),
             probe_audio=False, audio_codec=None, duration_seconds=10.0,
         )
@@ -1687,7 +1688,7 @@ class TestX264Codec(unittest.TestCase):
         # _on_encoder_changed, which rebuilds rc_mode_combo from scratch
         # and resets currentIndex to 0 -- silently abandoning the user's
         # Quality-tier choice on every codec switch. _on_codec_changed
-        # (main.py) now captures/restores it, same shape as
+        # (main_window.py) now captures/restores it, same shape as
         # _on_processing_choice already does for engine switches.
         window = self._shown_window_with_expert_open()
         window.encoder_combo.setCurrentText("CPU")
@@ -1695,7 +1696,7 @@ class TestX264Codec(unittest.TestCase):
         window.codec_combo.setCurrentText("H.264 (AVC)")
         settings = window._current_settings()
         self.assertEqual(settings["encoder"], "libx264")
-        self.assertEqual(settings["quality_value"], main.QUALITY_TIERS["libx264"]["better"])
+        self.assertEqual(settings["quality_value"], main_window.QUALITY_TIERS["libx264"]["better"])
         self.assertTrue(window.quality_better_btn.isChecked())
 
     def test_h264_better_quality_survives_switch_to_h265(self):
@@ -1706,7 +1707,7 @@ class TestX264Codec(unittest.TestCase):
         window.codec_combo.setCurrentText("H.265 (HEVC)")
         settings = window._current_settings()
         self.assertEqual(settings["encoder"], "libx265")
-        self.assertEqual(settings["quality_value"], main.QUALITY_TIERS["libx265"]["better"])
+        self.assertEqual(settings["quality_value"], main_window.QUALITY_TIERS["libx265"]["better"])
         self.assertTrue(window.quality_better_btn.isChecked())
 
     def test_h265_file_size_800mb_survives_switch_to_h264(self):
@@ -1738,21 +1739,21 @@ class TestX264Codec(unittest.TestCase):
 class TestAudioDownmix(unittest.TestCase):
     """audio_downmix_check (a checkbox, Expert-only) was replaced by the
     Channels segmented row (Keep Original/Stereo) directly in Normal mode
-    -- see ui_builder.py's _build_audio_tab and main.py's
+    -- see ui_builder.py's _build_audio_tab and main_window.py's
     _on_audio_channels_clicked. audio_channels_stereo_btn.isChecked() is
     the new source of truth _current_settings() reads."""
 
     def test_default_is_off(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertFalse(window._current_settings()["audio_downmix_stereo"])
 
     def test_button_round_trips_through_current_settings(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.audio_channels_stereo_btn.click()
         self.assertTrue(window._current_settings()["audio_downmix_stereo"])
 
     def test_apply_settings_sets_the_button(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         settings = window._current_settings()
         window._apply_settings_to_controls({**settings, "audio_downmix_stereo": True})
         self.assertTrue(window.audio_channels_stereo_btn.isChecked())
@@ -1762,7 +1763,7 @@ class TestAudioDownmix(unittest.TestCase):
         # key -- .get(..., False) in _apply_settings_to_controls, not a bare
         # index, is what keeps that from crashing (same reasoning as the
         # container/tune/deinterlace fallbacks it sits alongside).
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         settings = window._current_settings()
         window.audio_channels_stereo_btn.click()
         old_settings = {k: v for k, v in settings.items() if k != "audio_downmix_stereo"}
@@ -1776,14 +1777,14 @@ class TestComboPopupBackgroundFilter(unittest.TestCase):
     its own instance on the shared module-level _app and removes it again in
     tearDown, the same scoping discipline as if this were a fresh app each
     time. Confirmed real popup background/text-style bugs (not reproducible
-    under offscreen rendering, only via real screen capture -- see main.py's
+    under offscreen rendering, only via real screen capture -- see main_window.py's
     class docstring) drove this filter's existence; what's checkable here
     without real rendering is the underlying property/stylesheet state it
     sets, which is what actually drives that rendering.
     """
 
     def setUp(self):
-        self.filter = main._ComboPopupBackgroundFilter()
+        self.filter = main_window._ComboPopupBackgroundFilter()
         _app.installEventFilter(self.filter)
 
     def tearDown(self):
@@ -1794,11 +1795,11 @@ class TestComboPopupBackgroundFilter(unittest.TestCase):
         # all (CONSUMER_FORK_PLAN.md), but Bug 1 (the black-bar popup-
         # background fix) is generic to every QComboBox, not preset-
         # specific, so it still needs a real combo to exercise against.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.res_combo.showPopup()
         _app.processEvents()
         popup = window.res_combo.view().window()
-        self.assertIn(main._current_theme_palette["BG_PANEL"], popup.styleSheet())
+        self.assertIn(main_window._current_theme_palette["BG_PANEL"], popup.styleSheet())
         window.res_combo.hidePopup()
         _app.processEvents()
 
@@ -1813,7 +1814,7 @@ class TestComboPopupBackgroundFilter(unittest.TestCase):
     # harmless dead code rather than also touching theming.py in this pass.
 
     def test_unmodified_combo_is_left_alone(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertFalse(window.res_combo.property("modified"))
         window.res_combo.showPopup()
         _app.processEvents()
@@ -1839,9 +1840,9 @@ class TestComboWheelBlockFilter(unittest.TestCase):
     room to no longer be true."""
 
     def setUp(self):
-        self.filter = main._ComboWheelBlockFilter()
+        self.filter = main_window._ComboWheelBlockFilter()
         _app.installEventFilter(self.filter)
-        patcher = patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID))
+        patcher = patch.object(ffmpeg, "find_render_node", side_effect=_find_render_node_for(ffmpeg.INTEL_VENDOR_ID))
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -1856,7 +1857,7 @@ class TestComboWheelBlockFilter(unittest.TestCase):
         )
 
     def test_wheel_over_a_combo_does_not_change_its_value(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         before = window.res_combo.currentIndex()
         QApplication.sendEvent(window.res_combo, self._wheel_event())
@@ -1872,7 +1873,7 @@ class TestComboWheelBlockFilter(unittest.TestCase):
         # Window) -- shrunk back down to the collapsed floor afterward
         # specifically to force a real scroll need, the same technique
         # TestLeftPanelScrolling's own fallback test uses.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window.processing_cpu_btn.click()
         left = window.findChild(QWidget, "leftPanel")
@@ -1931,14 +1932,14 @@ class TestFocusVisibleFilter(unittest.TestCase):
     """
 
     def setUp(self):
-        self.filter = main._FocusVisibleFilter()
+        self.filter = main_window._FocusVisibleFilter()
         _app.installEventFilter(self.filter)
 
     def tearDown(self):
         _app.removeEventFilter(self.filter)
 
     def test_tab_focus_is_visible(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         _app.processEvents()
         window.res_combo.setFocus(Qt.FocusReason.TabFocusReason)
@@ -1946,7 +1947,7 @@ class TestFocusVisibleFilter(unittest.TestCase):
         self.assertTrue(window.res_combo.property("focusVisible"))
 
     def test_mouse_focus_is_not_visible(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         _app.processEvents()
         window.res_combo.setFocus(Qt.FocusReason.MouseFocusReason)
@@ -1954,7 +1955,7 @@ class TestFocusVisibleFilter(unittest.TestCase):
         self.assertFalse(window.res_combo.property("focusVisible"))
 
     def test_losing_focus_clears_the_property(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         _app.processEvents()
         window.res_combo.setFocus(Qt.FocusReason.TabFocusReason)
@@ -1970,7 +1971,7 @@ class TestFocusVisibleFilter(unittest.TestCase):
         # FocusIn/FocusOut also reach plain QWindow objects (the top-level
         # window itself gaining/losing OS-level focus), which have no
         # .style() -- crashed the filter the first time this ran for real.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         _app.processEvents()
         qwindow = window.windowHandle()
@@ -1980,7 +1981,7 @@ class TestFocusVisibleFilter(unittest.TestCase):
 
 class TestCommandPreviewGrouping(unittest.TestCase):
     def test_preview_is_broken_into_multiple_lines(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         text = window.command_preview.toPlainText()
         self.assertGreater(text.count("\n"), 0)
         # Grouping is cosmetic only -- flattening it back out must reproduce
@@ -1997,7 +1998,7 @@ class TestCopyCommandToClipboard(unittest.TestCase):
     args list this preview was actually built from instead."""
 
     def test_copied_text_quotes_a_path_with_a_space(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "My Video.mkv"
             _make_clip(clip, "aac")
@@ -2013,7 +2014,7 @@ class TestCopyCommandToClipboard(unittest.TestCase):
         self.assertIn("My Video.mkv'", copied)
 
     def test_copied_text_round_trips_through_shlex_split(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "My Video.mkv"
             _make_clip(clip, "aac")
@@ -2024,7 +2025,7 @@ class TestCopyCommandToClipboard(unittest.TestCase):
         self.assertEqual(shlex.split(copied), window._last_preview_args)
 
     def test_copies_nothing_useful_when_preview_is_unavailable(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._last_preview_args = []
         window._copy_command_to_clipboard()
         self.assertEqual(QApplication.clipboard().text(), "")
@@ -2044,24 +2045,24 @@ class TestJobStatusIcons(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def test_started_job_gets_an_icon(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.clip])
         window._running_items = [window.queue_list.topLevelItem(0)]
         window._on_job_started(str(self.clip), 1, 1)
-        self.assertFalse(window._running_items[0].icon(main.STATUS_COL).isNull())
+        self.assertFalse(window._running_items[0].icon(main_window.STATUS_COL).isNull())
 
     def test_failed_job_gets_a_tooltip_with_the_reason(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.clip])
         window._running_items = [window.queue_list.topLevelItem(0)]
         window._current_running_item = window.queue_list.topLevelItem(0)
         window._on_job_failed(str(self.clip), "ffmpeg exited 1")
-        self.assertEqual(window._running_items[0].toolTip(main.STATUS_COL), "ffmpeg exited 1")
+        self.assertEqual(window._running_items[0].toolTip(main_window.STATUS_COL), "ffmpeg exited 1")
 
 
 class TestQueueWideETA(unittest.TestCase):
     """_queue_eta_seconds rolls the current job's own live ETA (already
-    computed in worker.py from real ffmpeg progress) up into a
+    computed in ffmpeg.py from real ffmpeg progress) up into a
     whole-queue estimate, applying that same observed speed to each
     not-yet-started row's own probed duration -- item.data(DURATION_COL,
     Qt.UserRole) as set in _on_source_probed, not the formatted display
@@ -2081,32 +2082,32 @@ class TestQueueWideETA(unittest.TestCase):
         window.add_files([self.clip])
         item = window.queue_list.topLevelItem(window.queue_list.topLevelItemCount() - 1)
         if duration_seconds is not None:
-            item.setData(main.DURATION_COL, main.Qt.UserRole, duration_seconds)
+            item.setData(main_window.DURATION_COL, main_window.Qt.UserRole, duration_seconds)
         return item
 
     def test_no_current_job_eta_yet_returns_none(self):
         # Mirrors _on_job_stats' own "--:--" placeholder before the first
         # real progress tick of a run has landed.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertIsNone(window._queue_eta_seconds(None, 2.0))
 
     def test_no_speed_yet_returns_none(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertIsNone(window._queue_eta_seconds(30.0, None))
 
     def test_zero_speed_returns_none_not_a_divide_by_zero(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertIsNone(window._queue_eta_seconds(30.0, 0.0))
 
     def test_only_current_job_left_returns_just_its_own_eta(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         current = self._add_row(window, 100)
         window._running_items = [current]
         window._current_running_item = current
         self.assertEqual(window._queue_eta_seconds(30.0, 2.0), 30.0)
 
     def test_adds_estimated_time_for_each_remaining_job(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         current = self._add_row(window, 100)
         next_job = self._add_row(window, 60)  # 60s duration, 2.0x speed -> 30s estimated
         window._running_items = [current, next_job]
@@ -2114,7 +2115,7 @@ class TestQueueWideETA(unittest.TestCase):
         self.assertEqual(window._queue_eta_seconds(30.0, 2.0), 60.0)
 
     def test_job_with_no_probed_duration_yet_is_skipped_not_crashed(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         current = self._add_row(window, 100)
         still_probing = self._add_row(window, None)  # probe hasn't landed yet
         window._running_items = [current, still_probing]
@@ -2122,7 +2123,7 @@ class TestQueueWideETA(unittest.TestCase):
         self.assertEqual(window._queue_eta_seconds(30.0, 2.0), 30.0)
 
     def test_already_finished_jobs_before_current_are_not_double_counted(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         finished = self._add_row(window, 999)
         current = self._add_row(window, 100)
         window._running_items = [finished, current]
@@ -2135,7 +2136,7 @@ class TestQueueWideETA(unittest.TestCase):
         # at all (CONSUMER_FORK_PLAN.md), only the plain-language queue-
         # wide estimate. 30s (current job) + 60s/2.0x (next job) = 60s
         # total -> format_eta_human(60) == "About 1 min remaining".
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         current = self._add_row(window, 100)
         next_job = self._add_row(window, 60)
         window._running_items = [current, next_job]
@@ -2151,7 +2152,7 @@ class TestQueueWideETA(unittest.TestCase):
         # None -> eta_label.setText("") (empty, not a "--:--" placeholder --
         # that was stats_label's own raw-clock-format text, cut along with
         # the rest of that line).
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         current = self._add_row(window, 100)
         window._running_items = [current]
         window._current_running_item = current
@@ -2161,7 +2162,7 @@ class TestQueueWideETA(unittest.TestCase):
 
 class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
     """Dropping a file in should probe it and flip Deinterlace automatically
-    -- see worker.TestIdetHelpers/TestDeinterlace for the detection/fix
+    -- see ffmpeg.TestIdetHelpers/TestDeinterlace for the detection/fix
     logic itself; this covers the async GUI wiring around it."""
 
     @classmethod
@@ -2177,22 +2178,22 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def test_interlaced_file_gets_deinterlace_enabled_automatically(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.interlaced_clip])
         _wait_for_detection(window)
         item = window.queue_list.topLevelItem(0)
-        job = item.data(main.STATUS_COL, main.Qt.UserRole)
+        job = item.data(main_window.STATUS_COL, main_window.Qt.UserRole)
         self.assertTrue(job["deinterlace"])
         # "(interlaced)" lives in the subtitle (VIDEO_SUBTITLE_ROLE) now,
         # not item.text() -- that's the filename, the delegate's title
         # line (queue_widget._VideoCellDelegate).
-        self.assertIn("(interlaced)", item.data(main.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE))
+        self.assertIn("(interlaced)", item.data(main_window.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE))
 
     def test_progressive_file_stays_off(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.progressive_clip])
         _wait_for_detection(window)
-        job = window.queue_list.topLevelItem(0).data(main.STATUS_COL, main.Qt.UserRole)
+        job = window.queue_list.topLevelItem(0).data(main_window.STATUS_COL, main_window.Qt.UserRole)
         self.assertFalse(job["deinterlace"])
 
     def test_detection_overrides_a_manually_checked_box_when_source_is_progressive(self):
@@ -2200,15 +2201,15 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         # otherwise a progressive file queued after the user manually
         # enabled the checkbox for a previous interlaced file would
         # incorrectly stay marked for deinterlacing.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.deinterlace_check.setChecked(True)
         window.add_files([self.progressive_clip])
         _wait_for_detection(window)
-        job = window.queue_list.topLevelItem(0).data(main.STATUS_COL, main.Qt.UserRole)
+        job = window.queue_list.topLevelItem(0).data(main_window.STATUS_COL, main_window.Qt.UserRole)
         self.assertFalse(job["deinterlace"])
 
     def test_removing_the_item_before_detection_finishes_does_not_crash(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.interlaced_clip])
         window.queue_list.clear()  # deletes the C++ item object, not just detaches it
         _wait_for_detection(window)  # must not raise from the now-deleted item
@@ -2224,7 +2225,7 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         # real, confirmed race before this fix: the ~20s detector landing
         # after that edit would silently revert it, with nothing to
         # indicate it had happened.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.interlaced_clip])
         item = window.queue_list.topLevelItem(0)
         item.setSelected(True)
@@ -2232,7 +2233,7 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         window.deinterlace_check.setChecked(False)  # user overrides before detection lands
         window._on_deinterlace_checkbox_changed()
         _wait_for_detection(window)
-        job = item.data(main.STATUS_COL, main.Qt.UserRole)
+        job = item.data(main_window.STATUS_COL, main_window.Qt.UserRole)
         self.assertFalse(job["deinterlace"], "manual override must survive the late detection result")
 
     def test_convert_defers_while_detection_is_still_pending(self):
@@ -2244,7 +2245,7 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         # and asks the user to click Start again), this fork defers and
         # auto-continues once detection lands -- the user already stated
         # their intent by clicking Convert once.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.interlaced_clip])
         self.assertTrue(window._detection_processes, "test assumes detection is still in flight")
         window._start()
@@ -2274,7 +2275,7 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         # len(_detection_processes) reported "analyzing 2 file(s)" for a
         # single added video. Confirmed a real, reported bug; this counts
         # _pending_analysis_items (one entry per video) instead.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.interlaced_clip])
         window._start()
         self.assertIn("1 video", window.status_label.text())
@@ -2290,7 +2291,7 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         # Undo/Redo all do -- so the "Preparing…" status text stayed
         # stuck at the old, smaller count. A state/UI consistency bug,
         # not another readiness race.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.interlaced_clip])
         window._start()
         self.assertIn("1 video", window.status_label.text())
@@ -2310,7 +2311,7 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         # without the _start_when_ready guard this pass adds, adding a
         # second video here would silently flip the disabled button's text
         # back to "Convert 2 Videos" mid-preparation.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.interlaced_clip])
         window._start()
         self.assertEqual(window.start_btn.text(), "Preparing…")
@@ -2325,7 +2326,7 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         # analysis was still outstanding kept a deferred Convert
         # "preparing" forever, waiting on a video that was never going
         # to run.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.interlaced_clip, self.progressive_clip])
         window._start()
         self.assertEqual(len(window._pending_analysis_items), 2)
@@ -2342,11 +2343,11 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         window.queue.stop()
 
     def test_clearing_queue_during_preparation_cancels_the_pending_convert(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.interlaced_clip])
         window._start()
         self.assertTrue(window._start_when_ready)
-        with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
+        with patch.object(main_window.QMessageBox, "question", return_value=main_window.QMessageBox.Yes):
             window._clear_queue()
         self.assertFalse(window._start_when_ready)
         # Cleared = empty queue = nothing to convert (2026-09-25 UI audit).
@@ -2361,7 +2362,7 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         self.assertTrue(window._queue_editable, "clearing must not have started a run")
 
     def test_undo_during_preparation_reconciles_the_pending_convert(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.interlaced_clip])
         window._start()
         self.assertTrue(window._start_when_ready)
@@ -2377,7 +2378,7 @@ class TestAutoDetectInterlaceOnAdd(unittest.TestCase):
         # while a Convert was already deferred could leave bookkeeping
         # for both stale, detached rows *and* the newly restored ones --
         # "Preparing -- analyzing 4 videos…" for 2 actually-visible ones.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.interlaced_clip])
         window.add_files([self.progressive_clip])
         window._undo()  # back down to just the interlaced clip; progressive_clip's own snapshot now sits on the redo stack
@@ -2418,7 +2419,7 @@ class TestProbeProcessesFailedToStart(unittest.TestCase):
             clip = tmpdir / "clip.mp4"
             clip.write_bytes(b"not a real video, never actually read")
 
-            window = main.MainWindow()
+            window = main_window.MainWindow()
             old_path = os.environ.get("PATH", "")
             os.environ["PATH"] = str(fakebin)
             try:
@@ -2435,9 +2436,9 @@ class TestProbeProcessesFailedToStart(unittest.TestCase):
                 "a probe that failed to start must not stay queued forever",
             )
             # And Start must not be permanently refused because of it.
-            window.queue_list.addTopLevelItem(main.QTreeWidgetItem(["dummy"]))
+            window.queue_list.addTopLevelItem(main_window.QTreeWidgetItem(["dummy"]))
             window.queue_list.topLevelItem(0).setData(
-                main.STATUS_COL, main.Qt.UserRole, {"path": clip, **window._current_settings()}
+                main_window.STATUS_COL, main_window.Qt.UserRole, {"path": clip, **window._current_settings()}
             )
             with patch.object(window.queue, "start") as mock_start:
                 window._start()
@@ -2479,7 +2480,7 @@ class TestOutputEditNormalization(unittest.TestCase):
     gets parsed by ffmpeg as a flag instead of a filename."""
 
     def test_tilde_expands_to_the_real_home_directory(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.output_edit.setText("~/some_transcoder_test_subdir")
         window._on_output_edit_changed()
         self.assertEqual(
@@ -2488,20 +2489,20 @@ class TestOutputEditNormalization(unittest.TestCase):
         self.assertNotIn("~", str(window.output_dir))
 
     def test_field_reflects_the_normalized_path_back(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.output_edit.setText("~/some_transcoder_test_subdir")
         window._on_output_edit_changed()
         self.assertEqual(window.output_edit.text(), "~/some_transcoder_test_subdir")
 
     def test_dash_prefixed_relative_path_resolves_to_a_safe_absolute_one(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.output_edit.setText("-render")
         window._on_output_edit_changed()
         self.assertTrue(window.output_dir.is_absolute())
         self.assertFalse(str(window.output_dir).startswith("-"))
 
     def test_empty_text_leaves_output_dir_unchanged(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         original = window.output_dir
         window.output_edit.setText("   ")
         window._on_output_edit_changed()
@@ -2510,7 +2511,7 @@ class TestOutputEditNormalization(unittest.TestCase):
 
 class TestVideoAudioLabels(unittest.TestCase):
     """Pure-logic tests for the queue table's codec/channel friendly-name
-    helpers -- worker.parse_probe_output's own field extraction is covered
+    helpers -- ffmpeg.parse_probe_output's own field extraction is covered
     in test_worker.TestSourceProbeHelpers; this is just the display layer."""
 
     def test_known_video_codec_gets_friendly_name(self):
@@ -2576,7 +2577,7 @@ class TestSettingsSummary(unittest.TestCase):
     def test_cpu_x264_job_is_labeled_distinctly_from_x265(self):
         # Real regression otherwise: settings_summary's encoder_label used
         # to be looked up directly in ENCODERS, which no longer has a row
-        # for "libx264" at all now that Codec is main.py's own separate
+        # for "libx264" at all now that Codec is main_window.py's own separate
         # Format control (constants.py's CPU row is just a placeholder
         # id) -- would have silently fallen back to the raw string
         # "libx264" instead of a friendly label.
@@ -2608,23 +2609,23 @@ class TestQueueRowTooltip(unittest.TestCase):
     it used to be."""
 
     def test_tooltip_includes_both_path_and_settings(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         job = {"path": Path("/tmp/some_clip.mkv"), **window._current_settings()}
         item = window._make_queue_row(job)
         window.queue_list.addTopLevelItem(item)
-        tooltip = item.toolTip(main.VIDEO_COL)
+        tooltip = item.toolTip(main_window.VIDEO_COL)
         self.assertIn(str(job["path"]), tooltip)
         self.assertIn(formatting.settings_summary(job), tooltip)
 
     def test_tooltip_refreshes_after_a_live_settings_edit(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         job = {"path": Path("/tmp/some_clip.mkv"), **window._current_settings()}
         item = window._make_queue_row(job)
         window.queue_list.addTopLevelItem(item)
         item.setSelected(True)
         window.quality_slider.setValue(window.quality_slider.value() + 1)
-        updated_job = item.data(main.STATUS_COL, main.Qt.UserRole)
-        self.assertIn(formatting.settings_summary(updated_job), item.toolTip(main.VIDEO_COL))
+        updated_job = item.data(main_window.STATUS_COL, main_window.Qt.UserRole)
+        self.assertIn(formatting.settings_summary(updated_job), item.toolTip(main_window.VIDEO_COL))
 
 
 class TestQueueContextMenu(unittest.TestCase):
@@ -2647,13 +2648,13 @@ class TestQueueContextMenu(unittest.TestCase):
         return next(a for a in menu.actions() if a.text() == text)
 
     def test_reveal_output_is_disabled_before_a_job_completes(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         job = {"path": Path("/tmp/clip.mkv"), **window._current_settings()}
         menu = window._build_queue_context_menu(job)
         self.assertFalse(self._find_action(menu, "Reveal Output File").isEnabled())
 
     def test_reveal_output_is_enabled_once_the_completed_file_exists(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with tempfile.TemporaryDirectory() as tmp:
             out_file = Path(tmp) / "done.mp4"
             out_file.write_bytes(b"fake output")
@@ -2665,7 +2666,7 @@ class TestQueueContextMenu(unittest.TestCase):
             self.assertTrue(self._find_action(menu, "Reveal Output File").isEnabled())
 
     def test_reveal_output_stays_disabled_if_the_file_was_since_deleted(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         job = {
             "path": Path("/tmp/clip.mkv"), **window._current_settings(),
             "_completed_output_path": "/tmp/does_not_exist_anymore_12345.mp4",
@@ -2674,7 +2675,7 @@ class TestQueueContextMenu(unittest.TestCase):
         self.assertFalse(self._find_action(menu, "Reveal Output File").isEnabled())
 
     def test_reveal_source_opens_the_containing_folder(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         job = {"path": Path("/tmp/some/dir/clip.mkv"), **window._current_settings()}
         menu = window._build_queue_context_menu(job)
         action = self._find_action(menu, "Reveal Source File")
@@ -2684,7 +2685,7 @@ class TestQueueContextMenu(unittest.TestCase):
         self.assertEqual(mock_open.call_args[0][0].toLocalFile(), str(job["path"].parent))
 
     def test_reveal_output_opens_the_containing_folder(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         job = {
             "path": Path("/tmp/clip.mkv"), **window._current_settings(),
             "_completed_output_path": "/tmp/out/clip.mp4",
@@ -2699,20 +2700,20 @@ class TestQueueContextMenu(unittest.TestCase):
     def test_no_action_chosen_does_nothing(self):
         # The real "dismissed the menu without picking anything" case --
         # QMenu.exec() returns None then.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         job = {"path": Path("/tmp/clip.mkv"), **window._current_settings()}
         with patch.object(queue_controller.QDesktopServices, "openUrl") as mock_open:
             window._handle_queue_context_action(job, None)
         mock_open.assert_not_called()
 
     def test_completed_output_path_is_recorded_on_job_finished(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         job = {"path": Path("/tmp/clip.mkv"), **window._current_settings()}
         item = window._make_queue_row(job)
         window.queue_list.addTopLevelItem(item)
         window._current_running_item = item
         window._on_job_finished("/tmp/clip.mkv", "/tmp/out/clip.mp4")
-        updated = item.data(main.STATUS_COL, main.Qt.UserRole)
+        updated = item.data(main_window.STATUS_COL, main_window.Qt.UserRole)
         self.assertEqual(updated["_completed_output_path"], "/tmp/out/clip.mp4")
 
 
@@ -2726,8 +2727,8 @@ class TestStatusIconsFollowTheme(unittest.TestCase):
         return icon.pixmap(16, 16).toImage()
 
     def test_existing_status_icons_follow_a_theme_switch(self):
-        window = main.MainWindow()
-        assets = Path(main.__file__).parent / "assets"
+        window = main_window.MainWindow()
+        assets = Path(main_window.__file__).parent / "assets"
         with patch.object(window._qsettings, "setValue"):
             window._apply_theme("dark")
             done = _add_dummy_item(window, "a.mkv")
@@ -2737,29 +2738,29 @@ class TestStatusIconsFollowTheme(unittest.TestCase):
             window._current_running_item = failed
             window._on_job_failed("/nonexistent/b.mkv", "boom")
             for item, name in ((done, "status_done"), (failed, "status_warning")):
-                self.assertEqual(self._image(item.icon(main.STATUS_COL)),
+                self.assertEqual(self._image(item.icon(main_window.STATUS_COL)),
                                  self._image(QIcon(str(assets / f"{name}_dark.svg"))))
             window._apply_theme("light")
         for item, name in ((done, "status_done"), (failed, "status_warning")):
             with self.subTest(icon=name):
-                self.assertEqual(self._image(item.icon(main.STATUS_COL)),
+                self.assertEqual(self._image(item.icon(main_window.STATUS_COL)),
                                  self._image(QIcon(str(assets / f"{name}_light.svg"))))
 
     def test_desktop_theme_change_redraws_status_icons_when_following_system(self):
-        window = main.MainWindow()
-        assets = Path(main.__file__).parent / "assets"
+        window = main_window.MainWindow()
+        assets = Path(main_window.__file__).parent / "assets"
         window._theme_choice = "system"
-        with patch.object(main, "_resolve_theme", return_value="dark"):
+        with patch.object(main_window, "_resolve_theme", return_value="dark"):
             item = _add_dummy_item(window, "a.mkv")
             window._current_running_item = item
             window._on_job_finished("/nonexistent/a.mkv", "/nonexistent/a.mp4")
-        with patch.object(main, "_resolve_theme", return_value="light"):
+        with patch.object(main_window, "_resolve_theme", return_value="light"):
             window._on_system_theme_changed(None)
-        self.assertEqual(self._image(item.icon(main.STATUS_COL)),
+        self.assertEqual(self._image(item.icon(main_window.STATUS_COL)),
                          self._image(QIcon(str(assets / "status_done_light.svg"))))
 
     def test_cleared_status_stays_cleared_after_a_theme_switch(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with patch.object(window._qsettings, "setValue"):
             window._apply_theme("dark")
             item = _add_dummy_item(window, "a.mkv")
@@ -2767,7 +2768,7 @@ class TestStatusIconsFollowTheme(unittest.TestCase):
             window._on_job_finished("/nonexistent/a.mkv", "/nonexistent/a.mp4")
             window._clear_status_icon(item)
             window._apply_theme("light")
-        self.assertTrue(item.icon(main.STATUS_COL).isNull())
+        self.assertTrue(item.icon(main_window.STATUS_COL).isNull())
 
 
 class TestRefreshVideoCell(unittest.TestCase):
@@ -2781,56 +2782,56 @@ class TestRefreshVideoCell(unittest.TestCase):
     VIDEO_SUBTITLE_ROLE itself -- that's the composed output only."""
 
     def test_codec_label_landing_first_then_deinterlace_flag(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         item = _add_dummy_item(window, "a.mkv")
-        item.setData(main.VIDEO_COL, queue_controller._RAW_VIDEO_LABEL_ROLE, "HEVC 1920x1080")
+        item.setData(main_window.VIDEO_COL, queue_controller._RAW_VIDEO_LABEL_ROLE, "HEVC 1920x1080")
         window._refresh_video_cell(item)
-        self.assertEqual(item.data(main.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE), "HEVC 1920x1080")
-        job = item.data(main.STATUS_COL, main.Qt.UserRole)
+        self.assertEqual(item.data(main_window.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE), "HEVC 1920x1080")
+        job = item.data(main_window.STATUS_COL, main_window.Qt.UserRole)
         job["deinterlace"] = True
-        item.setData(main.STATUS_COL, main.Qt.UserRole, job)
+        item.setData(main_window.STATUS_COL, main_window.Qt.UserRole, job)
         window._refresh_video_cell(item)
         self.assertEqual(
-            item.data(main.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE), "HEVC 1920x1080 (interlaced)"
+            item.data(main_window.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE), "HEVC 1920x1080 (interlaced)"
         )
 
     def test_deinterlace_flag_landing_first_then_codec_label(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         item = _add_dummy_item(window, "a.mkv")
-        job = item.data(main.STATUS_COL, main.Qt.UserRole)
+        job = item.data(main_window.STATUS_COL, main_window.Qt.UserRole)
         job["deinterlace"] = True
-        item.setData(main.STATUS_COL, main.Qt.UserRole, job)
+        item.setData(main_window.STATUS_COL, main_window.Qt.UserRole, job)
         window._refresh_video_cell(item)
-        self.assertIsNone(item.data(main.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE))  # nothing to show yet
-        item.setData(main.VIDEO_COL, queue_controller._RAW_VIDEO_LABEL_ROLE, "HEVC 1920x1080")
+        self.assertIsNone(item.data(main_window.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE))  # nothing to show yet
+        item.setData(main_window.VIDEO_COL, queue_controller._RAW_VIDEO_LABEL_ROLE, "HEVC 1920x1080")
         window._refresh_video_cell(item)
         self.assertEqual(
-            item.data(main.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE), "HEVC 1920x1080 (interlaced)"
+            item.data(main_window.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE), "HEVC 1920x1080 (interlaced)"
         )
 
     def test_progressive_source_gets_no_suffix(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         item = _add_dummy_item(window, "a.mkv")  # deinterlace defaults False
-        item.setData(main.VIDEO_COL, queue_controller._RAW_VIDEO_LABEL_ROLE, "H.264 1280x720")
+        item.setData(main_window.VIDEO_COL, queue_controller._RAW_VIDEO_LABEL_ROLE, "H.264 1280x720")
         window._refresh_video_cell(item)
-        self.assertEqual(item.data(main.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE), "H.264 1280x720")
+        self.assertEqual(item.data(main_window.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE), "H.264 1280x720")
 
     def test_audio_label_folds_into_the_same_subtitle(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         item = _add_dummy_item(window, "a.mkv")
-        item.setData(main.VIDEO_COL, queue_controller._RAW_VIDEO_LABEL_ROLE, "H.264 1280x720")
-        item.setData(main.VIDEO_COL, queue_controller._RAW_AUDIO_LABEL_ROLE, "AAC Stereo")
+        item.setData(main_window.VIDEO_COL, queue_controller._RAW_VIDEO_LABEL_ROLE, "H.264 1280x720")
+        item.setData(main_window.VIDEO_COL, queue_controller._RAW_AUDIO_LABEL_ROLE, "AAC Stereo")
         window._refresh_video_cell(item)
-        subtitle = item.data(main.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE)
+        subtitle = item.data(main_window.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE)
         self.assertIn("H.264 1280x720", subtitle)
         self.assertIn("AAC Stereo", subtitle)
 
     def test_filename_title_is_never_touched_by_any_of_this(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         item = _add_dummy_item(window, "a.mkv")
-        item.setData(main.VIDEO_COL, queue_controller._RAW_VIDEO_LABEL_ROLE, "HEVC 1920x1080")
+        item.setData(main_window.VIDEO_COL, queue_controller._RAW_VIDEO_LABEL_ROLE, "HEVC 1920x1080")
         window._refresh_video_cell(item)
-        self.assertEqual(item.text(main.VIDEO_COL), "a.mkv")
+        self.assertEqual(item.text(main_window.VIDEO_COL), "a.mkv")
 
 
 class TestVideoCellDelegateElision(unittest.TestCase):
@@ -2843,14 +2844,14 @@ class TestVideoCellDelegateElision(unittest.TestCase):
     exactly as long as they started."""
 
     def test_paint_does_not_truncate_the_stored_title_or_subtitle(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         long_name = "Very_Long_Production_Master_Final_Really_Actually_Final_v3.mkv"
         item = _add_dummy_item(window, long_name)
         long_subtitle = "3840x2160 HEVC 10-bit  ·  E-AC-3 5.1  ·  deinterlaced"
-        item.setData(main.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE, long_subtitle)
+        item.setData(main_window.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE, long_subtitle)
 
-        delegate = window.queue_list.itemDelegateForColumn(main.VIDEO_COL)
-        index = window.queue_list.indexFromItem(item, main.VIDEO_COL)
+        delegate = window.queue_list.itemDelegateForColumn(main_window.VIDEO_COL)
+        index = window.queue_list.indexFromItem(item, main_window.VIDEO_COL)
         option = QStyleOptionViewItem()
         option.rect = QRect(0, 0, 80, 40)  # deliberately narrower than either string needs
 
@@ -2859,8 +2860,8 @@ class TestVideoCellDelegateElision(unittest.TestCase):
         delegate.paint(painter, option, index)
         painter.end()
 
-        self.assertEqual(item.text(main.VIDEO_COL), long_name)
-        self.assertEqual(item.data(main.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE), long_subtitle)
+        self.assertEqual(item.text(main_window.VIDEO_COL), long_name)
+        self.assertEqual(item.data(main_window.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE), long_subtitle)
 
     def test_paint_actually_draws_the_row_icon(self):
         # Real, confirmed bug caught by screenshot, not by any exception or
@@ -2881,13 +2882,13 @@ class TestVideoCellDelegateElision(unittest.TestCase):
         # regardless of window.show()), which would silently zero out
         # icon_rect's area here regardless of whether the real paint()-time
         # copy bug above is fixed or not.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         item = _add_dummy_item(window, "a.mkv")
-        item.setIcon(main.STATUS_COL, window._themed_icon("status_done"))
+        item.setIcon(main_window.STATUS_COL, window._themed_icon("status_done"))
 
-        delegate = window.queue_list.itemDelegateForColumn(main.VIDEO_COL)
-        index = window.queue_list.indexFromItem(item, main.VIDEO_COL)
+        delegate = window.queue_list.itemDelegateForColumn(main_window.VIDEO_COL)
+        index = window.queue_list.indexFromItem(item, main_window.VIDEO_COL)
         option = QStyleOptionViewItem()
         option.rect = QRect(0, 0, 260, 40)
         option.decorationSize = QSize(16, 16)
@@ -2912,23 +2913,23 @@ class TestMakeQueueRow(unittest.TestCase):
     TestSourceMetadataOnAdd below."""
 
     def test_file_name_and_size_are_set_immediately(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_gui_test_"))
         try:
             clip = tmpdir / "movie.mkv"
             clip.write_bytes(b"x" * 2048)
             job = {"path": clip, **window._current_settings()}
             item = window._make_queue_row(job)
-            self.assertEqual(item.text(main.VIDEO_COL), "movie.mkv")
-            self.assertEqual(item.text(main.SIZE_COL), "2.0KB")
+            self.assertEqual(item.text(main_window.VIDEO_COL), "movie.mkv")
+            self.assertEqual(item.text(main_window.SIZE_COL), "2.0KB")
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_output_settings_are_not_shown_in_any_cell(self):
         # The whole point of this table: output settings (encoder, quality,
         # container, ...) live in and edit from the right-hand panel, not
-        # duplicated here -- see _make_queue_row's own comment in main.py.
-        window = main.MainWindow()
+        # duplicated here -- see _make_queue_row's own comment in main_window.py.
+        window = main_window.MainWindow()
         job = {"path": Path("movie.mkv"), **window._current_settings()}
         item = window._make_queue_row(job)
         all_text = " ".join(item.text(c) for c in range(window.queue_list.columnCount()))
@@ -2936,10 +2937,10 @@ class TestMakeQueueRow(unittest.TestCase):
         self.assertNotIn(job["encoder"], all_text)
 
     def test_missing_file_size_does_not_crash(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         job = {"path": Path("/nonexistent/movie.mkv"), **window._current_settings()}
         item = window._make_queue_row(job)  # must not raise
-        self.assertEqual(item.text(main.SIZE_COL), "")
+        self.assertEqual(item.text(main_window.SIZE_COL), "")
 
 
 class TestSourceMetadataOnAdd(unittest.TestCase):
@@ -2964,31 +2965,31 @@ class TestSourceMetadataOnAdd(unittest.TestCase):
         # visible column (Audio no longer has one at all -- folded in
         # here alongside video, see _refresh_video_cell in
         # queue_controller.py).
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.clip])
         _wait_for_detection(window)
         item = window.queue_list.topLevelItem(0)
-        self.assertEqual(item.text(main.VIDEO_COL), self.clip.name)
-        subtitle = item.data(main.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE)
+        self.assertEqual(item.text(main_window.VIDEO_COL), self.clip.name)
+        subtitle = item.data(main_window.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE)
         self.assertIn("H.264", subtitle)
         self.assertIn("320x240", subtitle)
-        self.assertEqual(item.text(main.DURATION_COL), "0:01")
+        self.assertEqual(item.text(main_window.DURATION_COL), "0:01")
         self.assertIn("AAC", subtitle)
 
     def test_probe_does_not_affect_the_jobs_output_settings(self):
         # width/height on the job dict are the chosen OUTPUT target
         # resolution -- the source probe must never overwrite them with the
         # source file's own (unrelated) dimensions.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         settings = window._current_settings()
         window.add_files([self.clip])
         _wait_for_detection(window)
-        job = window.queue_list.topLevelItem(0).data(main.STATUS_COL, main.Qt.UserRole)
+        job = window.queue_list.topLevelItem(0).data(main_window.STATUS_COL, main_window.Qt.UserRole)
         self.assertEqual(job["width"], settings["width"])
         self.assertEqual(job["height"], settings["height"])
 
     def test_removing_the_item_before_probe_finishes_does_not_crash(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.clip])
         window.queue_list.clear()  # deletes the C++ item object, not just detaches it
         _wait_for_detection(window)  # must not raise from the now-deleted item
@@ -3000,64 +3001,64 @@ class TestLiveSelectionEditing(unittest.TestCase):
     while row(s) are selected applies live."""
 
     def test_selecting_an_item_populates_controls_from_its_settings(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         item = _add_dummy_item(window, "a.mkv", quality_value=41)
         item.setSelected(True)
         self.assertEqual(window.quality_slider.value(), 41)
 
     def test_changing_a_control_applies_live_to_the_selected_item(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         item = _add_dummy_item(window, "a.mkv")
         item.setSelected(True)
         window.quality_slider.setValue(window.quality_slider.value() + 3)
-        job = item.data(main.STATUS_COL, main.Qt.UserRole)
+        job = item.data(main_window.STATUS_COL, main_window.Qt.UserRole)
         self.assertEqual(job["quality_value"], window.quality_slider.value())
 
     def test_changing_a_control_does_not_touch_unselected_items(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         item_a = _add_dummy_item(window, "a.mkv")
         item_b = _add_dummy_item(window, "b.mkv")
         item_a.setSelected(True)
-        before_b = dict(item_b.data(main.STATUS_COL, main.Qt.UserRole))
+        before_b = dict(item_b.data(main_window.STATUS_COL, main_window.Qt.UserRole))
         window.quality_slider.setValue(window.quality_slider.value() + 3)
-        self.assertEqual(item_b.data(main.STATUS_COL, main.Qt.UserRole), before_b)
+        self.assertEqual(item_b.data(main_window.STATUS_COL, main_window.Qt.UserRole), before_b)
 
     def test_selecting_multiple_differently_configured_items_does_not_homogenize_them(self):
         # Regression: populating controls from item_a on selection must not
         # cascade into overwriting item_b's (deliberately different) settings.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         item_a = _add_dummy_item(window, "a.mkv", quality_value=20)
         item_b = _add_dummy_item(window, "b.mkv", quality_value=35)
-        before_b = dict(item_b.data(main.STATUS_COL, main.Qt.UserRole))
+        before_b = dict(item_b.data(main_window.STATUS_COL, main_window.Qt.UserRole))
         item_a.setSelected(True)
         item_b.setSelected(True)
-        self.assertEqual(item_b.data(main.STATUS_COL, main.Qt.UserRole), before_b)
+        self.assertEqual(item_b.data(main_window.STATUS_COL, main_window.Qt.UserRole), before_b)
 
     def test_multi_select_then_control_change_applies_to_all_selected(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         item_a = _add_dummy_item(window, "a.mkv", quality_value=20)
         item_b = _add_dummy_item(window, "b.mkv", quality_value=35)
         item_a.setSelected(True)
         item_b.setSelected(True)
         window.quality_slider.setValue(17)
-        self.assertEqual(item_a.data(main.STATUS_COL, main.Qt.UserRole)["quality_value"], 17)
-        self.assertEqual(item_b.data(main.STATUS_COL, main.Qt.UserRole)["quality_value"], 17)
+        self.assertEqual(item_a.data(main_window.STATUS_COL, main_window.Qt.UserRole)["quality_value"], 17)
+        self.assertEqual(item_b.data(main_window.STATUS_COL, main_window.Qt.UserRole)["quality_value"], 17)
 
     def test_locked_queue_during_a_run_ignores_selection_edits(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         item = _add_dummy_item(window, "a.mkv")
         item.setSelected(True)
         window._set_queue_editable(False)
-        before = dict(item.data(main.STATUS_COL, main.Qt.UserRole))
+        before = dict(item.data(main_window.STATUS_COL, main_window.Qt.UserRole))
         window.quality_slider.setValue(window.quality_slider.value() + 3)
-        self.assertEqual(item.data(main.STATUS_COL, main.Qt.UserRole), before)
+        self.assertEqual(item.data(main_window.STATUS_COL, main_window.Qt.UserRole), before)
 
 
 class TestQueueLockingDuringRun(unittest.TestCase):
     def test_set_queue_editable_toggles_remove_and_clear_only(self):
         # Add Files is deliberately excluded -- see TestLiveAppendDuringRun,
         # it's meant to keep working during a run.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._set_queue_editable(False)
         self.assertFalse(window.remove_btn.isEnabled())
         self.assertFalse(window.clear_btn.isEnabled())
@@ -3067,15 +3068,15 @@ class TestQueueLockingDuringRun(unittest.TestCase):
         self.assertTrue(window._queue_editable)
 
     def test_add_files_button_stays_enabled_through_a_run(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._set_queue_editable(False)
         self.assertTrue(window.add_files_btn.isEnabled())
 
     def test_start_locks_remove_and_clear_before_handing_off_to_the_engine(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         job = {"path": Path("dummy.mkv"), **window._current_settings()}
-        window.queue_list.addTopLevelItem(main.QTreeWidgetItem(["dummy"]))
-        window.queue_list.topLevelItem(0).setData(main.STATUS_COL, main.Qt.UserRole, job)
+        window.queue_list.addTopLevelItem(main_window.QTreeWidgetItem(["dummy"]))
+        window.queue_list.topLevelItem(0).setData(main_window.STATUS_COL, main_window.Qt.UserRole, job)
         with patch.object(window.queue, "start") as mock_start:
             window._start()
             mock_start.assert_called_once()
@@ -3091,7 +3092,7 @@ class TestQueueLockingDuringRun(unittest.TestCase):
         # could end up not matching TranscodeQueue's own fixed execution
         # order, and job_started's position-based _running_items lookup
         # could then attribute a status icon to the wrong row.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertFalse(window.queue_list.reorder_locked)
         window._set_queue_editable(False)
         self.assertTrue(window.queue_list.reorder_locked)
@@ -3099,7 +3100,7 @@ class TestQueueLockingDuringRun(unittest.TestCase):
         self.assertFalse(window.queue_list.reorder_locked)
 
     def test_on_all_finished_unlocks_queue(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._set_queue_editable(False)
         window._on_all_finished()
         self.assertTrue(window.clear_btn.isEnabled())
@@ -3107,22 +3108,22 @@ class TestQueueLockingDuringRun(unittest.TestCase):
 
 
 class TestPauseResumeGUI(unittest.TestCase):
-    """GUI-side wiring for Pause -- worker.py's own request_pause/resume/
+    """GUI-side wiring for Pause -- ffmpeg.py's own request_pause/resume/
     stop-while-paused mechanics are covered directly in test_worker.py's
     TestPauseResume; these confirm the checkbox, button text/state, and
     status label reflect that correctly."""
 
     def _running_window(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         job = {"path": Path("dummy.mkv"), **window._current_settings()}
-        window.queue_list.addTopLevelItem(main.QTreeWidgetItem(["dummy"]))
-        window.queue_list.topLevelItem(0).setData(main.STATUS_COL, main.Qt.UserRole, job)
+        window.queue_list.addTopLevelItem(main_window.QTreeWidgetItem(["dummy"]))
+        window.queue_list.topLevelItem(0).setData(main_window.STATUS_COL, main_window.Qt.UserRole, job)
         with patch.object(window.queue, "start"):
             window._start()
         return window
 
     def test_pause_checkbox_disabled_until_a_run_starts(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertFalse(window.pause_after_check.isEnabled())
 
     def test_start_enables_the_pause_checkbox(self):
@@ -3173,7 +3174,7 @@ class TestPauseResumeGUI(unittest.TestCase):
 
     def test_on_paused_reports_the_correct_remaining_count(self):
         window = self._running_window()
-        a, b, c = (main.QTreeWidgetItem(["a"]), main.QTreeWidgetItem(["b"]), main.QTreeWidgetItem(["c"]))
+        a, b, c = (main_window.QTreeWidgetItem(["a"]), main_window.QTreeWidgetItem(["b"]), main_window.QTreeWidgetItem(["c"]))
         window._running_items = [a, b, c]
         window._current_running_item = a  # b and c still remaining
         window._on_paused()
@@ -3214,7 +3215,7 @@ class TestPauseResumeGUI(unittest.TestCase):
         self.assertFalse(window.pause_after_check.isEnabled())
 
     def test_cancel_while_genuinely_paused_says_stopped_not_complete(self):
-        # Real, reported-live bug: TranscodeQueue.stop() (worker.py) isn't
+        # Real, reported-live bug: TranscodeQueue.stop() (ffmpeg.py) isn't
         # always async -- with no live process to terminate (genuinely
         # paused between jobs), it emits all_finished synchronously, right
         # there inside stop(), via a plain same-thread connection to
@@ -3239,7 +3240,7 @@ class TestRunPhaseVisuals(unittest.TestCase):
     state each phase produces, confirmed by screenshot during design."""
 
     def test_idle_hides_progress_eta_stats_and_stop(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._apply_run_phase_visuals("idle")
         self.assertFalse(window.progress_bar.isVisible())
@@ -3253,7 +3254,7 @@ class TestRunPhaseVisuals(unittest.TestCase):
 
     def test_idle_with_a_queued_video_enables_convert(self):
         from PySide6.QtWidgets import QTreeWidgetItem
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window.queue_list.addTopLevelItem(QTreeWidgetItem(["clip.mkv"]))
         window._apply_run_phase_visuals("idle")
@@ -3262,7 +3263,7 @@ class TestRunPhaseVisuals(unittest.TestCase):
         self.assertEqual(window.start_btn.toolTip(), "")
 
     def test_preparing_shows_indeterminate_progress_and_hides_stop(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._apply_run_phase_visuals("preparing")
         self.assertTrue(window.progress_bar.isVisible())
@@ -3275,7 +3276,7 @@ class TestRunPhaseVisuals(unittest.TestCase):
         self.assertFalse(window.start_btn.isEnabled())
 
     def test_converting_shows_determinate_progress_and_cancel(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._apply_run_phase_visuals("preparing")  # leaves the bar indeterminate
         window._apply_run_phase_visuals("converting")
@@ -3294,7 +3295,7 @@ class TestRunPhaseVisuals(unittest.TestCase):
         self.assertFalse(window.start_btn.isEnabled())
 
     def test_paused_leaves_progress_value_frozen(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._apply_run_phase_visuals("converting")
         window.progress_bar.setValue(630)
@@ -3306,7 +3307,7 @@ class TestRunPhaseVisuals(unittest.TestCase):
         self.assertEqual(window.stop_btn.text(), "Cancel")
 
     def test_finished_hides_progress_and_shows_open_folder(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._run_completed_count = 4
         window._run_total_input_bytes = 12_400_000_000
@@ -3327,7 +3328,7 @@ class TestRunPhaseVisuals(unittest.TestCase):
 
 class TestRunTotalsAccumulation(unittest.TestCase):
     def test_on_job_finished_accumulates_run_totals(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         tmpdir = Path(tempfile.mkdtemp(prefix="transcoder_gui_test_"))
         try:
             src1, out1 = tmpdir / "a_in.mkv", tmpdir / "a_out.mp4"
@@ -3352,7 +3353,7 @@ class TestRunTotalsAccumulation(unittest.TestCase):
         # A transient stat() failure on one output file shouldn't uncount
         # a video that genuinely finished converting -- _run_completed_
         # count and the byte totals are deliberately independent.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         item = _add_dummy_item(window, "a.mkv")
         window._current_running_item = item
         window._on_job_finished("/nonexistent/in.mkv", "/nonexistent/out.mp4")
@@ -3361,13 +3362,13 @@ class TestRunTotalsAccumulation(unittest.TestCase):
         self.assertEqual(window._run_total_output_bytes, 0)
 
     def test_begin_conversion_resets_run_totals(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._run_completed_count = 3
         window._run_total_input_bytes = 999
         window._run_total_output_bytes = 111
         job = {"path": Path("dummy.mkv"), **window._current_settings()}
-        window.queue_list.addTopLevelItem(main.QTreeWidgetItem(["dummy"]))
-        window.queue_list.topLevelItem(0).setData(main.STATUS_COL, main.Qt.UserRole, job)
+        window.queue_list.addTopLevelItem(main_window.QTreeWidgetItem(["dummy"]))
+        window.queue_list.topLevelItem(0).setData(main_window.STATUS_COL, main_window.Qt.UserRole, job)
         with patch.object(window.queue, "start"):
             window._begin_conversion()
         self.assertEqual(window._run_completed_count, 0)
@@ -3377,7 +3378,7 @@ class TestRunTotalsAccumulation(unittest.TestCase):
 
 class TestOnAllFinishedSummary(unittest.TestCase):
     def test_shows_summary_when_jobs_completed(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._run_completed_count = 4
         window._on_all_finished()
@@ -3385,7 +3386,7 @@ class TestOnAllFinishedSummary(unittest.TestCase):
         self.assertEqual(window.status_label.text(), "✓ Conversion Complete")
 
     def test_falls_back_to_idle_when_nothing_completed(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._run_completed_count = 0
         window._on_all_finished()
@@ -3405,7 +3406,7 @@ class TestOnAllFinishedSummary(unittest.TestCase):
         # No finished-summary controls either way (nothing to summarize
         # with 0 successes), just a truthful status line instead of a
         # blank one.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._run_completed_count = 0
         window._run_cancelled = True
@@ -3414,7 +3415,7 @@ class TestOnAllFinishedSummary(unittest.TestCase):
         self.assertEqual(window.status_label.text(), "Conversion Stopped")
 
     def test_zero_success_all_failed_says_failed_not_idle(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._run_completed_count = 0
         window._run_failed_count = 3
@@ -3427,7 +3428,7 @@ class TestOnAllFinishedSummary(unittest.TestCase):
         # (or the rest failed) still shows "2 videos converted" -- a real
         # result worth showing, not discarded just because the run didn't
         # finish everything it started with.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._run_completed_count = 2
         window._on_all_finished()
@@ -3437,11 +3438,11 @@ class TestOnAllFinishedSummary(unittest.TestCase):
     def test_stop_sets_the_cancelled_flag_for_a_real_click(self):
         # Confirms _stop() itself (not just a hand-set flag) is what marks
         # a run cancelled -- the full real path a Cancel click takes.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         job = {"path": Path("dummy.mkv"), **window._current_settings()}
-        window.queue_list.addTopLevelItem(main.QTreeWidgetItem(["dummy"]))
-        window.queue_list.topLevelItem(0).setData(main.STATUS_COL, main.Qt.UserRole, job)
+        window.queue_list.addTopLevelItem(main_window.QTreeWidgetItem(["dummy"]))
+        window.queue_list.topLevelItem(0).setData(main_window.STATUS_COL, main_window.Qt.UserRole, job)
         with patch.object(window.queue, "start"):
             window._start()
         self.assertFalse(window._run_cancelled)
@@ -3454,7 +3455,7 @@ class TestOnAllFinishedSummary(unittest.TestCase):
         # "the whole run succeeded" from "the user cancelled after some
         # jobs already finished" -- both used to say "✓ Conversion
         # Complete", which is misleading for the latter.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._run_completed_count = 2
         window._run_cancelled = True
@@ -3462,7 +3463,7 @@ class TestOnAllFinishedSummary(unittest.TestCase):
         self.assertEqual(window.status_label.text(), "Conversion Stopped")
 
     def test_run_with_failures_says_completed_with_issues(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._run_completed_count = 3
         window._run_failed_count = 1
@@ -3473,7 +3474,7 @@ class TestOnAllFinishedSummary(unittest.TestCase):
     def test_cancelled_takes_priority_over_failed_in_the_heading(self):
         # A job failed, then the user cancelled before the rest finished --
         # "the user stopped it" is the more relevant fact to lead with.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._run_completed_count = 1
         window._run_failed_count = 1
@@ -3482,7 +3483,7 @@ class TestOnAllFinishedSummary(unittest.TestCase):
         self.assertEqual(window.status_label.text(), "Conversion Stopped")
 
     def test_full_success_still_says_complete(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._run_completed_count = 4
         window._run_failed_count = 0
@@ -3507,7 +3508,7 @@ class TestVideoAudioTabAlignment(unittest.TestCase):
     changes."""
 
     def test_first_card_top_matches_between_video_and_audio_tabs(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.resize(1240, 900)
         window.show()
         for _ in range(5):
@@ -3547,13 +3548,13 @@ class TestHideIdleStatus(unittest.TestCase):
         # no-GPU box (e.g. CI) before that startup notice was removed
         # entirely (CPU-only Automatic is a silent, valid outcome now,
         # not something to greet a non-technical user with).
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         self.assertEqual(window.status_label.text(), "Idle")
         self.assertFalse(window.status_label.isVisible())
 
     def test_a_real_status_is_shown(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._set_status("Queue is empty")
         self.assertTrue(window.status_label.isVisible())
@@ -3562,7 +3563,7 @@ class TestHideIdleStatus(unittest.TestCase):
         # Genuinely informative even at rest -- a pending one-shot intent
         # the user just set -- so the general "Idle" hiding rule must not
         # apply here.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window.pause_after_check.setChecked(True)
         window._set_status("Idle")
@@ -3579,7 +3580,7 @@ class TestFinishedSummaryDismissal(unittest.TestCase):
     stomping a live run's button state."""
 
     def _finished_window(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._run_completed_count = 1
         window._on_all_finished()
@@ -3605,7 +3606,7 @@ class TestFinishedSummaryDismissal(unittest.TestCase):
     def test_clear_queue_dismisses_the_finished_summary(self):
         window = self._finished_window()
         _add_dummy_item(window, "a.mkv")
-        with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
+        with patch.object(main_window.QMessageBox, "question", return_value=main_window.QMessageBox.Yes):
             window._clear_queue()
         self.assertFalse(window.open_folder_btn.isVisible())
 
@@ -3641,7 +3642,7 @@ class TestFinishedSummaryDismissal(unittest.TestCase):
         # notice this test used to use as its example was removed
         # entirely). Only a genuine finished-summary dismissal should
         # reset it.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._set_status("Some other status")
         _add_dummy_item(window, "a.mkv")
@@ -3667,8 +3668,8 @@ class TestQueueDragReorder(unittest.TestCase):
         # setSelected() in _drop_at) -- give each a minimal real job dict,
         # same shape TestQueueLockingDuringRun's fake rows use.
         for name in names:
-            item = main.QTreeWidgetItem([name])
-            item.setData(main.STATUS_COL, Qt.UserRole,
+            item = main_window.QTreeWidgetItem([name])
+            item.setData(main_window.STATUS_COL, Qt.UserRole,
                          {"path": Path(name), **window._current_settings()})
             window.queue_list.addTopLevelItem(item)
 
@@ -3694,7 +3695,7 @@ class TestQueueDragReorder(unittest.TestCase):
         return event
 
     def test_dropping_squarely_on_a_row_does_not_delete_it_reorders_instead(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         self._add_rows(window, ["a", "b", "c"])
         target_rect = window.queue_list.visualItemRect(window.queue_list.topLevelItem(2))
@@ -3702,7 +3703,7 @@ class TestQueueDragReorder(unittest.TestCase):
         self.assertEqual(self._names(window), ["b", "c", "a"])
 
     def test_dropping_on_the_top_half_of_a_row_inserts_before_it(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         self._add_rows(window, ["a", "b", "c"])
         target_rect = window.queue_list.visualItemRect(window.queue_list.topLevelItem(0))
@@ -3711,7 +3712,7 @@ class TestQueueDragReorder(unittest.TestCase):
         self.assertEqual(self._names(window), ["c", "a", "b"])
 
     def test_dropping_below_the_last_row_appends_at_the_end(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         self._add_rows(window, ["a", "b", "c"])
         last_rect = window.queue_list.visualItemRect(window.queue_list.topLevelItem(2))
@@ -3720,7 +3721,7 @@ class TestQueueDragReorder(unittest.TestCase):
         self.assertEqual(self._names(window), ["b", "c", "a"])
 
     def test_multi_selected_rows_preserve_relative_order_when_reordered(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         self._add_rows(window, ["a", "b", "c", "d"])
         last_rect = window.queue_list.visualItemRect(window.queue_list.topLevelItem(3))
@@ -3729,7 +3730,7 @@ class TestQueueDragReorder(unittest.TestCase):
         self.assertEqual(self._names(window), ["b", "d", "a", "c"])
 
     def test_dropping_a_selected_row_onto_another_selected_row_keeps_every_row(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         self._add_rows(window, ["a", "b", "c"])
         target_rect = window.queue_list.visualItemRect(window.queue_list.topLevelItem(2))
@@ -3738,7 +3739,7 @@ class TestQueueDragReorder(unittest.TestCase):
         self.assertEqual(window.queue_list.topLevelItemCount(), 3)
 
     def test_reorder_locked_blocks_the_drop_entirely(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         self._add_rows(window, ["a", "b", "c"])
         window.queue_list.reorder_locked = True
@@ -3765,7 +3766,7 @@ class TestQueueDragHoverState(unittest.TestCase):
         return mime
 
     def test_valid_file_drag_sets_dragActive_true_on_enter(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         mime = self._local_file_mime()
         event = QDragEnterEvent(QPoint(10, 10), Qt.CopyAction, mime, Qt.NoButton, Qt.NoModifier)
@@ -3773,7 +3774,7 @@ class TestQueueDragHoverState(unittest.TestCase):
         self.assertTrue(window.queue_list.property("dragActive"))
 
     def test_dragActive_stays_true_through_move(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         mime = self._local_file_mime()
         enter = QDragEnterEvent(QPoint(10, 10), Qt.CopyAction, mime, Qt.NoButton, Qt.NoModifier)
@@ -3783,7 +3784,7 @@ class TestQueueDragHoverState(unittest.TestCase):
         self.assertTrue(window.queue_list.property("dragActive"))
 
     def test_dragActive_clears_on_leave(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         mime = self._local_file_mime()
         enter = QDragEnterEvent(QPoint(10, 10), Qt.CopyAction, mime, Qt.NoButton, Qt.NoModifier)
@@ -3793,7 +3794,7 @@ class TestQueueDragHoverState(unittest.TestCase):
         self.assertFalse(window.queue_list.property("dragActive"))
 
     def test_dragActive_clears_on_drop(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         mime = self._local_file_mime()
         enter = QDragEnterEvent(QPoint(10, 10), Qt.CopyAction, mime, Qt.NoButton, Qt.NoModifier)
@@ -3809,7 +3810,7 @@ class TestQueueDragHoverState(unittest.TestCase):
         # so the accent border shouldn't promise more than a real drop here
         # would deliver. A URL with no local-file mapping (e.g. a web link)
         # exercises exactly that gap.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         mime = QMimeData()
         mime.setUrls([QUrl("https://example.com/video.mkv")])
@@ -3820,7 +3821,7 @@ class TestQueueDragHoverState(unittest.TestCase):
     def test_empty_mime_never_sets_dragActive(self):
         # No hasUrls() at all -- an internal row-reorder drag, the only
         # other real drag this widget ever sees.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         mime = QMimeData()
         event = QDragEnterEvent(QPoint(10, 10), Qt.MoveAction, mime, Qt.NoButton, Qt.NoModifier)
@@ -3848,7 +3849,7 @@ class TestQueueUndoRedo(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     def test_undo_reverses_add_files(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.clip])
         _wait_for_detection(window)
         self.assertEqual(window.queue_list.topLevelItemCount(), 1)
@@ -3856,7 +3857,7 @@ class TestQueueUndoRedo(unittest.TestCase):
         self.assertEqual(window.queue_list.topLevelItemCount(), 0)
 
     def test_redo_reapplies_an_undone_add(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.add_files([self.clip])
         _wait_for_detection(window)
         window._undo()
@@ -3865,7 +3866,7 @@ class TestQueueUndoRedo(unittest.TestCase):
         self.assertEqual(window.queue_list.topLevelItemCount(), 1)
 
     def test_undo_reverses_remove_selected(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         TestQueueDragReorder._add_rows(window, ["a", "b", "c"])
         window.queue_list.topLevelItem(1).setSelected(True)
         window._remove_selected()
@@ -3874,16 +3875,16 @@ class TestQueueUndoRedo(unittest.TestCase):
         self.assertEqual(TestQueueDragReorder._names(window), ["a", "b", "c"])
 
     def test_undo_reverses_clear_queue(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         TestQueueDragReorder._add_rows(window, ["a", "b", "c"])
-        with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
+        with patch.object(main_window.QMessageBox, "question", return_value=main_window.QMessageBox.Yes):
             window._clear_queue()
         self.assertEqual(window.queue_list.topLevelItemCount(), 0)
         window._undo()
         self.assertEqual(TestQueueDragReorder._names(window), ["a", "b", "c"])
 
     def test_undo_reverses_a_drag_reorder(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         TestQueueDragReorder._add_rows(window, ["a", "b", "c"])
         target_rect = window.queue_list.visualItemRect(window.queue_list.topLevelItem(2))
@@ -3893,7 +3894,7 @@ class TestQueueUndoRedo(unittest.TestCase):
         self.assertEqual(TestQueueDragReorder._names(window), ["a", "b", "c"])
 
     def test_a_new_action_clears_the_redo_stack(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         TestQueueDragReorder._add_rows(window, ["a", "b", "c"])
         window.queue_list.topLevelItem(0).setSelected(True)
         window._remove_selected()
@@ -3904,7 +3905,7 @@ class TestQueueUndoRedo(unittest.TestCase):
         self.assertEqual(window._redo_stack, [])
 
     def test_undo_and_redo_are_refused_during_a_run(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         TestQueueDragReorder._add_rows(window, ["a", "b"])
         window.queue_list.topLevelItem(0).setSelected(True)
         window._remove_selected()
@@ -3918,7 +3919,7 @@ class TestQueueUndoRedo(unittest.TestCase):
         self.assertEqual(TestQueueDragReorder._names(window), ["a", "b"], "redo must be a no-op mid-run")
 
     def test_undo_with_nothing_to_undo_does_nothing(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         TestQueueDragReorder._add_rows(window, ["a"])
         window._undo()  # add_rows bypasses add_files, so nothing was ever pushed
         self.assertEqual(TestQueueDragReorder._names(window), ["a"])
@@ -3926,7 +3927,7 @@ class TestQueueUndoRedo(unittest.TestCase):
 
 class TestDeleteKeyRemovesSelectedQueueItem(unittest.TestCase):
     def test_delete_key_removes_the_selected_row_when_queue_list_has_focus(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window.activateWindow()
         QApplication.instance().processEvents()
@@ -3942,7 +3943,7 @@ class TestDeleteKeyRemovesSelectedQueueItem(unittest.TestCase):
         # not the window-wide default Ctrl+Z/Ctrl+Shift+Z use) -- otherwise
         # Delete/Backspace would misfire as "remove queue item" while
         # actually editing the output-folder text field.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         TestQueueDragReorder._add_rows(window, ["a", "b"])
         window.queue_list.topLevelItem(0).setSelected(True)
@@ -3960,7 +3961,7 @@ class TestQueueStructureLockedDuringRun(unittest.TestCase):
     it, regardless of how the call is triggered."""
 
     def test_delete_key_is_a_no_op_mid_run(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window.activateWindow()
         QApplication.instance().processEvents()
@@ -3973,7 +3974,7 @@ class TestQueueStructureLockedDuringRun(unittest.TestCase):
         self.assertEqual(TestQueueDragReorder._names(window), ["a", "b"])
 
     def test_remove_selected_is_a_no_op_mid_run(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         TestQueueDragReorder._add_rows(window, ["a", "b"])
         window._set_queue_editable(False)
         window.queue_list.topLevelItem(0).setSelected(True)
@@ -3981,7 +3982,7 @@ class TestQueueStructureLockedDuringRun(unittest.TestCase):
         self.assertEqual(TestQueueDragReorder._names(window), ["a", "b"])
 
     def test_clear_queue_is_a_no_op_mid_run(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         TestQueueDragReorder._add_rows(window, ["a", "b"])
         window._set_queue_editable(False)
         # The mid-run guard must return before the confirmation dialog is
@@ -3989,7 +3990,7 @@ class TestQueueStructureLockedDuringRun(unittest.TestCase):
         # trusted, so a regression that removes the guard fails loudly
         # instead of hanging the suite on a real modal with no display to
         # dismiss it.
-        with patch.object(main.QMessageBox, "question") as mock_question:
+        with patch.object(main_window.QMessageBox, "question") as mock_question:
             window._clear_queue()
         mock_question.assert_not_called()
         self.assertEqual(TestQueueDragReorder._names(window), ["a", "b"])
@@ -4001,7 +4002,7 @@ class TestLiveAppendDuringRun(unittest.TestCase):
     not just sit in the visible list until Start is clicked again."""
 
     def test_adding_a_file_mid_run_pushes_it_into_the_running_queue(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._set_queue_editable(False)  # simulates a run in progress
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
@@ -4019,7 +4020,7 @@ class TestLiveAppendDuringRun(unittest.TestCase):
         # _update_start_button_label() unconditionally would silently flip
         # start_btn's disabled "Converting…" text back to a recomputed
         # "Convert N Videos" the instant a file is added mid-run.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._apply_run_phase_visuals("converting")
         window._set_queue_editable(False)  # simulates a run in progress
@@ -4033,7 +4034,7 @@ class TestLiveAppendDuringRun(unittest.TestCase):
         self.assertEqual(window.stop_btn.text(), "Cancel")
 
     def test_not_added_to_the_engine_when_no_run_is_in_progress(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertTrue(window._queue_editable)  # idle, no run
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
@@ -4049,7 +4050,7 @@ class TestLiveAppendDuringRun(unittest.TestCase):
         # _maybe_submit_mid_run_job in queue_controller.py) specifically so
         # this can't race: the job handed to the engine already carries the
         # real detected value, never a since-corrected snapshot.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._set_queue_editable(False)
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "interlaced.mkv"
@@ -4062,13 +4063,13 @@ class TestLiveAppendDuringRun(unittest.TestCase):
         # The actual race this fixes: previously add_job() ran immediately
         # inside add_files(), so if the currently-running job finished
         # before this file's own ~20s interlace sample did,
-        # update_pending_job (worker.py) couldn't help -- its own docstring
+        # update_pending_job (ffmpeg.py) couldn't help -- its own docstring
         # says it only patches jobs still ahead of the queue's position.
         # Verified directly here rather than just trusting the eventual
         # correct outcome (the test above): immediately after add_files()
         # returns, before either probe has landed, the job must not be in
         # the engine's queue yet at all.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._set_queue_editable(False)
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
@@ -4099,14 +4100,14 @@ class TestLeftPanelFixedWidth(unittest.TestCase):
     # measured floor. See ui_builder.py's own comment on this same
     # setFixedWidth call for the full measurement.
     def test_left_panel_is_fixed_at_456(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         left = window.findChild(QWidget, "leftPanel")
         self.assertIsNotNone(left)
         self.assertEqual(left.minimumWidth(), 456)
         self.assertEqual(left.maximumWidth(), 456)
 
     def test_widening_the_window_does_not_change_left_panel_width(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         left = window.findChild(QWidget, "leftPanel")
         window.resize(1800, 820)
@@ -4145,12 +4146,12 @@ class TestLeftPanelScrolling(unittest.TestCase):
     font metrics or margins the machine running them happens to have."""
 
     def setUp(self):
-        patcher = patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID))
+        patcher = patch.object(ffmpeg, "find_render_node", side_effect=_find_render_node_for(ffmpeg.INTEL_VENDOR_ID))
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def test_left_panel_is_a_scroll_area(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         left = window.findChild(QWidget, "leftPanel")
         self.assertIsInstance(left, QScrollArea)
 
@@ -4159,7 +4160,7 @@ class TestLeftPanelScrolling(unittest.TestCase):
         # whatever video_expert_expanded an earlier test (in any batch) last
         # wrote to the real config, so it failed depending on test order.
         with _empty_qsettings():
-            window = main.MainWindow()
+            window = main_window.MainWindow()
             window.show()
             _app.processEvents()
         left = window.findChild(QWidget, "leftPanel")
@@ -4170,12 +4171,12 @@ class TestLeftPanelScrolling(unittest.TestCase):
         # the floor read below is the real collapsed-height one, not
         # whatever this machine's real config last persisted for
         # video_expert_expanded. Asserts against left.minimumHeight()
-        # itself, not the window's starting height (1186x720, main.py's
+        # itself, not the window's starting height (1186x720, main_window.py's
         # own hardcoded default) -- that default is comfortably taller
         # than the actual floor, so it's the wrong thing to compare a
         # shrink-below-the-floor attempt against.
         with _empty_qsettings():
-            window = main.MainWindow()
+            window = main_window.MainWindow()
             window.show()
             _app.processEvents()
             left = window.findChild(QWidget, "leftPanel")
@@ -4194,7 +4195,7 @@ class TestLeftPanelScrolling(unittest.TestCase):
         # collapsed-height floor, still with Expert expanded, is exactly
         # the case this class's own docstring says scrolling still
         # exists for.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window.processing_cpu_btn.click()
         left = window.findChild(QWidget, "leftPanel")
@@ -4208,7 +4209,7 @@ class TestLeftPanelScrolling(unittest.TestCase):
     def test_horizontal_scrollbar_is_never_shown(self):
         # Content is sized for exactly this fixed 410px width by design
         # -- only vertical overflow (Expert expanded) is a real concern.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window.processing_cpu_btn.click()
         left = window.findChild(QWidget, "leftPanel")
@@ -4233,7 +4234,7 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
     masked locally."""
 
     def setUp(self):
-        patcher = patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID))
+        patcher = patch.object(ffmpeg, "find_render_node", side_effect=_find_render_node_for(ffmpeg.INTEL_VENDOR_ID))
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -4248,14 +4249,14 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
         # machine's real config last persisted for video_expert_expanded,
         # which could make this a silent no-op instead of a real toggle.
         with _empty_qsettings():
-            window = main.MainWindow()
+            window = main_window.MainWindow()
         window.show()
         window.processing_cpu_btn.click()
         _app.processEvents()
         left = window.findChild(QWidget, "leftPanel")
         # Real, confirmed regression from a density pass: this used to read
         # collapsed_height straight off the untouched default-size window,
-        # relying on main.py's own default always being shorter than
+        # relying on main_window.py's own default always being shorter than
         # Expert's expanded content. That relationship isn't guaranteed --
         # it silently flipped on CI once the layout got tight enough that
         # Expert's expanded content fit inside the (still Intel-pinned)
@@ -4299,7 +4300,7 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
         # needs Expert to genuinely start collapsed so setChecked(True)
         # below is a real transition that actually grows the window.
         with _empty_qsettings():
-            window = main.MainWindow()
+            window = main_window.MainWindow()
         window.show()
         window.processing_cpu_btn.click()
         _app.processEvents()
@@ -4315,7 +4316,7 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
         self.assertEqual(window.height(), pre_expand_height)
 
     def test_re_expanding_after_manually_shrinking_grows_again(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window.processing_cpu_btn.click()
         _app.processEvents()
@@ -4333,12 +4334,12 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
     def test_restoring_a_persisted_expanded_state_grows_the_window_too(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(
-                main.QSettings, "value",
+                main_window.QSettings, "value",
                 side_effect=lambda key, default=None: (
                     "true" if key == "video_expert_expanded" else default
                 ),
             ):
-                window = main.MainWindow()
+                window = main_window.MainWindow()
                 window.processing_cpu_btn.click()
                 window.show()
                 _app.processEvents()
@@ -4354,7 +4355,7 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
         # window tall themselves beforehand (nothing to undo, so nothing
         # should move).
         with _empty_qsettings():
-            window = main.MainWindow()
+            window = main_window.MainWindow()
         window.show()
         window.resize(window.width(), 1000)
         _app.processEvents()
@@ -4371,7 +4372,7 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
         # respect *that* choice, not silently snap back to whatever this
         # class had picked before the user's own resize overrode it.
         with _empty_qsettings():
-            window = main.MainWindow()
+            window = main_window.MainWindow()
         window.show()
         window.processing_cpu_btn.click()
         _app.processEvents()
@@ -4397,11 +4398,11 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
         # concern, not a real bug surface here.
         fake_settings = {"video_expert_expanded": "true", "window_geometry": b"sentinel"}
         with patch.object(
-            main.QSettings, "value",
+            main_window.QSettings, "value",
             side_effect=lambda key, default=None: fake_settings.get(key, default),
         ):
-            with patch.object(main.MainWindow, "restoreGeometry", lambda self, geo: self.resize(self.width(), 950)):
-                window = main.MainWindow()
+            with patch.object(main_window.MainWindow, "restoreGeometry", lambda self, geo: self.resize(self.width(), 950)):
+                window = main_window.MainWindow()
         window.show()
         _app.processEvents()
         self.assertTrue(window.video_expert_group.isChecked())
@@ -4413,7 +4414,7 @@ class TestExpertExpandGrowsWindow(unittest.TestCase):
 
 class TestDynamicProcessingButtons(unittest.TestCase):
     """Processing (ui_builder.py's processing_seg_row) is built from
-    worker.detect_available_backends() now instead of three hardcoded
+    ffmpeg.detect_available_backends() now instead of three hardcoded
     buttons -- a vendor with no button doesn't just get disabled, it
     never exists as a widget at all, matching the actual product goal
     (don't ask a non-technical user to choose between options that can't
@@ -4428,8 +4429,8 @@ class TestDynamicProcessingButtons(unittest.TestCase):
         # the row (Automatic included, not just the segmented part)
         # doesn't get shown rather than offering a choice with nothing
         # to actually choose between.
-        with patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")):
-            window = main.MainWindow()
+        with patch.object(ffmpeg, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main_window.MainWindow()
         window.show()
         self.assertFalse(window.processing_auto_btn.isVisible())
         self.assertFalse(window.processing_cpu_btn.isVisible())
@@ -4438,16 +4439,16 @@ class TestDynamicProcessingButtons(unittest.TestCase):
         self.assertEqual(len(window.processing_button_group.buttons()), 1)
 
     def test_intel_only_gets_a_two_segment_row(self):
-        with patch.object(main.worker, "find_render_node", side_effect=_find_render_node_for(main.worker.INTEL_VENDOR_ID)):
-            window = main.MainWindow()
+        with patch.object(main_window.ffmpeg, "find_render_node", side_effect=_find_render_node_for(main_window.ffmpeg.INTEL_VENDOR_ID)):
+            window = main_window.MainWindow()
         self.assertEqual(window.processing_cpu_btn.objectName(), "segLeft")
         self.assertEqual(window.processing_intel_btn.objectName(), "segRight")
         self.assertIsNone(window.processing_amd_btn)
         self.assertEqual(len(window.processing_button_group.buttons()), 2)
 
     def test_amd_only_gets_a_two_segment_row(self):
-        with patch.object(main.worker, "find_render_node", side_effect=_find_render_node_for(main.worker.AMD_VENDOR_ID)):
-            window = main.MainWindow()
+        with patch.object(main_window.ffmpeg, "find_render_node", side_effect=_find_render_node_for(main_window.ffmpeg.AMD_VENDOR_ID)):
+            window = main_window.MainWindow()
         self.assertEqual(window.processing_cpu_btn.objectName(), "segLeft")
         self.assertIsNone(window.processing_intel_btn)
         self.assertEqual(window.processing_amd_btn.objectName(), "segRight")
@@ -4455,10 +4456,10 @@ class TestDynamicProcessingButtons(unittest.TestCase):
 
     def test_both_vendors_present_gets_the_original_three_segment_row(self):
         with patch.object(
-            main.worker, "find_render_node",
-            side_effect=_find_render_node_for(main.worker.INTEL_VENDOR_ID, main.worker.AMD_VENDOR_ID),
+            main_window.ffmpeg, "find_render_node",
+            side_effect=_find_render_node_for(main_window.ffmpeg.INTEL_VENDOR_ID, main_window.ffmpeg.AMD_VENDOR_ID),
         ):
-            window = main.MainWindow()
+            window = main_window.MainWindow()
         self.assertEqual(window.processing_cpu_btn.objectName(), "segLeft")
         self.assertEqual(window.processing_intel_btn.objectName(), "segMid")
         self.assertEqual(window.processing_amd_btn.objectName(), "segRight")
@@ -4467,7 +4468,7 @@ class TestDynamicProcessingButtons(unittest.TestCase):
     @staticmethod
     def _intel_encoder_combo_index():
         return next(
-            i for i, (encoder, vendor, _label) in enumerate(main.ENCODERS)
+            i for i, (encoder, vendor, _label) in enumerate(main_window.ENCODERS)
             if encoder == "hevc_vaapi" and vendor == "intel"
         )
 
@@ -4481,8 +4482,8 @@ class TestDynamicProcessingButtons(unittest.TestCase):
         # in every prior local run). encoder_combo must stay free-floating
         # UI state -- correction happens only where a job settings dict
         # actually gets captured for real use (add_files, below).
-        with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
-            window = main.MainWindow()
+        with patch.object(main_window.ffmpeg, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main_window.MainWindow()
             window.encoder_combo.setCurrentIndex(self._intel_encoder_combo_index())
             self.assertEqual(window._current_encoder_id(), "hevc_vaapi")
             self.assertEqual(window._current_gpu_vendor(), "intel")
@@ -4491,9 +4492,9 @@ class TestDynamicProcessingButtons(unittest.TestCase):
         # Same regression guard as above, for the settings -> controls
         # direction -- a great many existing tests apply a hardware-
         # specific settings dict directly and expect it to stick.
-        with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
-            window = main.MainWindow()
-            settings = {**main.DEFAULT_SETTINGS, "encoder": "hevc_vaapi", "gpu_vendor": "intel", "speed": "4"}
+        with patch.object(main_window.ffmpeg, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main_window.MainWindow()
+            settings = {**main_window.DEFAULT_SETTINGS, "encoder": "hevc_vaapi", "gpu_vendor": "intel", "speed": "4"}
             window._apply_settings_to_controls(settings)
             self.assertEqual(window._current_encoder_id(), "hevc_vaapi")
             self.assertEqual(window._current_gpu_vendor(), "intel")
@@ -4509,8 +4510,8 @@ class TestDynamicProcessingButtons(unittest.TestCase):
         # real job that could reach build_args -- editing an already-
         # queued item's settings is the other one, covered separately
         # below (test_editing_a_queued_items_settings_...).
-        with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
-            window = main.MainWindow()
+        with patch.object(main_window.ffmpeg, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main_window.MainWindow()
             window.encoder_combo.setCurrentIndex(self._intel_encoder_combo_index())
             with tempfile.TemporaryDirectory() as tmp:
                 clip = Path(tmp) / "clip.mkv"
@@ -4524,8 +4525,8 @@ class TestDynamicProcessingButtons(unittest.TestCase):
         self.assertIsNone(job["gpu_vendor"])
 
     def test_add_files_prefers_the_real_gpu_thats_present(self):
-        with patch.object(main.worker, "find_render_node", side_effect=_find_render_node_for(main.worker.AMD_VENDOR_ID)):
-            window = main.MainWindow()
+        with patch.object(main_window.ffmpeg, "find_render_node", side_effect=_find_render_node_for(main_window.ffmpeg.AMD_VENDOR_ID)):
+            window = main_window.MainWindow()
             window.encoder_combo.setCurrentIndex(self._intel_encoder_combo_index())
             with tempfile.TemporaryDirectory() as tmp:
                 clip = Path(tmp) / "clip.mkv"
@@ -4546,8 +4547,8 @@ class TestDynamicProcessingButtons(unittest.TestCase):
         # string the (rejected) VAAPI pick would have used -- the same
         # family-crossing translation _on_processing_choice already does,
         # now shared via _settings_for_engine_vendor.
-        with patch.object(main.worker, "find_render_node", side_effect=RuntimeError("no render node")):
-            window = main.MainWindow()
+        with patch.object(main_window.ffmpeg, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main_window.MainWindow()
             with tempfile.TemporaryDirectory() as tmp:
                 clip = Path(tmp) / "clip.mkv"
                 clip.touch()
@@ -4561,8 +4562,8 @@ class TestDynamicProcessingButtons(unittest.TestCase):
         self.assertEqual(job["speed"], "medium")
 
     def test_editing_a_queued_items_settings_prefers_the_real_gpu_thats_present(self):
-        with patch.object(main.worker, "find_render_node", side_effect=_find_render_node_for(main.worker.AMD_VENDOR_ID)):
-            window = main.MainWindow()
+        with patch.object(main_window.ffmpeg, "find_render_node", side_effect=_find_render_node_for(main_window.ffmpeg.AMD_VENDOR_ID)):
+            window = main_window.MainWindow()
             with tempfile.TemporaryDirectory() as tmp:
                 clip = Path(tmp) / "clip.mkv"
                 clip.touch()
@@ -4582,7 +4583,7 @@ class TestSettingsForEngineVendorRcModeTranslation(unittest.TestCase):
     target MB means the same thing on any encoder) but not for rc_mode
     itself, which is a different *name* per family ("VBR" for VAAPI,
     "bitrate" for software). A settings dict corrected from Intel/VBR to
-    CPU used to keep rc_mode="VBR" verbatim -- worker.build_args' own
+    CPU used to keep rc_mode="VBR" verbatim -- ffmpeg.build_args' own
     software-path if/elif only recognizes "CRF"/"bitrate", so neither
     -crf nor -b:v got emitted, silently falling back to libx265's own
     default instead of the requested target size. Confirmed directly
@@ -4590,10 +4591,10 @@ class TestSettingsForEngineVendorRcModeTranslation(unittest.TestCase):
     before writing the fix these tests otherwise cover."""
 
     def setUp(self):
-        self.window = main.MainWindow()
+        self.window = main_window.MainWindow()
 
     def _settings(self, encoder, vendor, rc_mode, quality_value, speed):
-        return {**main.DEFAULT_SETTINGS, "encoder": encoder, "gpu_vendor": vendor,
+        return {**main_window.DEFAULT_SETTINGS, "encoder": encoder, "gpu_vendor": vendor,
                 "rc_mode": rc_mode, "quality_value": quality_value, "speed": speed}
 
     def test_file_size_mode_name_translates_intel_to_cpu(self):
@@ -4624,7 +4625,7 @@ class TestSettingsForEngineVendorRcModeTranslation(unittest.TestCase):
         settings = self._settings("hevc_vaapi", "intel", "CQP", 30, "4")
         result = self.window._settings_for_engine_vendor(settings, "libx265", None)
         self.assertEqual(result["rc_mode"], "CRF")
-        self.assertEqual(result["quality_value"], main.QUALITY_TIERS["libx265"]["balanced"])
+        self.assertEqual(result["quality_value"], main_window.QUALITY_TIERS["libx265"]["balanced"])
 
     def test_expert_only_mode_is_preserved_when_the_new_backend_genuinely_supports_it(self):
         # CQP is Intel's *and* AMD's Advanced mode (constants.RC_MODES) --
@@ -4640,7 +4641,7 @@ class TestSettingsForEngineVendorRcModeTranslation(unittest.TestCase):
         # the exact pre-fix bug (rc_mode left as "VBR" on a libx265 job)
         # fed straight to build_args emits neither -crf nor -b:v at all.
         buggy_settings = self._settings("libx265", None, "VBR", 500, "medium")
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             buggy_settings, Path("input.mkv"), Path("output.mp4"),
             probe_audio=False, audio_codec=None, duration_seconds=600.0,
         )
@@ -4652,7 +4653,7 @@ class TestSettingsForEngineVendorRcModeTranslation(unittest.TestCase):
         # build_args as "bitrate", which it does recognize.
         settings = self._settings("hevc_vaapi", "intel", "VBR", 500, "4")
         translated = self.window._settings_for_engine_vendor(settings, "libx265", None)
-        args = worker.build_args(
+        args = ffmpeg.build_args(
             translated, Path("input.mkv"), Path("output.mp4"),
             probe_audio=False, audio_codec=None, duration_seconds=600.0,
         )
@@ -4661,7 +4662,7 @@ class TestSettingsForEngineVendorRcModeTranslation(unittest.TestCase):
         # -preset must be a real x265 preset name, not a leftover VAAPI
         # compression_level digit -- ffmpeg would reject "-preset 4" for
         # libx265 outright.
-        self.assertIn(translated["speed"], main.X265_PRESETS)
+        self.assertIn(translated["speed"], main_window.X265_PRESETS)
 
 
 class TestHardwareProbedOnceForTheWholeSession(unittest.TestCase):
@@ -4673,10 +4674,10 @@ class TestHardwareProbedOnceForTheWholeSession(unittest.TestCase):
     also exercises genuine detection logic, not just a call-count."""
 
     def test_automatic_and_both_job_boundary_corrections_reuse_the_startup_snapshot(self):
-        real_detect = worker.detect_hardware
-        with patch.object(worker, "detect_hardware", side_effect=real_detect) as mock_detect, \
-             patch.object(worker, "find_render_node", side_effect=RuntimeError("no render node")):
-            window = main.MainWindow()
+        real_detect = ffmpeg.detect_hardware
+        with patch.object(ffmpeg, "detect_hardware", side_effect=real_detect) as mock_detect, \
+             patch.object(ffmpeg, "find_render_node", side_effect=RuntimeError("no render node")):
+            window = main_window.MainWindow()
             self.assertEqual(mock_detect.call_count, 1)
 
             window._on_processing_choice("automatic")
@@ -4690,7 +4691,7 @@ class TestHardwareProbedOnceForTheWholeSession(unittest.TestCase):
             # (see TestDynamicProcessingButtons' own regression guards on
             # that).
             intel_index = next(
-                i for i, (e, v, _l) in enumerate(main.ENCODERS) if e == "hevc_vaapi" and v == "intel"
+                i for i, (e, v, _l) in enumerate(main_window.ENCODERS) if e == "hevc_vaapi" and v == "intel"
             )
             window.encoder_combo.setCurrentIndex(intel_index)
             with tempfile.TemporaryDirectory() as tmp:
@@ -4718,10 +4719,10 @@ class TestUnusableGpu(unittest.TestCase):
         def _validate(_node, vendor):
             return "[hevc_vaapi] profile not supported" if vendor == "intel" else None
         with patch.object(
-            worker, "find_render_node",
-            side_effect=_find_render_node_for(worker.INTEL_VENDOR_ID, worker.AMD_VENDOR_ID),
-        ), patch.object(worker, "validate_hevc_encode", side_effect=_validate):
-            return main.MainWindow()
+            ffmpeg, "find_render_node",
+            side_effect=_find_render_node_for(ffmpeg.INTEL_VENDOR_ID, ffmpeg.AMD_VENDOR_ID),
+        ), patch.object(ffmpeg, "validate_hevc_encode", side_effect=_validate):
+            return main_window.MainWindow()
 
     def test_broken_intel_gets_no_processing_button(self):
         window = self._window_with_broken_intel()
@@ -4732,11 +4733,11 @@ class TestUnusableGpu(unittest.TestCase):
 
     def test_automatic_resolves_to_amd_instead(self):
         window = self._window_with_broken_intel()
-        self.assertEqual(worker.best_available_engine(window._available_backends), ("hevc_vaapi", "amd"))
+        self.assertEqual(ffmpeg.best_available_engine(window._available_backends), ("hevc_vaapi", "amd"))
 
     def test_about_dialog_receives_the_unusable_gpu(self):
         window = self._window_with_broken_intel()
-        with patch.object(main, "AboutDialog") as mock_cls:
+        with patch.object(main_window, "AboutDialog") as mock_cls:
             window._show_about_dialog()
         unusable = mock_cls.call_args.kwargs["unusable_gpus"]
         self.assertEqual([g.id for g in unusable], ["intel"])
@@ -4747,7 +4748,7 @@ class TestUnknownProcessingChoiceRaises(unittest.TestCase):
         # Cheap insurance against a future vendor (NVIDIA) landing on the
         # wrong branch if adding it to _on_processing_choice ever misses
         # a case -- an explicit crash beats a silently wrong encoder.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with self.assertRaises(ValueError):
             window._on_processing_choice("nvidia")
 
@@ -4771,7 +4772,7 @@ class TestSessionPersistenceSave(unittest.TestCase):
     with their own Mock to actually inspect what gets written."""
 
     def test_add_files_schedules_a_debounced_save(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with patch.object(session, "save_session") as mock_save:
             with tempfile.TemporaryDirectory() as tmp:
                 clip = Path(tmp) / "clip.mkv"
@@ -4787,7 +4788,7 @@ class TestSessionPersistenceSave(unittest.TestCase):
         self.assertEqual(output_dir, window.output_dir)
 
     def test_remove_selected_schedules_a_save(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
             clip.touch()
@@ -4800,13 +4801,13 @@ class TestSessionPersistenceSave(unittest.TestCase):
         self.assertEqual(jobs, [])
 
     def test_clear_queue_schedules_a_save(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
             clip.touch()
             window.add_files([clip])
         with patch.object(session, "save_session") as mock_save, \
-             patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
+             patch.object(main_window.QMessageBox, "question", return_value=main_window.QMessageBox.Yes):
             window._clear_queue()
             window._session_save_timer.timeout.emit()
         jobs, _ = mock_save.call_args[0]
@@ -4817,7 +4818,7 @@ class TestSessionPersistenceSave(unittest.TestCase):
         # before moving anything -- see _push_undo_snapshot's own comment
         # on why hooking the save there is still correct despite firing
         # pre-mutation.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
             clip.touch()
@@ -4828,7 +4829,7 @@ class TestSessionPersistenceSave(unittest.TestCase):
         mock_save.assert_called_once()
 
     def test_output_folder_picker_schedules_a_save(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(session, "save_session") as mock_save, \
                  patch.object(queue_controller.QFileDialog, "getExistingDirectory", return_value=tmp):
@@ -4838,7 +4839,7 @@ class TestSessionPersistenceSave(unittest.TestCase):
         self.assertEqual(output_dir, Path(tmp))
 
     def test_typing_a_new_output_path_schedules_a_save(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(session, "save_session") as mock_save:
                 window.output_edit.setText(tmp)
@@ -4847,7 +4848,7 @@ class TestSessionPersistenceSave(unittest.TestCase):
         mock_save.assert_called_once()
 
     def test_editing_a_selected_items_settings_schedules_a_save(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
             clip.touch()
@@ -4859,7 +4860,7 @@ class TestSessionPersistenceSave(unittest.TestCase):
         mock_save.assert_called_once()
 
     def test_a_completed_job_is_excluded_from_the_snapshot(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
             clip.touch()
@@ -4871,7 +4872,7 @@ class TestSessionPersistenceSave(unittest.TestCase):
         self.assertEqual(window._unfinished_queue_snapshot(), [])
 
     def test_a_job_finishing_schedules_a_save(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
             clip.touch()
@@ -4888,7 +4889,7 @@ class TestSessionPersistenceSave(unittest.TestCase):
         self.assertEqual(jobs, [])  # the just-finished job is now excluded
 
     def test_a_job_failing_schedules_a_save(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
             clip.touch()
@@ -4900,14 +4901,14 @@ class TestSessionPersistenceSave(unittest.TestCase):
         mock_save.assert_called_once()
 
     def test_all_finished_schedules_a_save(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with patch.object(session, "save_session") as mock_save:
             window._on_all_finished()
             window._session_save_timer.timeout.emit()
         mock_save.assert_called_once()
 
     def test_debounce_only_writes_once_for_a_rapid_burst(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         with patch.object(session, "save_session") as mock_save:
             window._schedule_session_save()
             window._schedule_session_save()
@@ -4916,7 +4917,7 @@ class TestSessionPersistenceSave(unittest.TestCase):
         mock_save.assert_called_once()
 
     def test_close_event_flushes_synchronously_and_stops_the_timer(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.mkv"
@@ -4930,7 +4931,7 @@ class TestSessionPersistenceSave(unittest.TestCase):
 
 
 class TestSessionPersistenceRestore(unittest.TestCase):
-    """The other half (session.load_session, consulted once in main.py's
+    """The other half (session.load_session, consulted once in main_window.py's
     __init__ via _restore_session) -- rebuilds the queue through the same
     _restore_queue_snapshot undo/redo already uses. See
     TestSessionPersistenceSave above for the save side."""
@@ -4938,7 +4939,7 @@ class TestSessionPersistenceRestore(unittest.TestCase):
     def _fake_session(self, tmp, paths, output_dir=None, extra=None):
         jobs = []
         for p in paths:
-            job = {**main.DEFAULT_SETTINGS, "path": str(p), "gpu_vendor": None}
+            job = {**main_window.DEFAULT_SETTINGS, "path": str(p), "gpu_vendor": None}
             if extra:
                 job.update(extra)
             jobs.append(job)
@@ -4956,7 +4957,7 @@ class TestSessionPersistenceRestore(unittest.TestCase):
             clip_b.touch()
             fake = self._fake_session(tmp, [clip_a, clip_b])
             with patch.object(session, "load_session", return_value=fake):
-                window = main.MainWindow()
+                window = main_window.MainWindow()
             self.assertEqual(window.queue_list.topLevelItemCount(), 2)
             self.assertEqual(window.queue_list.topLevelItem(0).text(queue_widget.VIDEO_COL), "a.mkv")
             self.assertEqual(window.queue_list.topLevelItem(1).text(queue_widget.VIDEO_COL), "b.mkv")
@@ -4973,7 +4974,7 @@ class TestSessionPersistenceRestore(unittest.TestCase):
             clip.touch()
             fake = self._fake_session(tmp, [clip])
             with patch.object(session, "load_session", return_value=fake):
-                window = main.MainWindow()
+                window = main_window.MainWindow()
             self.assertEqual(window.queue_list.topLevelItem(0).text(queue_widget.RESULT_COL), "Ready")
 
     def test_a_stray_completed_output_path_is_stripped_not_trusted(self):
@@ -4982,7 +4983,7 @@ class TestSessionPersistenceRestore(unittest.TestCase):
             clip.touch()
             fake = self._fake_session(tmp, [clip], extra={"_completed_output_path": "/x.mp4"})
             with patch.object(session, "load_session", return_value=fake):
-                window = main.MainWindow()
+                window = main_window.MainWindow()
             job = window.queue_list.topLevelItem(0).data(queue_widget.STATUS_COL, Qt.UserRole)
             self.assertNotIn("_completed_output_path", job)
 
@@ -4993,7 +4994,7 @@ class TestSessionPersistenceRestore(unittest.TestCase):
             missing = Path(tmp) / "gone.mkv"  # never created
             fake = self._fake_session(tmp, [clip_a, missing])
             with patch.object(session, "load_session", return_value=fake):
-                window = main.MainWindow()
+                window = main_window.MainWindow()
             self.assertEqual(window.queue_list.topLevelItemCount(), 1)
             self.assertEqual(window.status_label.text(), "Restored 1 video from your last session (1 no longer found)")
 
@@ -5007,7 +5008,7 @@ class TestSessionPersistenceRestore(unittest.TestCase):
             missing_2 = Path(tmp) / "gone2.mkv"
             fake = self._fake_session(tmp, [clip_a, clip_b, missing_1, missing_2])
             with patch.object(session, "load_session", return_value=fake):
-                window = main.MainWindow()
+                window = main_window.MainWindow()
             self.assertEqual(window.queue_list.topLevelItemCount(), 2)
             self.assertEqual(window.status_label.text(), "Restored 2 videos from your last session (2 no longer found)")
 
@@ -5016,7 +5017,7 @@ class TestSessionPersistenceRestore(unittest.TestCase):
             missing = Path(tmp) / "gone.mkv"
             fake = self._fake_session(tmp, [missing])
             with patch.object(session, "load_session", return_value=fake):
-                window = main.MainWindow()
+                window = main_window.MainWindow()
             self.assertEqual(window.queue_list.topLevelItemCount(), 0)
             self.assertEqual(window.status_label.text(), "1 video from your last session could no longer be found")
 
@@ -5027,7 +5028,7 @@ class TestSessionPersistenceRestore(unittest.TestCase):
             missing_3 = Path(tmp) / "gone3.mkv"
             fake = self._fake_session(tmp, [missing_1, missing_2, missing_3])
             with patch.object(session, "load_session", return_value=fake):
-                window = main.MainWindow()
+                window = main_window.MainWindow()
             self.assertEqual(window.queue_list.topLevelItemCount(), 0)
             self.assertEqual(window.status_label.text(), "3 videos from your last session could no longer be found")
 
@@ -5036,7 +5037,7 @@ class TestSessionPersistenceRestore(unittest.TestCase):
             out_dir = Path(tmp) / "custom_output"
             fake = self._fake_session(tmp, [], output_dir=str(out_dir))
             with patch.object(session, "load_session", return_value=fake):
-                window = main.MainWindow()
+                window = main_window.MainWindow()
             self.assertEqual(window.output_dir, out_dir)
 
     def test_no_session_data_leaves_a_fresh_empty_queue(self):
@@ -5044,7 +5045,7 @@ class TestSessionPersistenceRestore(unittest.TestCase):
         # every other test in this file -- this test just makes that
         # explicit and documents the "nothing to restore" path directly.
         with patch.object(session, "load_session", return_value=None):
-            window = main.MainWindow()
+            window = main_window.MainWindow()
         self.assertEqual(window.queue_list.topLevelItemCount(), 0)
         # "Idle" is status_label's own construction-time default
         # (ui_builder.py) -- _restore_session returns immediately with
@@ -5063,9 +5064,9 @@ class TestSessionPersistenceRestore(unittest.TestCase):
             fake = self._fake_session(tmp, [clip], extra={
                 "encoder": "hevc_vaapi", "gpu_vendor": "intel", "rc_mode": "ICQ", "quality_value": 26,
             })
-            with patch.object(worker, "find_render_node", side_effect=_find_render_node_for(worker.AMD_VENDOR_ID)):
+            with patch.object(ffmpeg, "find_render_node", side_effect=_find_render_node_for(ffmpeg.AMD_VENDOR_ID)):
                 with patch.object(session, "load_session", return_value=fake):
-                    window = main.MainWindow()
+                    window = main_window.MainWindow()
             job = window.queue_list.topLevelItem(0).data(queue_widget.STATUS_COL, Qt.UserRole)
         self.assertEqual(job["encoder"], "hevc_vaapi")
         self.assertEqual(job["gpu_vendor"], "amd")
@@ -5081,11 +5082,11 @@ class TestSessionPersistenceRestore(unittest.TestCase):
                 "output_dir": tmp,
                 "jobs": [
                     {"path": str(clip_a)},  # missing encoder/rc_mode/etc entirely
-                    {**main.DEFAULT_SETTINGS, "path": str(clip_b), "gpu_vendor": None},
+                    {**main_window.DEFAULT_SETTINGS, "path": str(clip_b), "gpu_vendor": None},
                 ],
             }
             with patch.object(session, "load_session", return_value=fake):
-                window = main.MainWindow()
+                window = main_window.MainWindow()
             # The one genuinely complete job still restores.
             self.assertEqual(window.queue_list.topLevelItemCount(), 1)
             self.assertEqual(window.queue_list.topLevelItem(0).text(queue_widget.VIDEO_COL), "b.mkv")
@@ -5097,7 +5098,7 @@ class TestSessionPersistenceRestore(unittest.TestCase):
         # disappointment and failing to launch at all over it would not
         # be, regardless of what actually goes wrong.
         with patch.object(session, "load_session", side_effect=RuntimeError("disk on fire")):
-            window = main.MainWindow()  # must not raise
+            window = main_window.MainWindow()  # must not raise
         self.assertEqual(window.queue_list.topLevelItemCount(), 0)
 
     def test_unrecognized_session_version_is_treated_as_nothing_to_restore(self):
@@ -5105,7 +5106,7 @@ class TestSessionPersistenceRestore(unittest.TestCase):
         # test_session.py) -- this just confirms _restore_session doesn't
         # need its own separate check on top of that contract.
         with patch.object(session, "load_session", return_value=None):
-            window = main.MainWindow()
+            window = main_window.MainWindow()
         self.assertEqual(window.queue_list.topLevelItemCount(), 0)
 
 
@@ -5134,11 +5135,11 @@ class TestToolbar(unittest.TestCase):
     # ODCS window model: the old "⋯" overflow button is gone; the frequent
     # queue commands sit leading in the toolbar and Convert trails it.
     def test_no_overflow_button(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertFalse(hasattr(window, "queue_menu_btn"))
 
     def test_convert_is_the_trailing_toolbar_action(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         bar = window.findChild(QWidget, "appToolbar")
         row = bar.layout()
         widgets = [row.itemAt(i).widget() for i in range(row.count()) if row.itemAt(i).widget()]
@@ -5147,11 +5148,11 @@ class TestToolbar(unittest.TestCase):
         self.assertIn(window.remove_queue_btn, widgets)
 
     def test_remove_follows_the_selection(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertFalse(window.remove_queue_btn.isEnabled())
 
     def test_queue_menu_mirrors_the_run_buttons(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.start_btn.setEnabled(False)
         self.assertFalse(window.convert_action.isEnabled())
         window.start_btn.setEnabled(True)
@@ -5163,7 +5164,7 @@ class TestToolbar(unittest.TestCase):
 
 class TestHelpMenuAndShortcut(unittest.TestCase):
     def test_help_action_exists_and_triggers_show_help_window(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         actions = _menu_actions(window)
         self.assertIn("VeloCoder Help", actions)
         with patch.object(window, "_show_help_window") as mock_show:
@@ -5171,7 +5172,7 @@ class TestHelpMenuAndShortcut(unittest.TestCase):
         mock_show.assert_called_once()
 
     def test_about_action_exists_and_triggers_show_about_dialog(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         actions = _menu_actions(window)
         self.assertIn("About VeloCoder", actions)
         with patch.object(window, "_show_about_dialog") as mock_show:
@@ -5184,8 +5185,8 @@ class TestHelpMenuAndShortcut(unittest.TestCase):
         # own namespace so .exec() never runs a real blocking modal loop,
         # while still confirming it's constructed with this window's
         # actual hardware-backend snapshot and resolved theme name.
-        window = main.MainWindow()
-        with patch.object(main, "AboutDialog") as mock_cls:
+        window = main_window.MainWindow()
+        with patch.object(main_window, "AboutDialog") as mock_cls:
             window._show_about_dialog()
         mock_cls.assert_called_once()
         args = mock_cls.call_args[0]
@@ -5197,15 +5198,15 @@ class TestHelpMenuAndShortcut(unittest.TestCase):
         # Regression guard: this used to be _themed_icon("video"), a
         # generic play-glyph placeholder for a real app icon that didn't
         # exist yet.
-        window = main.MainWindow()
-        with patch.object(main, "AboutDialog") as mock_cls:
+        window = main_window.MainWindow()
+        with patch.object(main_window, "AboutDialog") as mock_cls:
             window._show_about_dialog()
         icon_arg = mock_cls.call_args[0][1]
         self.assertFalse(icon_arg.isNull())
         self.assertFalse(icon_arg.pixmap(64, 64).isNull())
 
     def test_menu_order_matches_spec(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         self.assertEqual(_menu_entries(window, "&File"),
                          ["Add Videos…", "Save To…", "Open Output Folder", "---", "Quit"])
         self.assertEqual(_menu_entries(window, "&Edit"),
@@ -5218,7 +5219,7 @@ class TestHelpMenuAndShortcut(unittest.TestCase):
     def test_each_shortcut_has_exactly_one_owner(self):
         # A QShortcut and a QAction bound to the same key make Qt treat the
         # key as ambiguous and fire neither.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         keys = [a.shortcut().toString() for a in _menu_actions(window).values() if not a.shortcut().isEmpty()]
         keys += [s.key().toString() for s in window.findChildren(QShortcut)]
         self.assertEqual(len(keys), len(set(keys)), keys)
@@ -5226,7 +5227,7 @@ class TestHelpMenuAndShortcut(unittest.TestCase):
             self.assertIn(expected, keys)
 
     def test_f1_is_bound_to_show_help_window(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         f1 = [a for a in _menu_actions(window).values() if a.shortcut() == QKeySequence(Qt.Key_F1)]
         self.assertEqual(len(f1), 1)
         with patch.object(window, "_show_help_window") as mock_show:
@@ -5236,7 +5237,7 @@ class TestHelpMenuAndShortcut(unittest.TestCase):
     def test_ctrl_q_closes_the_window(self):
         # Verified behaviorally (does the window actually end up closed):
         # Quit goes through close() and so closeEvent's session flush.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         quit_actions = [a for a in _menu_actions(window).values() if a.shortcut() == QKeySequence("Ctrl+Q")]
         self.assertEqual(len(quit_actions), 1)
@@ -5259,7 +5260,7 @@ class TestProbeTeardown(unittest.TestCase):
 
     def test_close_stops_outstanding_probes(self):
         from PySide6.QtCore import QProcess
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         proc = self._sleeping_process(window)
         window.close()
         self.assertEqual(proc.state(), QProcess.NotRunning)
@@ -5268,7 +5269,7 @@ class TestProbeTeardown(unittest.TestCase):
     def test_callbacks_tolerate_an_already_destroyed_process(self):
         import shiboken6
         from PySide6.QtCore import QProcess
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         proc = self._sleeping_process(window)
         proc.kill()
         proc.waitForFinished(3000)
@@ -5286,7 +5287,7 @@ class TestProbeResultForRemovedRow(unittest.TestCase):
         # also skipped _maybe_begin_ready_conversion().
         import shiboken6
         from PySide6.QtWidgets import QTreeWidgetItem
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         item = QTreeWidgetItem(["gone.mkv"])
         window.queue_list.addTopLevelItem(item)
         window._pending_analysis_items[item] = 2
@@ -5301,7 +5302,7 @@ class TestProbeResultForRemovedRow(unittest.TestCase):
 
 class TestAppIcon(unittest.TestCase):
     def test_app_icon_loads_the_real_asset(self):
-        icon = main._app_icon()
+        icon = main_window._app_icon()
         self.assertFalse(icon.isNull())
         self.assertFalse(icon.pixmap(64, 64).isNull())
 
@@ -5314,7 +5315,7 @@ class TestAppIcon(unittest.TestCase):
         app = QApplication.instance()
         original = app.windowIcon()
         try:
-            app.setWindowIcon(main._app_icon())
+            app.setWindowIcon(main_window._app_icon())
             widget = QWidget()
             self.assertFalse(widget.windowIcon().isNull())
         finally:
@@ -5323,7 +5324,7 @@ class TestAppIcon(unittest.TestCase):
 
 class TestHelpWindow(unittest.TestCase):
     def test_show_help_window_is_non_modal(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         self.assertEqual(window._help_window.windowModality(), Qt.NonModal)
         # Non-modal in practice, not just by declared modality -- the
@@ -5331,14 +5332,14 @@ class TestHelpWindow(unittest.TestCase):
         self.assertTrue(window.isEnabled())
 
     def test_opening_help_twice_reuses_the_same_window(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         first = window._help_window
         window._show_help_window()
         self.assertIs(window._help_window, first)
 
     def test_search_field_filters_the_topic_tree(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         help_win = window._help_window
         full_count = help_win.topic_tree.topLevelItemCount()
@@ -5350,7 +5351,7 @@ class TestHelpWindow(unittest.TestCase):
         self.assertEqual(help_win.topic_tree.topLevelItemCount(), full_count)
 
     def test_ctrl_f_focuses_the_search_field(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         help_win = window._help_window
         help_win.show()
@@ -5374,7 +5375,7 @@ class TestHelpWindow(unittest.TestCase):
         # Reported live: filtering the tree left the article pane
         # showing whatever was selected before the search, since
         # nothing re-selected anything in the freshly rebuilt tree.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         help_win = window._help_window
         self.assertEqual(help_win._current_topic_id, "welcome")
@@ -5383,7 +5384,7 @@ class TestHelpWindow(unittest.TestCase):
         self.assertIn("Color Depth", help_win.article_view.toPlainText())
 
     def test_search_keeps_the_current_topic_selected_when_it_still_matches(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         help_win = window._help_window
         help_win._select_topic("color-depth")
@@ -5392,7 +5393,7 @@ class TestHelpWindow(unittest.TestCase):
         self.assertEqual(help_win._current_topic_id, "color-depth")
 
     def test_no_match_search_shows_a_clean_empty_state_not_the_old_article(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         help_win = window._help_window
         self.assertIn("Welcome to VeloCoder", help_win.article_view.toPlainText())
@@ -5404,7 +5405,7 @@ class TestHelpWindow(unittest.TestCase):
         self.assertIsNone(help_win._current_topic_id)
 
     def test_clearing_search_after_no_match_falls_back_to_welcome(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         help_win = window._help_window
         help_win.search_field.setText("xyzzy_no_such_topic")
@@ -5414,7 +5415,7 @@ class TestHelpWindow(unittest.TestCase):
         self.assertIn("Welcome to VeloCoder", help_win.article_view.toPlainText())
 
     def test_hardware_search_selects_the_processing_topic(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         help_win = window._help_window
         help_win.search_field.setText("hardware")
@@ -5422,7 +5423,7 @@ class TestHelpWindow(unittest.TestCase):
         self.assertIn("Processing", help_win.article_view.toPlainText())
 
     def test_help_follows_theme_changes(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         window._apply_theme("dark")
         dark_html = window._help_window.article_view.toHtml()
@@ -5434,12 +5435,12 @@ class TestHelpWindow(unittest.TestCase):
         # getattr(..., None) guards in _apply_theme/_on_system_theme_
         # changed -- must not raise just because Help was never opened
         # this session.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._apply_theme("light")  # must not raise
         window._on_system_theme_changed(Qt.ColorScheme.Dark)  # must not raise
 
     def test_help_window_geometry_persists_across_instances(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         window._help_window.resize(900, 640)
         with patch.object(window._help_window._qsettings, "setValue") as mock_set:
@@ -5455,7 +5456,7 @@ class TestHelpWindow(unittest.TestCase):
         # visually signed off on. Only the very first open (no saved
         # help_window_geometry yet) is affected; every later one goes
         # through restoreGeometry instead.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         self.assertEqual(window._help_window.size(), QSize(900, 620))
 
@@ -5466,18 +5467,18 @@ class TestHelpWindow(unittest.TestCase):
         # suppress (see that class's own docstring for the full
         # investigation) -- confirmed the only real fix is removing the
         # column outright.
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         self.assertEqual(window._help_window.topic_tree.indentation(), 0)
 
     def test_topic_tree_uses_the_rounded_selection_delegate(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         delegate = window._help_window.topic_tree.itemDelegate()
         self.assertIsInstance(delegate, help_window._RoundedSelectionDelegate)
 
     def test_category_headings_display_uppercase(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         tree = window._help_window.topic_tree
         category_item = tree.topLevelItem(0)
@@ -5487,13 +5488,13 @@ class TestHelpWindow(unittest.TestCase):
         self.assertNotEqual(category_item.text(0), "")
 
     def test_category_headings_are_not_selectable(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         category_item = window._help_window.topic_tree.topLevelItem(0)
         self.assertFalse(category_item.flags() & Qt.ItemIsSelectable)
 
     def test_article_image_picks_the_dark_variant_in_dark_theme(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         window._apply_theme("dark")
         window._help_window._select_topic("welcome")
@@ -5501,7 +5502,7 @@ class TestHelpWindow(unittest.TestCase):
         self.assertIn("quick-start-dark.png", html)
 
     def test_article_image_picks_the_light_variant_in_light_theme(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window._show_help_window()
         window._apply_theme("light")
         window._help_window._select_topic("welcome")
@@ -5514,14 +5515,14 @@ class TestHelpWindow(unittest.TestCase):
 # Six findings from a pre-release review of the main window, each with a
 # rendered screenshot as evidence. These tests pin the fixes.
 
-def _queue_row(window, name: str, *, completed: bool = False) -> "main.QTreeWidgetItem":
+def _queue_row(window, name: str, *, completed: bool = False) -> "main_window.QTreeWidgetItem":
     """Adds a queue row directly (no probes, no real file) -- the same
     shape _running_window above uses."""
     job = {"path": Path(name), **window._current_settings()}
     if completed:
         job["_completed_output_path"] = f"/tmp/{name}.out.mp4"
-    item = main.QTreeWidgetItem([name])
-    item.setData(main.STATUS_COL, main.Qt.UserRole, job)
+    item = main_window.QTreeWidgetItem([name])
+    item.setData(main_window.STATUS_COL, main_window.Qt.UserRole, job)
     window.queue_list.addTopLevelItem(item)
     return item
 
@@ -5529,7 +5530,7 @@ def _queue_row(window, name: str, *, completed: bool = False) -> "main.QTreeWidg
 def _stylesheet_blocks():
     """(selector, body) pairs from style.qss, comments stripped."""
     import re
-    text = re.sub(r"/\*.*?\*/", "", (REPO_ROOT / "style.qss").read_text(), flags=re.S)
+    text = re.sub(r"/\*.*?\*/", "", (STYLE_QSS).read_text(), flags=re.S)
     return [(sel.strip(), body) for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", text)]
 
 
@@ -5541,7 +5542,7 @@ class TestScopeLabelNeverWidensTheColumn(unittest.TestCase):
     LONG_NAME = "The.Very.Long.Documentary.Name.Season.01.Episode.07.The.Return.Of.The.Long.Filename.2160p.WEB-DL.DDP5.1.Atmos.HDR10.HEVC-GROUP.mkv"
 
     def _window_with_long_name_selected(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.resize(1186, 720)
         window.show()
         item = _queue_row(window, self.LONG_NAME)
@@ -5576,7 +5577,7 @@ class TestConvertOnlyUnfinished(unittest.TestCase):
     every row, re-encoding finished videos into "name (1).mp4" copies."""
 
     def test_label_counts_only_unfinished_rows(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         for name in ("a.mkv", "b.mkv", "c.mkv"):
             _queue_row(window, name, completed=True)
         _queue_row(window, "failed.mkv")
@@ -5585,7 +5586,7 @@ class TestConvertOnlyUnfinished(unittest.TestCase):
         self.assertTrue(window.start_btn.isEnabled())
 
     def test_begin_conversion_queues_only_unfinished_rows(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         _queue_row(window, "done.mkv", completed=True)
         failed = _queue_row(window, "failed.mkv")
         with patch.object(window.queue, "start") as mock_start, \
@@ -5596,16 +5597,16 @@ class TestConvertOnlyUnfinished(unittest.TestCase):
         self.assertEqual(window._running_items, [failed])
 
     def test_finished_rows_keep_their_result_when_a_retry_starts(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         done = _queue_row(window, "done.mkv", completed=True)
-        done.setText(main.RESULT_COL, "1.2GB (68% smaller)")
+        done.setText(main_window.RESULT_COL, "1.2GB (68% smaller)")
         _queue_row(window, "failed.mkv")
         with patch.object(window.queue, "start"), patch.object(Path, "mkdir"):
             window._begin_conversion()
-        self.assertEqual(done.text(main.RESULT_COL), "1.2GB (68% smaller)")
+        self.assertEqual(done.text(main_window.RESULT_COL), "1.2GB (68% smaller)")
 
     def test_everything_done_disables_convert_with_a_reason(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         _queue_row(window, "a.mkv", completed=True)
         _queue_row(window, "b.mkv", completed=True)
         window._update_start_button_label()
@@ -5614,7 +5615,7 @@ class TestConvertOnlyUnfinished(unittest.TestCase):
         self.assertIn("converted", window.start_btn.toolTip())
 
     def test_removing_the_last_unfinished_row_cancels_a_pending_start(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         _queue_row(window, "done.mkv", completed=True)
         pending = _queue_row(window, "new.mkv")
         window._start_when_ready = True
@@ -5626,7 +5627,7 @@ class TestConvertOnlyUnfinished(unittest.TestCase):
         self.assertFalse(window._start_when_ready)
 
     def test_start_with_nothing_unfinished_does_not_run(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         _queue_row(window, "a.mkv", completed=True)
         with patch.object(window.queue, "start") as mock_start:
             window._start()
@@ -5638,20 +5639,20 @@ class TestQueueColumnsFitTheirContent(unittest.TestCase):
     its live % at the minimum window size."""
 
     def _window(self, width=960, height=640):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.resize(width, height)
         window.show()
         row = _queue_row(window, "Old camcorder tape 07.avi")
-        row.setText(main.SIZE_COL, "1023.9GB")
-        row.setText(main.RESULT_COL, "1023.9GB (100% smaller)")
+        row.setText(main_window.SIZE_COL, "1023.9GB")
+        row.setText(main_window.RESULT_COL, "1023.9GB (100% smaller)")
         QApplication.processEvents()
         return window
 
     def _assert_columns_fit(self, window):
         header = window.queue_list.header()
         fm = window.queue_list.fontMetrics()
-        for col, text in ((main.SIZE_COL, "1023.9GB"), (main.RESULT_COL, "1023.9GB (100% smaller)"),
-                          (main.DURATION_COL, "00:00:00"), (main.DURATION_COL, "Duration")):
+        for col, text in ((main_window.SIZE_COL, "1023.9GB"), (main_window.RESULT_COL, "1023.9GB (100% smaller)"),
+                          (main_window.DURATION_COL, "00:00:00"), (main_window.DURATION_COL, "Duration")):
             self.assertGreaterEqual(header.sectionSize(col), fm.horizontalAdvance(text) + 12, (col, text))
         self.assertFalse(window.queue_list.horizontalScrollBar().isVisible())
 
@@ -5663,19 +5664,19 @@ class TestQueueColumnsFitTheirContent(unittest.TestCase):
 
     def test_larger_text_grows_the_columns(self):
         window = self._window()
-        before = window.queue_list.header().sectionSize(main.RESULT_COL)
+        before = window.queue_list.header().sectionSize(main_window.RESULT_COL)
         # Through the stylesheet: style.qss pins the font size, so setFont()
         # alone would change nothing.
         window.queue_list.setStyleSheet("QTreeWidget { font-size: 11.5pt; }")
         QApplication.processEvents()
-        self.assertGreater(window.queue_list.header().sectionSize(main.RESULT_COL), before)
+        self.assertGreater(window.queue_list.header().sectionSize(main_window.RESULT_COL), before)
         self._assert_columns_fit(window)
 
     def test_video_column_takes_the_spare_width(self):
         window = self._window(1186, 720)
         header = window.queue_list.header()
-        others = sum(header.sectionSize(c) for c in (main.DURATION_COL, main.SIZE_COL, main.RESULT_COL))
-        self.assertEqual(header.sectionSize(main.VIDEO_COL) + others, window.queue_list.viewport().width())
+        others = sum(header.sectionSize(c) for c in (main_window.DURATION_COL, main_window.SIZE_COL, main_window.RESULT_COL))
+        self.assertEqual(header.sectionSize(main_window.VIDEO_COL) + others, window.queue_list.viewport().width())
 
 
 class TestControlsMatchTheDesignDecisions(unittest.TestCase):
@@ -5688,7 +5689,7 @@ class TestControlsMatchTheDesignDecisions(unittest.TestCase):
                 self.assertNotIn("font-weight", body, selector)
 
     def test_toolbar_buttons_share_one_height(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window.open_folder_btn.setVisible(True)
         window.stop_btn.setVisible(True)
@@ -5703,8 +5704,8 @@ class TestControlsMatchTheDesignDecisions(unittest.TestCase):
             self.assertNotIn("radius: 6px", body, selector)
 
     def test_segment_widths_fit_their_text(self):
-        with patch.object(worker, "find_render_node", return_value="/dev/dri/renderD128"):
-            window = main.MainWindow()
+        with patch.object(ffmpeg, "find_render_node", return_value="/dev/dri/renderD128"):
+            window = main_window.MainWindow()
         window.show()
         QApplication.processEvents()
         for btn in (window.quality_smaller_btn, window.quality_balanced_btn, window.quality_better_btn,
@@ -5726,7 +5727,7 @@ class TestFocusRingClearsTheLabel(unittest.TestCase):
         self.assertTrue(any("border:" in b for _, b in rules))
 
     def test_focus_border_keeps_the_button_size(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         _queue_row(window, "a.mkv")
         window._update_start_button_label()
@@ -5738,7 +5739,7 @@ class TestFocusRingClearsTheLabel(unittest.TestCase):
         self.assertEqual(window.start_btn.sizeHint(), before)
 
     def test_queue_draws_a_ring_around_the_current_row(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.resize(1186, 720)
         window.show()
         _queue_row(window, "a.mkv")
@@ -5755,7 +5756,7 @@ class TestFocusRingClearsTheLabel(unittest.TestCase):
             self.assertEqual(image.pixelColor(x, row.center().y()).name(), accent.name(), x)
 
     def test_queue_draws_no_ring_without_keyboard_focus(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.resize(1186, 720)
         window.show()
         _queue_row(window, "a.mkv")
@@ -5774,29 +5775,29 @@ class TestFailuresReadWithoutHovering(unittest.TestCase):
     "Completed with Issues" was plain body text."""
 
     def test_failed_row_carries_its_reason_for_the_subtitle(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         item = _queue_row(window, "clip.mkv")
         window._running_items = [item]
         window._current_running_item = item
         window._on_job_failed("clip.mkv", "[hevc_vaapi] No usable encoding entrypoint found")
-        self.assertEqual(item.data(main.VIDEO_COL, queue_widget.FAILURE_REASON_ROLE),
+        self.assertEqual(item.data(main_window.VIDEO_COL, queue_widget.FAILURE_REASON_ROLE),
                          "[hevc_vaapi] No usable encoding entrypoint found")
-        self.assertEqual(item.toolTip(main.STATUS_COL), "[hevc_vaapi] No usable encoding entrypoint found")
+        self.assertEqual(item.toolTip(main_window.STATUS_COL), "[hevc_vaapi] No usable encoding entrypoint found")
 
     def test_retry_clears_the_old_reason(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         item = _queue_row(window, "clip.mkv")
-        item.setData(main.VIDEO_COL, queue_widget.FAILURE_REASON_ROLE, "old reason")
+        item.setData(main_window.VIDEO_COL, queue_widget.FAILURE_REASON_ROLE, "old reason")
         with patch.object(window.queue, "start"), patch.object(Path, "mkdir"):
             window._begin_conversion()
-        self.assertIsNone(item.data(main.VIDEO_COL, queue_widget.FAILURE_REASON_ROLE))
+        self.assertIsNone(item.data(main_window.VIDEO_COL, queue_widget.FAILURE_REASON_ROLE))
 
     def test_failed_subtitle_is_painted_in_the_error_colour(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.resize(1186, 720)
         window.show()
         item = _queue_row(window, "clip.mkv")
-        item.setData(main.VIDEO_COL, queue_widget.FAILURE_REASON_ROLE, "█████████████████████")
+        item.setData(main_window.VIDEO_COL, queue_widget.FAILURE_REASON_ROLE, "█████████████████████")
         QApplication.processEvents()
         image = window.queue_list.viewport().grab().toImage()
         row = window.queue_list.visualItemRect(item)
@@ -5807,7 +5808,7 @@ class TestFailuresReadWithoutHovering(unittest.TestCase):
         self.assertTrue(found)
 
     def test_finished_heading_is_a_headline_with_an_icon(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         window._run_completed_count = 3
         window._run_failed_count = 1
@@ -5816,7 +5817,7 @@ class TestFailuresReadWithoutHovering(unittest.TestCase):
         self.assertTrue(window.status_label.property("headline"))
 
     def test_headline_style_drops_once_the_queue_moves_on(self):
-        window = main.MainWindow()
+        window = main_window.MainWindow()
         window.show()
         _queue_row(window, "a.mkv", completed=True)
         window._run_completed_count = 1

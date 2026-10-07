@@ -6,7 +6,7 @@ geometry, video_expert_expanded); a structured, growing list of job dicts
 belongs in its own file, not shoehorned into that key-value store.
 
 Every function here is a plain, Qt-widget-free function operating on
-dicts/paths -- main.py/queue_controller.py own the app-specific meaning of
+dicts/paths -- main_window.py/queue_controller.py own the app-specific meaning of
 a "job" (which keys it has, hardware sanitization, ...); this module only
 knows how to get a list of them and an output dir on and off disk safely.
 """

@@ -7,8 +7,8 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import themes  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from velocoder.ui import themes  # noqa: E402
 
 
 def _luminance(hex_color: str) -> float:

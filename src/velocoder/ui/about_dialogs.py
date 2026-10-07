@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from constants import APP_NAME, APP_ORGANIZATION, APP_VERSION
+from velocoder.core.constants import APP_NAME, APP_ORGANIZATION, APP_VERSION
 
 
 def system_info_text(available_backends, theme_name: str, ffmpeg_version: str | None,

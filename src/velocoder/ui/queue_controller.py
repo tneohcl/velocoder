@@ -9,11 +9,11 @@ from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWidgets import QFileDialog, QMenu, QMessageBox, QTreeWidgetItem
 import shiboken6
 
-import worker
-import formatting
-import session
-from constants import VIDEO_FILTER
-from queue_widget import (
+from velocoder.core import ffmpeg
+from velocoder.core import formatting
+from velocoder.ui import session
+from velocoder.core.constants import VIDEO_FILTER
+from velocoder.ui.queue_widget import (
     VIDEO_COL, DURATION_COL, SIZE_COL, RESULT_COL,
     STATUS_COL, VIDEO_SUBTITLE_ROLE, AUDIO_TRACK_COUNT_ROLE, FAILURE_REASON_ROLE, QUEUE_COLUMN_HEADERS,
 )
@@ -96,7 +96,7 @@ class _QueueControllerMixin:
         # output settings this row will encode with -- distinct from the
         # Video column's own text (source properties only, see
         # _make_queue_row below) and from Effective Command's raw ffmpeg
-        # argv (main.py), which is for a technical reader specifically.
+        # argv (main_window.py), which is for a technical reader specifically.
         return f"{job['path']}\n\n{formatting.settings_summary(job)}"
 
     def _make_queue_row(self, job: dict) -> QTreeWidgetItem:
@@ -324,7 +324,7 @@ class _QueueControllerMixin:
                 # A run is already in progress -- don't hand this
                 # straight to the live queue yet. Confirmed a real race
                 # otherwise: if the currently-running job finishes before
-                # this file's own ~20s interlace sample does, worker.py's
+                # this file's own ~20s interlace sample does, ffmpeg.py's
                 # update_pending_job can't patch it (its own docstring:
                 # only jobs still ahead of the queue's position get
                 # patched) -- the file would start encoding with
@@ -333,7 +333,7 @@ class _QueueControllerMixin:
                 # by-then-final settings) only once both probes have
                 # actually landed; if the run finishes first, it just
                 # sits queued, unsubmitted, until Start is clicked again
-                # -- no auto-resume plumbing needed, and worker.py stays
+                # -- no auto-resume plumbing needed, and ffmpeg.py stays
                 # exactly as decoupled from detection state as it
                 # already is by design.
                 self._pending_mid_run_items[item] = 2
@@ -362,7 +362,7 @@ class _QueueControllerMixin:
 
     def _note_probe_finished(self, item: QTreeWidgetItem):
         # Purely for the "Preparing -- analyzing N video(s)…" count (see
-        # _pending_analysis_items' own comment in main.py) -- same
+        # _pending_analysis_items' own comment in main_window.py) -- same
         # count-down-from-2 shape as _maybe_submit_mid_run_job just below,
         # deliberately not merged with it: that one gates a real action
         # (submitting a mid-run add to the live queue) and only ever
@@ -400,7 +400,7 @@ class _QueueControllerMixin:
         self._running_items.append(item)
 
     def _on_probe_error(self, item: QTreeWidgetItem, proc: QProcess, error):
-        # Mirrors worker.py's TranscodeQueue._on_process_error -- QProcess
+        # Mirrors ffmpeg.py's TranscodeQueue._on_process_error -- QProcess
         # .finished never fires when the binary itself fails to start
         # (confirmed directly), only errorOccurred(FailedToStart) does, so
         # without this a missing/broken ffmpeg or ffprobe install left proc
@@ -457,7 +457,7 @@ class _QueueControllerMixin:
     def _start_interlace_detection(self, item: QTreeWidgetItem, path: Path):
         # Runs async (real files can take tens of seconds to sample) --
         # never blocks adding files, the item just updates once this lands.
-        args = worker.build_idet_args(path)
+        args = ffmpeg.build_idet_args(path)
         proc = QProcess(self)
         proc.setProgram(args[0])
         proc.setArguments(args[1:])
@@ -522,8 +522,8 @@ class _QueueControllerMixin:
                 # that shouldn't silently replace it.
                 self._maybe_submit_mid_run_job(item)
                 return
-            fraction = worker.parse_idet_output(stderr_text)
-            job["deinterlace"] = fraction > worker.INTERLACE_DETECT_THRESHOLD
+            fraction = ffmpeg.parse_idet_output(stderr_text)
+            job["deinterlace"] = fraction > ffmpeg.INTERLACE_DETECT_THRESHOLD
             item.setData(STATUS_COL, Qt.UserRole, job)
             self._refresh_video_cell(item)
             # If this file was added mid-run (see add_files), the running
@@ -556,7 +556,7 @@ class _QueueControllerMixin:
         # ffprobe's header-only read is fast, but "fast" still isn't free
         # for a large dropped batch or a file on slow/network storage, and
         # this must never block adding files either.
-        args = worker.build_probe_args(path)
+        args = ffmpeg.build_probe_args(path)
         proc = QProcess(self)
         proc.setProgram(args[0])
         proc.setArguments(args[1:])
@@ -576,7 +576,7 @@ class _QueueControllerMixin:
         # finally, not a plain call ahead of the block below -- same real
         # race already fixed in _on_interlace_detected's identical
         # restructuring (see that method's own comment). This probe's own
-        # writes land on display-only columns (worker.py re-probes
+        # writes land on display-only columns (ffmpeg.py re-probes
         # duration/audio fresh at actual encode time, it doesn't read
         # these), so there's no *settings* correctness bug here the way
         # there was for deinterlace -- kept symmetric with the interlace
@@ -588,7 +588,7 @@ class _QueueControllerMixin:
             except RuntimeError:
                 self._maybe_submit_mid_run_job(item)  # no-op for a removed row (shiboken6.isValid guard there)
                 return  # item deleted (e.g. Clear Queue) before the probe landed
-            info = worker.parse_probe_output(stdout_text)
+            info = ffmpeg.parse_probe_output(stdout_text)
             if info.get("duration"):
                 item.setText(DURATION_COL, formatting.format_eta(info["duration"]))
                 # Raw seconds, alongside the formatted display text --
@@ -625,7 +625,7 @@ class _QueueControllerMixin:
                 # Track index was selected (queue empty, pick Track 4,
                 # then add a 1-track file) keeps that out-of-range index
                 # in its own stored settings regardless of whether this
-                # row is ever selected again -- worker.py degrades that
+                # row is ever selected again -- ffmpeg.py degrades that
                 # gracefully at encode time (no crash, just silently no
                 # audio), but the job itself should never be allowed to
                 # stay invalid once the real track count is known.
@@ -729,7 +729,7 @@ class _QueueControllerMixin:
     def _remove_selected(self):
         # Previously only reachable via the Remove button, which
         # _set_queue_editable already disables during a run -- the new
-        # Delete-key shortcut (main.py) reaches this directly, bypassing
+        # Delete-key shortcut (main_window.py) reaches this directly, bypassing
         # that. An explicit guard here protects the invariant at the
         # source regardless of how this gets called, current or future,
         # rather than depending on every caller remembering to check.
@@ -1056,7 +1056,7 @@ class _QueueControllerMixin:
     def _stop(self):
         # _run_cancelled set *before* queue.stop(), not after -- reported
         # live as sometimes showing "Conversion Complete" on a genuine
-        # cancel. Root cause: TranscodeQueue.stop() (worker.py) isn't
+        # cancel. Root cause: TranscodeQueue.stop() (ffmpeg.py) isn't
         # always async -- if the queue is paused between jobs (no live
         # process to terminate), it emits all_finished synchronously,
         # right there inside the stop() call, via a plain (same-thread,
@@ -1160,7 +1160,7 @@ class _QueueControllerMixin:
 
     def _queue_eta_seconds(self, current_job_eta: float | None, speed_multiplier: float | None) -> float | None:
         """Rolls the current job's own live ETA (already computed in
-        worker.py from its real ffmpeg progress) up into a whole-queue
+        ffmpeg.py from its real ffmpeg progress) up into a whole-queue
         estimate, by applying that same observed speed multiplier to
         each not-yet-started job's own probed duration -- the best
         available estimate for a file that hasn't started encoding yet
@@ -1323,7 +1323,7 @@ class _QueueControllerMixin:
 
     def _on_paused(self):
         # The run halted between jobs (request_pause armed, the job that
-        # was running finished on its own -- see worker.py's
+        # was running finished on its own -- see ffmpeg.py's
         # _advance_or_pause) rather than everything actually finishing.
         # Queue stays locked (_set_queue_editable untouched) -- a pause
         # mid-run isn't "done", the same reasoning _start() already

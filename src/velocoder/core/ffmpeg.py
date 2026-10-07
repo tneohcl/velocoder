@@ -756,7 +756,7 @@ class TranscodeQueue(QObject):
         self._index against len(self._jobs), both of which keep working
         correctly as this list grows). No separate "resume" call needed;
         harmless if called with nothing running, though callers only do
-        that mid-run today (main.py's add_files, gated on _queue_editable)."""
+        that mid-run today (main_window.py's add_files, gated on _queue_editable)."""
         self._jobs.append(job)
 
     def update_pending_job(self, path: Path, updates: dict):

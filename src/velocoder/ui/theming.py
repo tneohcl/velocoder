@@ -1,4 +1,4 @@
-"""Theme/QSS engine, split out of main.py: stylesheet loading and token
+"""Theme/QSS engine, split out of main_window.py: stylesheet loading and token
 substitution, system-accent derivation, the QSS-gap event filters
 (combo-popup background, focus-visible) and proxy style (queue-item
 focus rect), and theme-choice resolution. Nothing here depends on
@@ -11,9 +11,9 @@ from PySide6.QtCore import Qt, QEvent, QObject
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QComboBox, QProxyStyle, QScrollArea, QStyle, QWidget
 
-import themes  # also puts the bundled vendor/odcs_ui on sys.path
-from odcs_ui import color as odcs_color
-from odcs_ui import theming as odcs_theming
+from velocoder.ui import themes
+from velocoder.ui._vendor.odcs_ui import color as odcs_color
+from velocoder.ui._vendor.odcs_ui import theming as odcs_theming
 
 # Populated by _load_stylesheet on every load/theme switch; read back by
 # _ComboPopupBackgroundFilter so a popup styled after a theme change gets
@@ -69,13 +69,13 @@ def _system_accent_tokens(app) -> dict:
 def _fuzzy_text_color(widget) -> QColor:
     """Muted-text color for de-emphasized captions/placeholders -- the
     queue's empty-state "Drag video files here..." text (queue_widget.py)
-    and the quality/speed/audio-bitrate tier captions (main.py) both call
+    and the quality/speed/audio-bitrate tier captions (main_window.py) both call
     this rather than reading QPalette.PlaceholderText directly.
 
     Returns a real QColor, not a string -- queue_widget.py's paintEvent
     needs one directly for painter.setPen(), and re-parsing a formatted
     string back into a QColor turned out to be its own bug (see below):
-    each caller that needs a string (main.py's QSS `color:` property)
+    each caller that needs a string (main_window.py's QSS `color:` property)
     formats this return value itself instead.
 
     QPalette.PlaceholderText was trusted directly at first -- confirmed
@@ -152,15 +152,15 @@ def _composite_over(color: QColor, background: QColor) -> QColor:
         (color.blueF(), background.blueF()))))
 
 
-def _load_stylesheet(app, theme_name: str = "dark", style_path: Path = Path(__file__).parent / "style.qss"):
+def _load_stylesheet(app, theme_name: str = "dark", style_path: Path = Path(__file__).parent / "assets" / "style.qss"):
     try:
         text = style_path.read_text()
         # QSS url() is resolved relative to the process's working directory,
         # not the .qss file's location -- not safe to hardcode given launch.sh
-        # cd's first but a direct `python3 main.py` from elsewhere wouldn't.
+        # cd's first but a direct `python3 main_window.py` from elsewhere wouldn't.
         # Substituting an absolute path in for each *_ICON token below (e.g.
         # $CHECK_ICON) keeps style.qss itself portable.
-        assets_dir = style_path.parent / "assets"
+        assets_dir = style_path.parent  # style.qss sits in assets/ beside the icons
         # A copy, not the THEMES dict itself -- mutating that shared dict
         # in place would leak this call's system-accent override into every
         # later read of themes.DARK/LIGHT, theme switches included.
@@ -205,7 +205,7 @@ class _NoItemFocusRectStyle(QProxyStyle):
     background bug above -- this had to be checked on a real display).
     A QProxyStyle that no-ops just this one PrimitiveElement is the
     documented, actually-reliable fix, scoped to queue_list alone
-    (main.py) so nothing else this app's own style still draws
+    (main_window.py) so nothing else this app's own style still draws
     (checkboxes, buttons, every other control) is touched.
     """
 

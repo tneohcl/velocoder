@@ -42,6 +42,7 @@ from velocoder.ui import queue_controller  # noqa: E402
 from velocoder.ui import queue_widget  # noqa: E402
 from velocoder.ui import session  # noqa: E402
 from velocoder.ui import theming  # noqa: E402
+from velocoder.ui._vendor.odcs_ui import desktop as odcs_desktop  # noqa: E402
 from velocoder.core import ffmpeg  # noqa: E402
 
 _session_patches = []
@@ -73,6 +74,11 @@ def setUpModule():
     # would just fail and hide every faked GPU. Default to "the driver
     # works"; TestUnusableGpu below overrides it locally.
     _session_patches.append(patch.object(ffmpeg, "validate_hevc_encode", return_value=None))
+    # And the desktop's own accent (odcs-ui reads it from the settings portal,
+    # kdeglobals or lxqt.conf before the palette): off by default so the
+    # accent tests drive it through the palette, whatever the dev box's
+    # desktop accent is. TestSystemAccentTokens checks the desktop path.
+    _session_patches.append(patch.object(odcs_desktop, "accent", return_value=None))
     for p in _session_patches:
         p.start()
 
@@ -286,6 +292,16 @@ class TestSystemAccentTokens(unittest.TestCase):
     session's actual configured accent (#308cc6), not a generic Fusion
     default. These test the derivation directly, isolated from any real
     desktop session's actual current accent."""
+
+    def test_desktop_accent_wins_over_the_palette(self):
+        # PySide6's bundled Qt can't load the system's platform-theme plugin
+        # (LXQt's libqtlxqt.so), so its palette held Qt's default blue while
+        # the desktop accent was mauve (reported 2026-10-07).
+        app = QApplication.instance()
+        with patch.object(odcs_desktop, "accent", return_value="#cba6f7"):
+            values = theming._system_accent_tokens(app)
+        self.assertEqual(values["ACCENT"], "#cba6f7")
+        self.assertEqual(values["CHECK_ICON"], "check_dark.svg")  # mauve is light: dark text and check
 
     def test_derives_accent_from_system_palette(self):
         app = _AccentFakeApp(QColor("#308cc6"))

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=VeloCoder
+GenericName=Video Transcoder
+Comment=HEVC/H.264 transcoder (CPU, Intel iGPU, AMD GPU)
+Exec=velocoder
+Icon=io.github.tneohcl.VeloCoder
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=ffmpeg;hevc;h265;h264;encode;transcode;handbrake;
+StartupNotify=true

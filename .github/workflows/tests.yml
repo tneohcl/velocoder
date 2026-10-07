@@ -48,4 +48,4 @@ jobs:
       - name: Run tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python3 run_tests_chunked.py
+        run: python3 scripts/run_tests_chunked.py

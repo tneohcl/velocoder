@@ -2027,5 +2027,27 @@ class TestIntegrationRealEncode(unittest.TestCase):
         self.assertEqual(probe.stdout.strip(), "aac")
 
 
+
+class TestFailureReason(unittest.TestCase):
+    """A failed encode used to report only "ffmpeg exited 1"; the reason
+    now carries ffmpeg's own last error line so the queue row can say why."""
+
+    def test_picks_the_last_real_error_line(self):
+        lines = [
+            "Input #0, matroska,webm, from 'clip.mkv':",
+            "[hevc_vaapi @ 0x55d1c2a0] No usable encoding entrypoint found for profile VAProfileHEVCMain (17).",
+            "[vost#0:0/hevc_vaapi @ 0x55d1c3b0] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.",
+            "Conversion failed!",
+        ]
+        self.assertEqual(
+            worker.summarize_ffmpeg_failure(lines, 1),
+            "[vost#0:0/hevc_vaapi] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height. (ffmpeg exited 1)",
+        )
+
+    def test_falls_back_to_the_exit_code(self):
+        self.assertEqual(worker.summarize_ffmpeg_failure(["frame=  10 fps=0.0"], 187), "ffmpeg exited 187")
+        self.assertEqual(worker.summarize_ffmpeg_failure([], 1), "ffmpeg exited 1")
+
+
 if __name__ == "__main__":
     unittest.main()

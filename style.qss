@@ -253,7 +253,6 @@ QTabBar::tab:selected {
     border-color: $BORDER_OUTER;
     border-bottom-color: $BG_PANEL;
     margin-bottom: -1px;
-    font-weight: 600;
 }
 
 QTabBar::tab:hover:!selected {
@@ -264,7 +263,7 @@ QTabBar::tab:hover:!selected {
 QPushButton {
     background-color: $BG_CONTROL;
     border: 1px solid $BORDER_STRONG;
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 4px 10px;
     color: $TEXT_PRIMARY;
 }
@@ -295,7 +294,7 @@ QPushButton:disabled {
 QToolButton {
     background-color: transparent;
     border: 1px solid transparent;
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 6px 10px;
     color: $TEXT_PRIMARY;
 }
@@ -327,16 +326,23 @@ QToolButton::menu-indicator {
    secondary action now (the plain QPushButton {} rule above already covers
    it, same as Change…/Open/Add Videos…), not a destructive one; see
    ui_builder.py's own comment at stop_btn's construction for why. */
+/* A 1px border in the fill colour, not border: none -- it keeps Convert
+   exactly as tall as the other 28px toolbar buttons, which share the
+   same padding plus a 1px border. */
 QPushButton#startButton {
     background-color: $ACCENT;
-    border: none;
+    border: 1px solid $ACCENT;
     color: $TEXT_ON_ACCENT;
     font-weight: 600;
 }
 
-QPushButton#startButton:hover { background-color: $ACCENT_HOVER; }
-QPushButton#startButton:pressed { background-color: $ACCENT_PRESSED; }
-QPushButton#startButton:disabled { background-color: $BG_ACCENT_DISABLED; color: $TEXT_ACCENT_DISABLED; }
+QPushButton#startButton:hover { background-color: $ACCENT_HOVER; border-color: $ACCENT_HOVER; }
+QPushButton#startButton:pressed { background-color: $ACCENT_PRESSED; border-color: $ACCENT_PRESSED; }
+QPushButton#startButton:disabled {
+    background-color: $BG_ACCENT_DISABLED;
+    border-color: $BG_ACCENT_DISABLED;
+    color: $TEXT_ACCENT_DISABLED;
+}
 
 /* Rate Control's Quality / File Size / Advanced row -- three adjacent
    checkable QPushButtons standing in for a segmented control (Qt has no
@@ -348,8 +354,8 @@ QPushButton#segLeft, QPushButton#segMid, QPushButton#segRight {
 }
 
 QPushButton#segLeft {
-    border-top-left-radius: 6px;
-    border-bottom-left-radius: 6px;
+    border-top-left-radius: 4px;
+    border-bottom-left-radius: 4px;
 }
 
 QPushButton#segMid, QPushButton#segRight {
@@ -357,8 +363,8 @@ QPushButton#segMid, QPushButton#segRight {
 }
 
 QPushButton#segRight {
-    border-top-right-radius: 6px;
-    border-bottom-right-radius: 6px;
+    border-top-right-radius: 4px;
+    border-bottom-right-radius: 4px;
 }
 
 /* segEnd is set on #segMid (main.py's _on_encoder_changed) whenever
@@ -366,14 +372,15 @@ QPushButton#segRight {
    makes File Size the row's actual last visible button, which needs
    the same right-corner rounding #segRight normally carries. */
 QPushButton#segMid[segEnd="true"] {
-    border-top-right-radius: 6px;
-    border-bottom-right-radius: 6px;
+    border-top-right-radius: 4px;
+    border-bottom-right-radius: 4px;
 }
 
 /* Without this, a checked segmented button and its unchecked neighbors
    were pixel-for-pixel identical -- confirmed by screenshot, no way to
-   tell which of the three was actually selected. font-weight is a second,
-   non-color cue riding along with the fill/text-color change.
+   tell which of the three was actually selected. Fill and text colour
+   only: no font-weight change (DESIGN.md -- selection is colour-only,
+   since bold text is wider and shifts the layout).
    border-color deliberately NOT set to $ACCENT here (an earlier version
    of this rule did) -- reported live as looking like the selected
    segment's outline was missing entirely, since a same-color border on
@@ -381,12 +388,11 @@ QPushButton#segMid[segEnd="true"] {
    Left unset, this inherits the base QPushButton rule's own neutral
    $BORDER_STRONG instead, so the selected segment keeps a real, visible
    edge and the row's overall perimeter reads as one consistent outline
-   regardless of which segment is checked -- only the fill/text/weight
+   regardless of which segment is checked -- only the fill/text colour
    change to show selection, not the border. */
 QPushButton#segLeft:checked, QPushButton#segMid:checked, QPushButton#segRight:checked {
     background-color: $ACCENT;
     color: $TEXT_ON_ACCENT;
-    font-weight: 600;
 }
 
 QPushButton#segLeft:checked:hover, QPushButton#segMid:checked:hover, QPushButton#segRight:checked:hover {
@@ -396,7 +402,7 @@ QPushButton#segLeft:checked:hover, QPushButton#segMid:checked:hover, QPushButton
 QComboBox, QLineEdit, QSpinBox, QPlainTextEdit {
     background-color: $BG_FIELD;
     border: 1px solid $BORDER;
-    border-radius: 6px;
+    border-radius: 4px;
     padding: 3px 7px;
     selection-background-color: $ACCENT;
     selection-color: $TEXT_ON_ACCENT;
@@ -466,11 +472,29 @@ QSpinBox[focusVisible="true"], QPlainTextEdit[focusVisible="true"] {
    keyboard-acquired focus specifically. QTabBar::tab:focus is left as a
    real :focus below, unconverted -- a subcontrol isn't its own QObject,
    so it can't carry this dynamic property itself the way a QWidget can. */
-QPushButton[focusVisible="true"], QCheckBox[focusVisible="true"],
-QSlider[focusVisible="true"], QTreeWidget[focusVisible="true"],
+QCheckBox[focusVisible="true"], QSlider[focusVisible="true"],
 QToolButton[focusVisible="true"], QTabBar::tab:focus {
     outline: 2px solid $ACCENT;
     outline-offset: 1px;
+}
+
+/* Buttons show keyboard focus as their own 2px border, not an outline:
+   Qt draws a QSS outline as a focus rect INSIDE the button, around the
+   label, where it touched the glyphs (UI finish-gate review,
+   2026-10-07). The border sits at the button's edge instead; padding
+   gives back the extra 1px per side so the button keeps its size and
+   the label doesn't move. The queue (QTreeWidget) draws its own ring
+   around the whole current row -- DropTreeWidget.drawRow. */
+QPushButton[focusVisible="true"] {
+    border: 2px solid $ACCENT;
+    padding: 3px 9px;
+}
+
+/* segMid/segRight drop their left border (shared seam, above), so their
+   ring needs that side back explicitly; padding-left gives the 2px back. */
+QPushButton#segMid[focusVisible="true"], QPushButton#segRight[focusVisible="true"] {
+    border-left: 2px solid $ACCENT;
+    padding-left: 8px;
 }
 
 /* An $ACCENT-colored ring is invisible on a button that's already
@@ -482,11 +506,17 @@ QToolButton[focusVisible="true"], QTabBar::tab:focus {
    color this app picks for exactly this contrast problem elsewhere
    (button text sitting on an accent fill), so it's the right choice for
    the ring too, not a new color invented just for this. */
-QPushButton#startButton[focusVisible="true"],
 QPushButton#segLeft:checked[focusVisible="true"],
 QPushButton#segMid:checked[focusVisible="true"],
 QPushButton#segRight:checked[focusVisible="true"] {
-    outline-color: $TEXT_ON_ACCENT;
+    border-color: $TEXT_ON_ACCENT;
+}
+
+/* Start's own ID rule outranks the attribute-only ring rule above, so it
+   restates the full ring (width and padding), not just the colour. */
+QPushButton#startButton[focusVisible="true"] {
+    border: 2px solid $TEXT_ON_ACCENT;
+    padding: 3px 9px;
 }
 
 /* Preset row's "you've changed something since loading this preset"
@@ -518,13 +548,13 @@ QSpinBox::up-button, QSpinBox::down-button {
 QSpinBox::up-button {
     subcontrol-origin: border;
     subcontrol-position: top right;
-    border-top-right-radius: 6px;
+    border-top-right-radius: 4px;
 }
 
 QSpinBox::down-button {
     subcontrol-origin: border;
     subcontrol-position: bottom right;
-    border-bottom-right-radius: 6px;
+    border-bottom-right-radius: 4px;
 }
 
 QSpinBox::up-button:hover, QSpinBox::down-button:hover {
@@ -558,8 +588,8 @@ QSpinBox::down-arrow {
 QComboBox::drop-down {
     background-color: $BG_CONTROL;
     border-left: 1px solid $BORDER;
-    border-top-right-radius: 6px;
-    border-bottom-right-radius: 6px;
+    border-top-right-radius: 4px;
+    border-bottom-right-radius: 4px;
     width: 22px;
 }
 
@@ -673,6 +703,14 @@ QLineEdit#outputPathField {
    ui_builder.py) -- this app's own theme-token substitution already
    reruns on every theme change, so no separate refresh call is needed
    the way the dynamic version required. */
+/* A finished run's outcome line (queue_controller.py's _set_status with
+   headline=True): DESIGN.md's status headline at section-title size --
+   body + 1pt, semibold. */
+QLabel[headline="true"] {
+    font-size: 11pt;
+    font-weight: 600;
+}
+
 QLabel#scopeLabel {
     font-size: 9pt;
     color: $TEXT_SECONDARY;
@@ -738,7 +776,7 @@ QSlider::handle:horizontal:hover {
 QProgressBar {
     background: $BG_FIELD;
     border: 1px solid $BORDER;
-    border-radius: 6px;
+    border-radius: 4px;
     min-height: 18px;
     text-align: center;
     color: $TEXT_PRIMARY;
@@ -746,7 +784,7 @@ QProgressBar {
 
 QProgressBar::chunk {
     background-color: $ACCENT;
-    border-radius: 5px;
+    border-radius: 3px;
 }
 
 QTreeWidget {

@@ -496,8 +496,9 @@ notice on top of it.
   Result grid the underlying engine's own sibling app still uses — **Video**
   (the delegate-painted two-line card described next) / **Duration** /
   **Size** / **Status** (`Ready` while queued, live `Converting… NN%` while
-  running, a size-change summary once done, or a short `Failed` — the full
-  reason stays in that cell's tooltip and the Log). The chosen *output*
+  running, a size-change summary once done, or a short `Failed` — the
+  reason itself shows on the row's second line in the error colour, in
+  full in the tooltip and the Log). The chosen *output*
   settings (encoder, quality, container, …) are deliberately **not**
   repeated here — they already live in, and edit live from, the right-hand
   settings panel for whichever row is selected (see "Selecting a row edits

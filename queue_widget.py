@@ -3,10 +3,10 @@ self-contained (only needs a files-dropped callback), so it has no
 MainWindow coupling to carry along."""
 from pathlib import Path
 
-from PySide6.QtCore import QRect, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter
+from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTreeWidget,
+    QAbstractItemView, QHeaderView, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTreeWidget,
 )
 
 from theming import _current_theme_palette, _fuzzy_text_color
@@ -54,6 +54,11 @@ VIDEO_SUBTITLE_ROLE = Qt.UserRole + 1
 # queue_controller.py's own _RAW_VIDEO_LABEL_ROLE/_RAW_AUDIO_LABEL_ROLE,
 # private to that file but still claiming this column's role numbering.
 AUDIO_TRACK_COUNT_ROLE = Qt.UserRole + 4
+# Why a job failed (str, or None) -- set by queue_controller.py's
+# _on_job_failed, cleared when the row is retried. The delegate below
+# paints it in place of the subtitle so a failure reads without hovering.
+# +6: +5 is queue_controller.py's _STATUS_ICON_ROLE.
+FAILURE_REASON_ROLE = Qt.UserRole + 6
 QUEUE_COLUMN_HEADERS = ["Video", "Duration", "Size", "Status"]
 
 
@@ -101,6 +106,9 @@ class _VideoCellDelegate(QStyledItemDelegate):
 
         text_rect = opt.rect.adjusted(icon_width + 4, 2, -4, -2)
         subtitle = index.data(VIDEO_SUBTITLE_ROLE) or ""
+        failure_reason = index.data(FAILURE_REASON_ROLE)
+        if failure_reason:
+            subtitle = f"Failed: {failure_reason}"
 
         if has_icon:
             size = opt.decorationSize
@@ -132,7 +140,8 @@ class _VideoCellDelegate(QStyledItemDelegate):
             subtitle_font = QFont(opt.font)
             subtitle_font.setPointSizeF(max(opt.font.pointSizeF() - 1, 7))
             painter.setFont(subtitle_font)
-            painter.setPen(QColor(_current_theme_palette.get("TEXT_SECONDARY", "#9098a6")))
+            subtitle_role = "ERROR" if failure_reason else "TEXT_SECONDARY"
+            painter.setPen(QColor(_current_theme_palette.get(subtitle_role, "#9098a6")))
             elided_subtitle = painter.fontMetrics().elidedText(subtitle, Qt.ElideRight, int(text_rect.width()))
             painter.drawText(
                 QRectF(text_rect.x(), text_rect.y() + half_height, text_rect.width(), half_height),
@@ -176,6 +185,14 @@ class DropTreeWidget(QTreeWidget):
     # real rows, no text overlay -- covering actual queue content with
     # placeholder text would be worse, not better.
     DRAG_ACTIVE_PLACEHOLDER_TEXT = "Drop to add videos"
+    # The widest real value each fixed column shows (formatting.format_size
+    # tops out at "1023.9GB" before switching unit). fit_columns sizes the
+    # columns to these in the current font, so Size and Status never
+    # truncate the numbers you scan for -- they were fixed px widths before
+    # ("11.2GB" showed as "11.2…"; UI finish-gate review, 2026-10-07).
+    COLUMN_SAMPLES = {DURATION_COL: "00:00:00", SIZE_COL: "1023.9GB", RESULT_COL: "1023.9GB (100% smaller)"}
+    # Item and header padding (style.qss: 6px each side) plus room to breathe.
+    COLUMN_PADDING = 16
 
     def __init__(self, on_files_dropped, on_reordered=None, parent=None):
         super().__init__(parent)
@@ -299,6 +316,57 @@ class DropTreeWidget(QTreeWidget):
             it.setSelected(True)
 
         event.acceptProposedAction()
+
+    def fit_columns(self):
+        """Video stretches to whatever is left and elides; Duration, Size and
+        Status get their widest real value's width in the current font.
+        Re-run on a font or style change (changeEvent), so larger text grows
+        the columns instead of clipping them."""
+        if self.columnCount() < len(QUEUE_COLUMN_HEADERS):
+            return  # a style change during construction, before the columns exist
+        header = self.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(VIDEO_COL, QHeaderView.Stretch)
+        item_metrics = self.fontMetrics()
+        header_font = QFont(header.font())
+        header_font.setWeight(QFont.Weight(600))  # QHeaderView::section is semibold (style.qss)
+        header_metrics = QFontMetrics(header_font)
+        for col, sample in self.COLUMN_SAMPLES.items():
+            width = max(item_metrics.horizontalAdvance(sample),
+                        header_metrics.horizontalAdvance(self.headerItem().text(col)))
+            self.setColumnWidth(col, width + self.COLUMN_PADDING)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self.fit_columns()
+
+    def event(self, event):
+        # FocusVisibleFilter (odcs-ui) flips this property on Tab focus in/out;
+        # the row ring below lives in the viewport, which a property change
+        # alone doesn't repaint.
+        if event.type() == QEvent.DynamicPropertyChange and event.propertyName() == b"focusVisible":
+            self.viewport().update()
+        return super().event(event)
+
+    def drawRow(self, painter, option, index):
+        super().drawRow(painter, option, index)
+        # Keyboard focus as one 2px ring inside the whole current row, not
+        # the 1px box around a single cell Qt drew for the old QSS outline
+        # (UI finish-gate review, 2026-10-07). Only for Tab focus: a click
+        # sets no focusVisible, so it shows no ring.
+        current = self.currentIndex()
+        if not (self.property("focusVisible") and current.isValid() and index.row() == current.row()):
+            return
+        painter.save()
+        pen = QPen(QColor(_current_theme_palette.get("ACCENT", "#308cc6")), 2)
+        pen.setJoinStyle(Qt.MiterJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        row = QRectF(option.rect)
+        row.setWidth(min(row.width(), self.header().length()))
+        painter.drawRect(row.adjusted(1, 1, -1, -1))
+        painter.restore()
 
     def paintEvent(self, event):
         super().paintEvent(event)

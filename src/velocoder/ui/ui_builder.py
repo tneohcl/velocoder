@@ -1289,11 +1289,10 @@ class _UiBuilderMixin:
         self.queue_list.setStyle(self._queue_list_style)
         self.queue_list.setColumnCount(len(QUEUE_COLUMN_HEADERS))
         self.queue_list.setHeaderLabels(QUEUE_COLUMN_HEADERS)
-        # Video stretches and elides; Duration, Size and Status are sized
-        # from the font to their widest real value (DropTreeWidget.
-        # fit_columns). Fixed px widths used to truncate Size and Status (UI
-        # finish-gate review, 2026-10-07). The trade: Video can't be dragged
-        # wider, which a Stretch section never allows.
+        # Duration, Size and Status are sized from the font to their widest
+        # real value and Video takes the rest (DropTreeWidget.fit_columns).
+        # Fixed px widths used to truncate Size and Status (UI finish-gate
+        # review, 2026-10-07). Every column can be dragged wider or narrower.
         self.queue_list.fit_columns()
         self.queue_list.itemSelectionChanged.connect(self._on_queue_selection_changed)
         self.queue_list.setContextMenuPolicy(Qt.CustomContextMenu)

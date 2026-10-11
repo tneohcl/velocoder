@@ -29,7 +29,7 @@ from PySide6.QtGui import (  # noqa: E402
     QColor, QDragEnterEvent, QIcon, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QFocusEvent, QFont,
     QFontMetrics, QKeySequence, QPainter, QPalette, QPixmap, QShortcut, QWheelEvent,
 )
-from PySide6.QtWidgets import QApplication, QScrollArea, QStyleOptionViewItem, QTabWidget, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QHeaderView, QScrollArea, QStyleOptionViewItem, QTabWidget, QWidget  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
@@ -470,6 +470,8 @@ class TestFuzzyTextColor(unittest.TestCase):
     whole suite) and are exactly the condition each branch below needs to
     control precisely, not incidentally inherit."""
 
+    DARK_FIELD = {"BG_FIELD": "#171a1f"}
+
     @staticmethod
     def _widget_with_roles(window_text: QColor, placeholder: QColor):
         from PySide6.QtWidgets import QWidget
@@ -487,7 +489,10 @@ class TestFuzzyTextColor(unittest.TestCase):
         # Light text on the (default, dark) BG_FIELD, so it also clears the
         # 4.5:1 floor and is returned untouched, alpha included.
         widget = self._widget_with_roles(QColor(20, 20, 20), QColor(240, 240, 240, 200))
-        result = theming._fuzzy_text_color(widget)
+        # Pinned: an earlier test's window may have left the light palette
+        # behind, and the 4.5:1 check would then swap in TEXT_SECONDARY.
+        with patch.dict(theming._current_theme_palette, self.DARK_FIELD):
+            result = theming._fuzzy_text_color(widget)
         # A real, directly-usable QColor -- not a string. Reported live as
         # "always black text" in both themes when this used to return a
         # "rgba(...)" CSS string instead: queue_widget.py's paintEvent
@@ -500,7 +505,8 @@ class TestFuzzyTextColor(unittest.TestCase):
 
     def test_distinct_solid_placeholder_role_is_honored_as_is(self):
         widget = self._widget_with_roles(QColor(20, 20, 20), QColor(200, 200, 200))
-        result = theming._fuzzy_text_color(widget)
+        with patch.dict(theming._current_theme_palette, self.DARK_FIELD):
+            result = theming._fuzzy_text_color(widget)
         self.assertEqual((result.red(), result.green(), result.blue(), result.alpha()), (200, 200, 200, 255))
 
     def test_low_contrast_placeholder_falls_back_to_text_secondary(self):
@@ -5703,6 +5709,36 @@ class TestQueueColumnsFitTheirContent(unittest.TestCase):
         header = window.queue_list.header()
         others = sum(header.sectionSize(c) for c in (main_window.DURATION_COL, main_window.SIZE_COL, main_window.RESULT_COL))
         self.assertEqual(header.sectionSize(main_window.VIDEO_COL) + others, window.queue_list.viewport().width())
+
+    def test_every_column_is_resizable_by_dragging(self):
+        header = self._window(1186, 720).queue_list.header()
+        for col in range(header.count()):
+            self.assertEqual(header.sectionResizeMode(col), QHeaderView.Interactive, col)
+
+    def test_dragged_video_width_survives_a_window_resize(self):
+        window = self._window(1186, 720)
+        header = window.queue_list.header()
+        status = header.sectionSize(main_window.RESULT_COL)
+        dragged = header.sectionSize(main_window.VIDEO_COL) - 120
+        header.resizeSection(main_window.VIDEO_COL, dragged)  # what a handle drag calls
+        QApplication.processEvents()
+        # Status takes up the slack, so the row still spans the list.
+        self.assertEqual(header.sectionSize(main_window.RESULT_COL), status + 120)
+        window.resize(1386, 720)
+        QApplication.processEvents()
+        # The extra window width goes to Video; the user's narrowing holds.
+        self.assertEqual(header.sectionSize(main_window.VIDEO_COL), dragged + 200)
+        self.assertEqual(header.sectionSize(main_window.RESULT_COL), status + 120)
+
+    def test_widening_duration_takes_from_video_not_status(self):
+        window = self._window(1186, 720)
+        header = window.queue_list.header()
+        video, status = header.sectionSize(main_window.VIDEO_COL), header.sectionSize(main_window.RESULT_COL)
+        header.resizeSection(main_window.DURATION_COL, header.sectionSize(main_window.DURATION_COL) + 60)
+        QApplication.processEvents()
+        self.assertEqual(header.sectionSize(main_window.VIDEO_COL), video - 60)
+        self.assertEqual(header.sectionSize(main_window.RESULT_COL), status)
+        self.assertFalse(window.queue_list.horizontalScrollBar().isVisible())
 
 
 class TestControlsMatchTheDesignDecisions(unittest.TestCase):

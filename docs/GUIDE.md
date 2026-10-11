@@ -285,9 +285,13 @@ notice on top of it.
   **Duration**, **Size** and **Status** are sized from the current font to
   their widest real value ("00:00:00", "1023.9GB", "1023.9GB (100%
   smaller)") by `DropTreeWidget.fit_columns`, and refit when the font or
-  style changes, so the numbers you scan for are never truncated. The
-  trade: a Stretch section can't be drag-resized. (Until 2026-10-07 these
-  were hand-tuned px widths, and Size showed "11.2GB" as "11.2…".)
+  style changes, so the numbers you scan for are never truncated. (Until
+  2026-10-07 these were hand-tuned px widths, and Size showed "11.2GB" as
+  "11.2…".) Every column can be dragged: narrowing Video widens Status,
+  widening Duration or Size takes from Video, and a window resize always
+  lands on Video, so a dragged width survives it. A font or style change
+  refits all four and drops the dragged widths. Widths aren't saved between
+  sessions.
 - **Source metadata probe** — each added file immediately kicks off an
   async, non-blocking `ffprobe -show_entries format=duration:stream=...`
   call (`worker.build_probe_args`/`parse_probe_output`, header-only, no

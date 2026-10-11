@@ -318,28 +318,77 @@ class DropTreeWidget(QTreeWidget):
         event.acceptProposedAction()
 
     def fit_columns(self):
-        """Video stretches to whatever is left and elides; Duration, Size and
-        Status get their widest real value's width in the current font.
-        Re-run on a font or style change (changeEvent), so larger text grows
-        the columns instead of clipping them."""
+        """Duration, Size and Status get their widest real value's width in
+        the current font; Video takes the rest and elides. Every column can
+        be dragged (Interactive): Status is the last section and stretches,
+        so it soaks up whatever a narrowed Video leaves, while Video keeps
+        tracking the list's width (_fill_video). Re-run on a font or style
+        change (changeEvent), so larger text grows the columns instead of
+        clipping them; that also drops any width the user dragged."""
         if self.columnCount() < len(QUEUE_COLUMN_HEADERS):
             return  # a style change during construction, before the columns exist
         header = self.header()
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(VIDEO_COL, QHeaderView.Stretch)
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setStretchLastSection(True)
+        if not getattr(self, "_section_resize_hooked", False):
+            header.sectionResized.connect(self._on_section_resized)
+            self._section_resize_hooked = True
         item_metrics = self.fontMetrics()
         header_font = QFont(header.font())
         header_font.setWeight(QFont.Weight(600))  # QHeaderView::section is semibold (style.qss)
         header_metrics = QFontMetrics(header_font)
-        for col, sample in self.COLUMN_SAMPLES.items():
-            width = max(item_metrics.horizontalAdvance(sample),
-                        header_metrics.horizontalAdvance(self.headerItem().text(col)))
-            if col == RESULT_COL:
-                # Room for a finished row's Show output button (queue_controller.
-                # _add_reveal_output_button): an icon at text height plus its
-                # padding, border and the cell's trailing margin.
-                width += item_metrics.height() + 14
-            self.setColumnWidth(col, width + self.COLUMN_PADDING)
+        self._fitting_columns = True
+        try:
+            for col, sample in self.COLUMN_SAMPLES.items():
+                width = max(item_metrics.horizontalAdvance(sample),
+                            header_metrics.horizontalAdvance(self.headerItem().text(col)))
+                if col == RESULT_COL:
+                    # Room for a finished row's Show output button (queue_controller.
+                    # _add_reveal_output_button): an icon at text height plus its
+                    # padding, border and the cell's trailing margin.
+                    width += item_metrics.height() + 14
+                width += self.COLUMN_PADDING
+                if col == RESULT_COL:
+                    self._status_width = width
+                self.setColumnWidth(col, width)
+        finally:
+            self._fitting_columns = False
+        self._video_offset = 0
+        self._fill_video()
+
+    def _fill_video(self):
+        """Video = the list's width minus the other columns, minus however
+        much the user dragged Video narrower (_video_offset; negative when
+        they dragged it wider). A window resize therefore lands on Video,
+        and Status returns to its fitted width plus that same offset."""
+        if not hasattr(self, "_status_width"):
+            return
+        header = self.header()
+        rest = header.sectionSize(DURATION_COL) + header.sectionSize(SIZE_COL) + self._status_width
+        width = max(header.minimumSectionSize(), self.viewport().width() - rest - self._video_offset)
+        self._fitting_columns = True
+        try:
+            header.resizeSection(VIDEO_COL, width)
+        finally:
+            self._fitting_columns = False
+
+    def _on_section_resized(self, col, _old, new):
+        if getattr(self, "_fitting_columns", False) or col == RESULT_COL:
+            return  # our own layout, or Status stretching to fill
+        if col == VIDEO_COL:
+            # The user dragged Video's edge: remember how far from "fill".
+            header = self.header()
+            rest = header.sectionSize(DURATION_COL) + header.sectionSize(SIZE_COL) + self._status_width
+            self._video_offset = self.viewport().width() - rest - new
+        else:
+            # Duration or Size dragged: Video gives up (or takes) the
+            # difference, so Status keeps its width.
+            self._fill_video()
+
+    def viewportEvent(self, event):
+        if event.type() == QEvent.Resize:
+            self._fill_video()
+        return super().viewportEvent(event)
 
     def changeEvent(self, event):
         super().changeEvent(event)

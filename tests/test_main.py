@@ -4454,29 +4454,35 @@ class TestDynamicProcessingButtons(unittest.TestCase):
         self.assertIsNone(window.processing_amd_btn)
         self.assertEqual(len(window.processing_button_group.buttons()), 1)
 
-    def test_intel_only_gets_a_two_segment_row(self):
+    def test_intel_only_gets_auto_cpu_intel(self):
         with patch.object(main_window.ffmpeg, "find_render_node", side_effect=_find_render_node_for(main_window.ffmpeg.INTEL_VENDOR_ID)):
             window = main_window.MainWindow()
-        self.assertEqual(window.processing_cpu_btn.objectName(), "segLeft")
+        # Auto leads the row (it isn't in the button group: a one-shot pick).
+        self.assertEqual(window.processing_auto_btn.objectName(), "segLeft")
+        self.assertEqual(window.processing_cpu_btn.objectName(), "segMid")
         self.assertEqual(window.processing_intel_btn.objectName(), "segRight")
         self.assertIsNone(window.processing_amd_btn)
         self.assertEqual(len(window.processing_button_group.buttons()), 2)
 
-    def test_amd_only_gets_a_two_segment_row(self):
+    def test_amd_only_gets_auto_cpu_amd(self):
         with patch.object(main_window.ffmpeg, "find_render_node", side_effect=_find_render_node_for(main_window.ffmpeg.AMD_VENDOR_ID)):
             window = main_window.MainWindow()
-        self.assertEqual(window.processing_cpu_btn.objectName(), "segLeft")
+        # Auto leads the row (it isn't in the button group: a one-shot pick).
+        self.assertEqual(window.processing_auto_btn.objectName(), "segLeft")
+        self.assertEqual(window.processing_cpu_btn.objectName(), "segMid")
         self.assertIsNone(window.processing_intel_btn)
         self.assertEqual(window.processing_amd_btn.objectName(), "segRight")
         self.assertEqual(len(window.processing_button_group.buttons()), 2)
 
-    def test_both_vendors_present_gets_the_original_three_segment_row(self):
+    def test_both_vendors_present_gets_auto_cpu_intel_amd(self):
         with patch.object(
             main_window.ffmpeg, "find_render_node",
             side_effect=_find_render_node_for(main_window.ffmpeg.INTEL_VENDOR_ID, main_window.ffmpeg.AMD_VENDOR_ID),
         ):
             window = main_window.MainWindow()
-        self.assertEqual(window.processing_cpu_btn.objectName(), "segLeft")
+        # Auto leads the row (it isn't in the button group: a one-shot pick).
+        self.assertEqual(window.processing_auto_btn.objectName(), "segLeft")
+        self.assertEqual(window.processing_cpu_btn.objectName(), "segMid")
         self.assertEqual(window.processing_intel_btn.objectName(), "segMid")
         self.assertEqual(window.processing_amd_btn.objectName(), "segRight")
         self.assertEqual(len(window.processing_button_group.buttons()), 3)

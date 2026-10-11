@@ -31,6 +31,7 @@ from velocoder.ui.queue_widget import (
     VIDEO_COL, DURATION_COL, SIZE_COL,
     RESULT_COL, STATUS_COL, AUDIO_TRACK_COUNT_ROLE, QUEUE_COLUMN_HEADERS,
 )
+from velocoder.ui.icons import refresh_icons
 from velocoder.ui.theming import (
     _current_theme_palette, _system_accent_tokens, _load_stylesheet,
     _ComboPopupBackgroundFilter, _FocusVisibleFilter, _ComboWheelBlockFilter,
@@ -432,6 +433,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # Queue status icons are set once per job state; redraw them for
         # the new theme.
         self._refresh_status_icons()
+        refresh_icons(self)
         # _load_stylesheet alone re-themes ordinary widget chrome (the
         # Help window's search field/topic tree included) via the same
         # app-level QSS every other window already shares -- but the
@@ -515,6 +517,7 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         if self._theme_choice == "system":
             _load_stylesheet(QApplication.instance(), _resolve_theme("system"))
             self._refresh_status_icons()
+            refresh_icons(self)
             if getattr(self, "_help_window", None) is not None:
                 self._help_window.refresh_theme()
 

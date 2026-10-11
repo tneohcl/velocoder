@@ -13,11 +13,11 @@ in the MRO fine, but multiple-inheriting from two QObject-derived
 classes is a well-known source of real, hard-to-diagnose problems. A
 plain mixin sidesteps that entirely."""
 from PySide6.QtCore import Qt, QEvent, QObject, QSize, QMargins
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QPainter
+from PySide6.QtGui import QAction, QActionGroup, QFont, QFontMetrics, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QMenu, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-    QSizePolicy, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QSizePolicy, QSlider, QSpinBox, QStyle, QStyleOptionGroupBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from velocoder.core import formatting
@@ -29,6 +29,7 @@ from velocoder.ui.queue_widget import (
     DropTreeWidget, VIDEO_COL, DURATION_COL, SIZE_COL,
     RESULT_COL, QUEUE_COLUMN_HEADERS,
 )
+from velocoder.ui.icons import icon_button, icon_label, icon_tabs
 from velocoder.ui.theming import _NoItemFocusRectStyle
 
 PANEL_MARGIN = 8
@@ -81,6 +82,36 @@ class _ElidedLabel(QLabel):
             painter, rect, int(self.alignment()), self.palette(), self.isEnabled(),
             elided, self.foregroundRole(),
         )
+
+
+class _GroupTitleIcon(QLabel):
+    """A section heading's icon. QGroupBox titles are text only, so this is a
+    child label placed just before the title text, which style.qss moves
+    right to make room (QGroupBox[titleIcon="true"]::title). Placed from the
+    style's own title rect, so it follows the title at any text size."""
+
+    GAP = 5
+
+    def __init__(self, group: QGroupBox, name: str):
+        super().__init__(group)
+        group.setProperty("titleIcon", True)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        icon_label(self, name)
+        group.installEventFilter(self)
+
+    def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
+        if event.type() in (QEvent.Resize, QEvent.Show, QEvent.StyleChange, QEvent.FontChange, QEvent.Polish):
+            self._place(obj)
+        return False
+
+    def _place(self, group: QGroupBox):
+        option = QStyleOptionGroupBox()
+        group.initStyleOption(option)
+        title = group.style().subControlRect(QStyle.CC_GroupBox, option, QStyle.SC_GroupBoxLabel, group)
+        font = QFont(group.font())
+        font.setWeight(QFont.Weight(600))  # QGroupBox is semibold (style.qss)
+        text_left = title.right() - 6 - QFontMetrics(font).horizontalAdvance(group.title())
+        self.move(text_left - self.width() - self.GAP, title.center().y() - self.height() // 2 + 1)
 
 
 class _ButtonActionMirror(QObject):
@@ -334,6 +365,7 @@ class _UiBuilderMixin:
         tabs = QTabWidget()
         tabs.addTab(self._build_video_tab(), "Video")
         tabs.addTab(self._build_audio_tab(), "Audio")
+        icon_tabs(tabs, ["video", "audio"])
         # The two tabs have very different row counts, and the left panel
         # is always stretched to the full window height by its layout cell
         # regardless of content -- capping the tab widget to its natural
@@ -494,21 +526,23 @@ class _UiBuilderMixin:
         _on_processing_choice, which goes through _apply_settings_to_
         controls exactly like every other Normal control here."""
         group = QGroupBox("Encoding")
+        _GroupTitleIcon(group, "section_encoding")
         form = QFormLayout(group)
         form.setVerticalSpacing(6)
 
-        processing_row = QHBoxLayout()
-        processing_row.setSpacing(6)
-        self.processing_auto_btn = QPushButton("Automatic")
-        self.processing_auto_btn.setToolTip(
-            "Automatically chooses the fastest available method for this\n"
-            "computer. Recommended."
-        )
-        self.processing_auto_btn.clicked.connect(lambda: self._on_processing_choice("automatic"))
-        processing_row.addWidget(self.processing_auto_btn)
-
+        # One segmented row: Auto | CPU | Intel | AMD. Auto isn't a state of
+        # its own -- it's a one-shot "pick the fastest" that checks whichever
+        # engine it chose -- so it stays uncheckable at the leading end and
+        # the engine segment it lands on shows the result.
         processing_seg_row = QHBoxLayout()
         processing_seg_row.setSpacing(0)
+        self.processing_auto_btn = QPushButton("Auto")
+        self.processing_auto_btn.setToolTip(
+            "Picks the fastest available method for this computer and\n"
+            "selects it. Recommended."
+        )
+        self.processing_auto_btn.clicked.connect(lambda: self._on_processing_choice("automatic"))
+        icon_button(self.processing_auto_btn, "auto")
         self.processing_button_group = QButtonGroup(self)
         # Intel/AMD only exist as attributes at all when that vendor's
         # hardware was actually detected -- _sync_normal_video_controls
@@ -527,15 +561,15 @@ class _UiBuilderMixin:
         # against this exact same snapshot, so Automatic's silent pick
         # and this row's own button set can never disagree.
         detected = self._available_backends
-        seg_buttons = []
+        seg_buttons = [(self.processing_auto_btn, None)]
         for backend in detected:
             btn = QPushButton(backend.display_name)
             setattr(self, attr_by_id[backend.id], btn)
+            icon_button(btn, backend.id)
             seg_buttons.append((btn, backend.id))
 
-        # Corner-rounding follows actual visible position, not a fixed
-        # CPU/Intel/AMD identity -- style.qss's segLeft/segMid/segRight
-        # only round the row's real outer two edges.
+        # Corner-rounding follows actual visible position -- style.qss's
+        # segLeft/segMid/segRight only round the row's real outer two edges.
         for i, (btn, _choice) in enumerate(seg_buttons):
             if i == 0:
                 btn.setObjectName("segLeft")
@@ -543,13 +577,13 @@ class _UiBuilderMixin:
                 btn.setObjectName("segRight")
             else:
                 btn.setObjectName("segMid")
+            processing_seg_row.addWidget(btn, 1)
 
-        for btn, choice in seg_buttons:
+        for btn, choice in seg_buttons[1:]:
             btn.setCheckable(True)
             self.processing_button_group.addButton(btn)
-            processing_seg_row.addWidget(btn, 1)
             btn.clicked.connect(lambda _checked, c=choice: self._on_processing_choice(c))
-        processing_row.addWidget(self._capped_row(processing_seg_row, 240), 1)
+        processing_row = self._capped_row(processing_seg_row)
         form.addRow("Processing:", processing_row)
         if len(detected) == 1:
             # Only CPU exists at all -- Automatic and the lone CPU segment
@@ -617,6 +651,7 @@ class _UiBuilderMixin:
         form is still meaningfully more precise than the three named
         tiers, and stays duplicated in Expert for that reason."""
         group = QGroupBox("Quality")
+        _GroupTitleIcon(group, "section_quality")
         self.quality_form = form = QFormLayout(group)
         form.setVerticalSpacing(6)
 
@@ -628,6 +663,8 @@ class _UiBuilderMixin:
         self.mode_quality_btn.setToolTip("Aim for a consistent perceptual quality; file size follows.")
         self.mode_filesize_btn = QPushButton("File Size")
         self.mode_filesize_btn.setObjectName("segRight")
+        icon_button(self.mode_quality_btn, "mode_quality")
+        icon_button(self.mode_filesize_btn, "mode_size")
         self.mode_filesize_btn.setToolTip("Aim for a target output size; quality follows.")
         for btn in (self.mode_quality_btn, self.mode_filesize_btn):
             btn.setCheckable(True)
@@ -656,6 +693,9 @@ class _UiBuilderMixin:
         self.quality_balanced_btn.setObjectName("segMid")
         self.quality_better_btn = QPushButton("Better Quality")
         self.quality_better_btn.setObjectName("segRight")
+        icon_button(self.quality_smaller_btn, "level_1")
+        icon_button(self.quality_balanced_btn, "level_2")
+        icon_button(self.quality_better_btn, "level_3")
         for btn, tier in (
             (self.quality_smaller_btn, "smaller"),
             (self.quality_balanced_btn, "balanced"),
@@ -740,6 +780,7 @@ class _UiBuilderMixin:
         File Format is now directly this dropdown, nothing else touches
         it."""
         group = QGroupBox("Format")
+        _GroupTitleIcon(group, "section_format")
         form = QFormLayout(group)
         form.setVerticalSpacing(6)
 
@@ -1084,6 +1125,7 @@ class _UiBuilderMixin:
         # advanced (multi-track passthrough, language selection, per-
         # track mapping, loudness normalization, ...).
         normal_group = QGroupBox("Audio")
+        _GroupTitleIcon(normal_group, "audio")
         normal_form = QFormLayout(normal_group)
         normal_form.setVerticalSpacing(6)
 
@@ -1104,6 +1146,7 @@ class _UiBuilderMixin:
         handling_row.setSpacing(0)
         self.audio_handling_button_group = QButtonGroup(self)
         self.audio_handling_automatic_btn = QPushButton("Automatic")
+        icon_button(self.audio_handling_automatic_btn, "auto")
         self.audio_handling_automatic_btn.setObjectName("segLeft")
         self.audio_handling_automatic_btn.setToolTip(
             "Keeps the original audio track untouched whenever the\n"
@@ -1111,6 +1154,7 @@ class _UiBuilderMixin:
             "copy); re-encodes to AAC only when it isn't."
         )
         self.audio_handling_convert_btn = QPushButton("Convert to AAC")
+        icon_button(self.audio_handling_convert_btn, "convert_aac")
         self.audio_handling_convert_btn.setObjectName("segRight")
         self.audio_handling_convert_btn.setToolTip(
             "Always re-encodes to AAC at the bitrate set below, even if\n"
@@ -1134,8 +1178,10 @@ class _UiBuilderMixin:
         channels_row.setSpacing(0)
         self.audio_channels_button_group = QButtonGroup(self)
         self.audio_channels_keep_btn = QPushButton("Keep Original")
+        icon_button(self.audio_channels_keep_btn, "channels_keep")
         self.audio_channels_keep_btn.setObjectName("segLeft")
         self.audio_channels_stereo_btn = QPushButton("Stereo")
+        icon_button(self.audio_channels_stereo_btn, "channels_stereo")
         self.audio_channels_stereo_btn.setObjectName("segRight")
         self.audio_channels_stereo_btn.setToolTip(
             "Mixes 5.1/7.1/etc. sources down to plain stereo, for a\n"
@@ -1257,10 +1303,12 @@ class _UiBuilderMixin:
         # the old "⋯" overflow button is gone. The QActions below are the
         # single definition each menu and button shares.
         self.add_files_btn = QPushButton("Add Videos…")
+        icon_button(self.add_files_btn, "add")
         self.add_files_btn.clicked.connect(self._pick_files)
         self.remove_btn = QAction("Remove Selected", self)
         self.remove_btn.triggered.connect(self._remove_selected)
         self.remove_queue_btn = QPushButton("Remove")
+        icon_button(self.remove_queue_btn, "remove")
         self.remove_queue_btn.setToolTip("Remove the selected videos from the queue (Delete)")
         self.remove_queue_btn.clicked.connect(self._remove_selected)
         self.remove_queue_btn.setEnabled(False)
@@ -1309,8 +1357,10 @@ class _UiBuilderMixin:
         # path directly, per the comment above, still needs to keep working.
         self.output_edit.setObjectName("outputPathField")
         browse_btn = QPushButton("Change…")
+        icon_button(browse_btn, "folder")
         browse_btn.clicked.connect(self._pick_output_dir)
         open_btn = QPushButton("Open")
+        icon_button(open_btn, "open_external")
         open_btn.clicked.connect(self._open_output_dir)
         out_row.addWidget(QLabel("Save to:"))
         out_row.addWidget(self.output_edit, 1)
@@ -1360,6 +1410,7 @@ class _UiBuilderMixin:
         # trailing, with Stop / Open Folder just before it (_build_toolbar).
         self.start_btn = QPushButton("Convert")
         self.start_btn.setObjectName("startButton")
+        icon_button(self.start_btn, "play", on_accent=True)
         self.start_btn.setDefault(True)
         # A capped max width, not just a stretch ratio -- 3:1 alone still
         # let the primary action grow to whatever width a wide window
@@ -1372,6 +1423,7 @@ class _UiBuilderMixin:
         self.start_btn.setMaximumWidth(280)
         self.start_btn.clicked.connect(self._start)
         self.stop_btn = QPushButton("Stop")
+        icon_button(self.stop_btn, "stop")
         self.stop_btn.setMaximumWidth(110)
         self.stop_btn.clicked.connect(self._stop)
         self.stop_btn.setEnabled(False)
@@ -1384,6 +1436,7 @@ class _UiBuilderMixin:
         # destructive override is gone -- QSS properties merge, not reset,
         # so this needed no replacement rule, just deleting the old one.
         self.open_folder_btn = QPushButton("Open Folder")
+        icon_button(self.open_folder_btn, "open_external")
         self.open_folder_btn.clicked.connect(self._open_output_dir)
 
         # Not shown in the main layout at all, same treatment as

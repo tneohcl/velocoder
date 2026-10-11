@@ -334,6 +334,11 @@ class DropTreeWidget(QTreeWidget):
         for col, sample in self.COLUMN_SAMPLES.items():
             width = max(item_metrics.horizontalAdvance(sample),
                         header_metrics.horizontalAdvance(self.headerItem().text(col)))
+            if col == RESULT_COL:
+                # Room for a finished row's Show output button (queue_controller.
+                # _add_reveal_output_button): an icon at text height plus its
+                # padding, border and the cell's trailing margin.
+                width += item_metrics.height() + 14
             self.setColumnWidth(col, width + self.COLUMN_PADDING)
 
     def changeEvent(self, event):

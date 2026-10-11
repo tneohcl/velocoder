@@ -5730,6 +5730,24 @@ class TestQueueColumnsFitTheirContent(unittest.TestCase):
         self.assertEqual(header.sectionSize(main_window.VIDEO_COL), dragged + 200)
         self.assertEqual(header.sectionSize(main_window.RESULT_COL), status + 120)
 
+    def test_header_menu_restores_automatic_widths(self):
+        window = self._window(1186, 720)
+        header = window.queue_list.header()
+        fitted = [header.sectionSize(c) for c in range(header.count())]
+        header.resizeSection(main_window.VIDEO_COL, fitted[main_window.VIDEO_COL] - 150)
+        header.resizeSection(main_window.SIZE_COL, fitted[main_window.SIZE_COL] + 50)
+        QApplication.processEvents()
+        self.assertEqual(header.contextMenuPolicy(), Qt.CustomContextMenu)
+        menu = window.queue_list._build_header_menu()
+        [action] = [a for a in menu.actions() if a.text() == "Automatic Column Widths"]
+        action.trigger()
+        QApplication.processEvents()
+        self.assertEqual([header.sectionSize(c) for c in range(header.count())], fitted)
+        # Back to filling: the next window resize goes to Video again.
+        window.resize(1286, 720)
+        QApplication.processEvents()
+        self.assertEqual(header.sectionSize(main_window.VIDEO_COL), fitted[main_window.VIDEO_COL] + 100)
+
     def test_widening_duration_takes_from_video_not_status(self):
         window = self._window(1186, 720)
         header = window.queue_list.header()

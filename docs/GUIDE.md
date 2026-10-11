@@ -290,7 +290,8 @@ notice on top of it.
   "11.2…".) Every column can be dragged: narrowing Video widens Status,
   widening Duration or Size takes from Video, and a window resize always
   lands on Video, so a dragged width survives it. A font or style change
-  refits all four and drops the dragged widths. Widths aren't saved between
+  refits all four and drops the dragged widths, and so does right-click on
+  the header → **Automatic Column Widths**. Widths aren't saved between
   sessions.
 - **Source metadata probe** — each added file immediately kicks off an
   async, non-blocking `ffprobe -show_entries format=duration:stream=...`

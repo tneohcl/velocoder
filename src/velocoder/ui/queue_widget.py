@@ -6,7 +6,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QHeaderView, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTreeWidget,
+    QAbstractItemView, QHeaderView, QMenu, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTreeWidget,
 )
 
 from velocoder.ui.theming import _current_theme_palette, _fuzzy_text_color
@@ -228,6 +228,9 @@ class DropTreeWidget(QTreeWidget):
         # app) when Qt hands it an option.widget of None -- observed under
         # some paint paths, not just a defensive guess.
         self.setItemDelegateForColumn(VIDEO_COL, _VideoCellDelegate(self))
+        # Right-click on the header: undo any dragged column widths.
+        self.header().setContextMenuPolicy(Qt.CustomContextMenu)
+        self.header().customContextMenuRequested.connect(self._on_header_context_menu)
 
     def _has_local_file_url(self, mime_data) -> bool:
         # Same validity bar dropEvent already applies when actually acting
@@ -384,6 +387,19 @@ class DropTreeWidget(QTreeWidget):
             # Duration or Size dragged: Video gives up (or takes) the
             # difference, so Status keeps its width.
             self._fill_video()
+
+    def _build_header_menu(self) -> QMenu:
+        # Split from _on_header_context_menu so tests can trigger the
+        # action without QMenu.exec()'s blocking modal loop (same reason
+        # as queue_controller._build_queue_context_menu).
+        menu = QMenu(self)
+        menu.addAction("Automatic Column Widths").triggered.connect(self.fit_columns)
+        return menu
+
+    def _on_header_context_menu(self, pos):
+        menu = self._build_header_menu()
+        menu.exec(self.header().mapToGlobal(pos))
+        menu.deleteLater()
 
     def viewportEvent(self, event):
         if event.type() == QEvent.Resize:

@@ -52,6 +52,9 @@ class SystemInfoDialog(QDialog):
     def __init__(self, parent, available_backends, theme_name: str, ffmpeg_version: str | None,
                  unusable_gpus=()):
         super().__init__(parent)
+        # Freed when closed, not at interpreter exit, where PySide6 6.12
+        # crashes tearing a leftover dialog down.
+        self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle("System Information")
         self._text = system_info_text(available_backends, theme_name, ffmpeg_version, unusable_gpus)
 
@@ -108,6 +111,8 @@ the GNU Lesser General Public License (LGPL) version 3.
 class LicensesDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
+        # Freed when closed (see SystemInfoDialog).
+        self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle("Licenses")
 
         text_view = QPlainTextEdit()
@@ -131,6 +136,8 @@ class AboutDialog(QDialog):
     def __init__(self, parent, icon: QIcon, available_backends, theme_name: str, ffmpeg_version: str | None,
                  unusable_gpus=()):
         super().__init__(parent)
+        # Freed when closed (see SystemInfoDialog).
+        self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle(f"About {APP_NAME}")
         # Compact and fixed -- About is a small, static identity card,
         # not a resizable workspace (System Information/Licenses, the

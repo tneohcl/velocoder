@@ -18,7 +18,7 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QIcon  # noqa: E402
 from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
@@ -28,6 +28,15 @@ _app = QApplication.instance() or QApplication([])
 from velocoder.ui import about_dialogs  # noqa: E402
 from velocoder.core.constants import APP_NAME, APP_ORGANIZATION, APP_VERSION  # noqa: E402
 from velocoder.core.ffmpeg import ProcessingBackend, UnusableGpu  # noqa: E402
+
+
+def tearDownModule():
+    # The dialogs built here have no parent and are never closed. Left for
+    # interpreter exit, PySide6 6.12 crashes tearing them down ("shared
+    # QObject was deleted directly", then SIGBUS), after every test passed.
+    for widget in QApplication.topLevelWidgets():
+        widget.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 class TestSystemInfoText(unittest.TestCase):
@@ -176,6 +185,20 @@ class TestAboutDialog(unittest.TestCase):
         dialog.show()
         QTest.keyClick(dialog, Qt.Key_Escape)
         self.assertFalse(dialog.isVisible())
+
+
+class TestDialogsAreFreedWhenClosed(unittest.TestCase):
+    """A dialog left alive until interpreter exit crashes PySide6 6.12's
+    teardown (SIGBUS), so each one deletes itself when closed."""
+
+    def test_every_dialog_deletes_on_close(self):
+        for dialog in (
+            about_dialogs.AboutDialog(None, QIcon(), [ProcessingBackend("cpu", "CPU")], "Dark", "7.0"),
+            about_dialogs.SystemInfoDialog(None, [ProcessingBackend("cpu", "CPU")], "Dark", "7.0"),
+            about_dialogs.LicensesDialog(None),
+        ):
+            with self.subTest(type(dialog).__name__):
+                self.assertTrue(dialog.testAttribute(Qt.WA_DeleteOnClose))
 
 
 class TestEscapeClosesChildDialogs(unittest.TestCase):

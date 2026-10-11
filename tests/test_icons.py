@@ -1,12 +1,17 @@
 """Control icons (ui/icons.py) and the controls that carry them."""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _sandbox  # noqa: E402,F401  (first: keeps the suite out of the real home)
+
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import sys  # noqa: E402
 import tempfile  # noqa: E402
 import unittest  # noqa: E402
-from pathlib import Path  # noqa: E402
 from unittest.mock import patch  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

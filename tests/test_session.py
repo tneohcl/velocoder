@@ -4,11 +4,16 @@ see test_main.py's TestSessionPersistence for the integration side).
 
 Run with:  python3 -m unittest discover -s tests -v
 """
-import json
+
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _sandbox  # noqa: E402,F401  (first: keeps the suite out of the real home)
+
+import json
 import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

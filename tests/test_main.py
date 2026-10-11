@@ -4,6 +4,13 @@ Run with:  python3 -m unittest discover -s tests -v
 Runs headless via the "offscreen" Qt platform plugin (set below) -- no
 real display needed, and no window is ever actually shown.
 """
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _sandbox  # noqa: E402,F401  (first: keeps the suite out of the real home)
+
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -11,11 +18,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import shlex
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from contextlib import contextmanager
-from pathlib import Path
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

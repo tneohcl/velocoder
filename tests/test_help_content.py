@@ -5,9 +5,14 @@ see tests/test_main.py's TestHelpWindow for that side).
 
 Run with:  python3 -m unittest discover -s tests -v
 """
+
 import sys
-import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _sandbox  # noqa: E402,F401  (first: keeps the suite out of the real home)
+
+import unittest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))

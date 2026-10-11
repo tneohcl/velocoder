@@ -9,14 +9,19 @@ accepts, and only real hardware/driver combinations can confirm the VAAPI
 flags this app relies on (e.g. -rc_mode CQP needing -qp, not
 -global_quality) are actually valid, not just plausible-looking.
 """
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _sandbox  # noqa: E402,F401  (first: keeps the suite out of the real home)
+
 import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

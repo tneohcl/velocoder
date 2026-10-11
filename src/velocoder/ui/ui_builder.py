@@ -33,8 +33,9 @@ from velocoder.ui.icons import icon_button, icon_label, icon_tabs
 from velocoder.ui.theming import _NoItemFocusRectStyle
 
 PANEL_MARGIN = 8
-# The settings column is fixed-width (see _build_ui); the toolbar title
-# matches it so the queue commands line up with the queue.
+# The settings column's width (see _build_ui): fixed, never drag-resized,
+# but grows past this when its content needs more (_LeftPanelWidth). The
+# toolbar title matches it so the queue commands line up with the queue.
 LEFT_PANEL_WIDTH = 456
 PANEL_SPACING = 8
 # Distinct from PANEL_SPACING -- that one governs the left/right panels'
@@ -82,6 +83,38 @@ class _ElidedLabel(QLabel):
             painter, rect, int(self.alignment()), self.palette(), self.isEnabled(),
             elided, self.foregroundRole(),
         )
+
+
+class _LeftPanelWidth(QObject):
+    """Keeps the settings column at LEFT_PANEL_WIDTH, or wider when its
+    content needs more: a wider system font (DejaVu Sans, Ubuntu's default,
+    needs ~472 px at 10 pt) or larger text. It never scrolls sideways, so
+    without this the cards' right edges were clipped. Refits whenever the
+    content's layout changes, and when the vertical scrollbar comes or goes
+    (it takes width from the content, as does #leftPanel's border)."""
+
+    TITLE_INSET = 16 + 8  # toolbar left margin + spacing (_build_toolbar)
+
+    def __init__(self, scroll: QScrollArea, content: QWidget, title: QLabel):
+        super().__init__(scroll)
+        self._scroll, self._content, self._title = scroll, content, title
+        content.installEventFilter(self)
+        scroll.verticalScrollBar().installEventFilter(self)
+        self.fit()
+
+    def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
+        if event.type() in (QEvent.LayoutRequest, QEvent.Show, QEvent.Hide):
+            self.fit()
+        return False
+
+    def fit(self):
+        scroll = self._scroll
+        bar = scroll.verticalScrollBar()
+        chrome = scroll.width() - scroll.contentsRect().width() + (bar.width() if bar.isVisible() else 0)
+        width = max(LEFT_PANEL_WIDTH, self._content.minimumSizeHint().width() + chrome)
+        if self._scroll.minimumWidth() != width or self._scroll.maximumWidth() != width:
+            self._scroll.setFixedWidth(width)
+            self._title.setFixedWidth(width - self.TITLE_INSET)
 
 
 class _GroupTitleIcon(QLabel):
@@ -178,7 +211,7 @@ class _UiBuilderMixin:
         layout.setSpacing(0)
 
         left = self._build_left_panel()
-        left.setFixedWidth(LEFT_PANEL_WIDTH)
+        left.setFixedWidth(LEFT_PANEL_WIDTH)  # _LeftPanelWidth widens it if needed, below
         left.setObjectName("leftPanel")
         layout.addWidget(left)
         right = self._build_right_panel()
@@ -187,6 +220,7 @@ class _UiBuilderMixin:
         layout.addWidget(right, 1)
         outer.addWidget(self._build_toolbar())
         outer.addLayout(layout, 1)
+        self._left_panel_width = _LeftPanelWidth(left, self._left_panel_content, self.findChild(QLabel, "appTitle"))
         self._build_status_bar()
         self._build_menu_bar()
 
@@ -203,7 +237,7 @@ class _UiBuilderMixin:
         title = QLabel("VeloCoder")
         title.setObjectName("appTitle")
         # Add Videos… lines up with the queue's left edge.
-        title.setFixedWidth(LEFT_PANEL_WIDTH - 16 - 8)
+        title.setFixedWidth(LEFT_PANEL_WIDTH - _LeftPanelWidth.TITLE_INSET)
         row.addWidget(title)
         row.addWidget(self.add_files_btn)
         row.addWidget(self.remove_queue_btn)
@@ -332,9 +366,9 @@ class _UiBuilderMixin:
         # Qt's own default) once it genuinely can't fit, rather than
         # letting Expert's bottom rows get compressed/clipped or forcing
         # the whole window taller just to accommodate its one tallest
-        # possible state. setFixedWidth(456) (in _build_ui) still applies
-        # to this outer scroll area, so the fixed-width contract is
-        # unaffected -- only vertical overflow ever scrolls.
+        # possible state. The width is set on this outer scroll area (in
+        # _build_ui, kept to the content's need by _LeftPanelWidth), so
+        # only vertical overflow ever scrolls.
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setContentsMargins(PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN)
@@ -401,10 +435,8 @@ class _UiBuilderMixin:
         # #leftPanel's QSS border-right (style.qss), doubling up as two
         # visibly different border treatments on the same edge.
         scroll.setFrameShape(QFrame.NoFrame)
-        # Never horizontal -- content already fits the fixed 456px width
-        # by design (every row/card in it is sized for exactly this
-        # panel); only vertical overflow (Expert expanded) is the real
-        # concern here.
+        # Never horizontal -- the panel widens to fit its content instead
+        # (_LeftPanelWidth); only vertical overflow (Expert expanded) scrolls.
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         # Kept for _update_left_panel_min_height (main_window.py) -- reported
         # live, explicitly accepting the tradeoff: shrinking the window

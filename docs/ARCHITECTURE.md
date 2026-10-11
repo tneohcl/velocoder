@@ -64,7 +64,9 @@ docs/                  This file, GUIDE.md, screenshots/, CONSUMER_FORK_PLAN.md.
 ```
 
 
-The GUI is a fixed-width (456px) settings inspector on the left, wrapped
+The GUI is a fixed-width settings inspector on the left (456px, or as
+wide as its content needs when a wider font or larger text would
+otherwise clip it -- `_LeftPanelWidth` in `ui_builder.py`), wrapped
 in a `QScrollArea` (a vertical scrollbar appears only if Expert's content
 ever exceeds the window height -- none under normal conditions), and a
 flexible workspace on the right, laid out with a plain `QHBoxLayout` (not

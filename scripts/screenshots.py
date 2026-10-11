@@ -79,6 +79,10 @@ def _set_text_size(app, window, points: float):
     app.setStyleSheet(base)
     refresh_icons(window)
     window.queue_list.fit_columns()
+    # A window manager never lets a window be narrower than its minimum;
+    # offscreen Qt does, and would squeeze the layout instead.
+    _settle(app)
+    window.resize(max(window.width(), window.minimumSizeHint().width()), window.height())
 
 
 def _grab(app, window, path: Path):

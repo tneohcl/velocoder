@@ -29,7 +29,7 @@ from PySide6.QtGui import (  # noqa: E402
     QColor, QDragEnterEvent, QIcon, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QFocusEvent, QFont,
     QFontMetrics, QKeySequence, QPainter, QPalette, QPixmap, QShortcut, QWheelEvent,
 )
-from PySide6.QtWidgets import QApplication, QHeaderView, QScrollArea, QStyleOptionViewItem, QTabWidget, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QScrollArea, QStyleOptionViewItem, QTabWidget, QWidget  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
@@ -4108,32 +4108,52 @@ class TestLiveAppendDuringRun(unittest.TestCase):
         self.assertNotIn(item, window._pending_mid_run_items)
 
 
-class TestLeftPanelFixedWidth(unittest.TestCase):
-    # Regression guard for the QSplitter -> QHBoxLayout change
-    # (ui_builder.py's _build_ui): the left settings panel is a deliberate
-    # design rule now (fixed 456px, right panel absorbs all resizing), not
-    # incidental sizing -- this exists so a future edit reintroducing
-    # splitter-style drag/resize behavior fails a test instead of silently
-    # regressing. 456, not the original 470 -- a density pass tried 410
-    # directly and confirmed real clipping by screenshot (the settings
-    # content's own sizeHint().width() is 450px regardless of hardware,
-    # driven by the Quality-tier row's button labels, not by anything
-    # padding/spacing could shrink); 456 leaves a small margin above that
-    # measured floor. See ui_builder.py's own comment on this same
-    # setFixedWidth call for the full measurement.
-    def test_left_panel_is_fixed_at_456(self):
+class TestLeftPanelWidth(unittest.TestCase):
+    # The settings column is 456 px (no splitter; the queue absorbs window
+    # resizing) unless its content needs more: a wider system font (DejaVu
+    # Sans on Ubuntu needs ~472 px at 10 pt) or larger text widens it
+    # instead of clipping the cards' right edges. DESIGN.md: the settings
+    # pane scrolls, never clips; it never scrolls sideways, so it grows.
+    def _window(self):
         window = main_window.MainWindow()
+        window.resize(1280, 800)
+        window.show()
+        QApplication.processEvents()
+        return window
+
+    def _assert_content_fits(self, window):
+        scroll = window._left_panel_scroll
+        self.assertLessEqual(window._left_panel_content.minimumSizeHint().width(), scroll.viewport().width())
+
+    def test_left_panel_is_456_or_what_its_content_needs(self):
+        window = self._window()
         left = window.findChild(QWidget, "leftPanel")
-        self.assertIsNotNone(left)
-        self.assertEqual(left.minimumWidth(), 456)
-        self.assertEqual(left.maximumWidth(), 456)
+        border = left.width() - left.contentsRect().width()  # #leftPanel's border-right
+        need = window._left_panel_content.minimumSizeHint().width() + border
+        self.assertEqual(left.width(), max(456, need))
+        self.assertEqual(left.minimumWidth(), left.maximumWidth())  # still not drag-resizable
+        self._assert_content_fits(window)
 
     def test_widening_the_window_does_not_change_left_panel_width(self):
-        window = main_window.MainWindow()
-        window.show()
+        window = self._window()
         left = window.findChild(QWidget, "leftPanel")
+        before = left.width()
         window.resize(1800, 820)
-        self.assertEqual(left.width(), 456)
+        QApplication.processEvents()
+        self.assertEqual(left.width(), before)
+
+    def test_larger_text_widens_the_panel_instead_of_clipping(self):
+        window = self._window()
+        left = window.findChild(QWidget, "leftPanel")
+        before = left.width()
+        window.setStyleSheet("* { font-size: 14pt; }")
+        QApplication.processEvents()
+        QApplication.processEvents()
+        self.assertGreater(left.width(), before)
+        self._assert_content_fits(window)
+        # The toolbar title tracks it, so Add Videos… stays over the queue.
+        title = window.findChild(QLabel, "appTitle")
+        self.assertEqual(title.width(), left.width() - 24)
 
 
 class TestLeftPanelScrolling(unittest.TestCase):
@@ -5677,7 +5697,17 @@ class TestQueueColumnsFitTheirContent(unittest.TestCase):
         row = _queue_row(window, "Old camcorder tape 07.avi")
         row.setText(main_window.SIZE_COL, "1023.9GB")
         row.setText(main_window.RESULT_COL, "1023.9GB (100% smaller)")
-        QApplication.processEvents()
+        # Until the layout settles: a geometry restored from an earlier
+        # test's window can take one more pass, and the drag tests measure
+        # their baseline from here.
+        header = window.queue_list.header()
+        sizes = None
+        for _ in range(10):
+            QApplication.processEvents()
+            now = [header.sectionSize(c) for c in range(header.count())] + [window.queue_list.viewport().width()]
+            if now == sizes:
+                break
+            sizes = now
         return window
 
     def _assert_columns_fit(self, window):

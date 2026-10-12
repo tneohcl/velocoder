@@ -64,6 +64,19 @@ docs/                  This file, GUIDE.md, screenshots/, CONSUMER_FORK_PLAN.md.
 ```
 
 
+Text follows the desktop font size: `style.qss` is written for a 10 pt
+desktop, and `theming.text_scale()` multiplies every `font-size` in it
+(and in the Help window's HTML) by desktop pt / 10, never below 1. A
+desktop font change reloads the stylesheet live
+(`MainWindow.event`, `ApplicationFontChange`). The window's minimum is
+960 px or what the content needs, whichever is more
+(`MainWindow._fit_minimum_width`), and at large sizes toolbar and
+Save-to buttons drop to their icons when their row is short of room
+(`_IconOnlyWhenTight`), least needed first: Add Videos…, Remove and Open
+Folder, then Convert, then Stop/Cancel. The name stays as tooltip and
+accessible name, and the Queue menu reads it from there. A 22 pt window
+fits 1280 px, idle or mid-run.
+
 The GUI is a fixed-width settings inspector on the left (456px, or as
 wide as its content needs when a wider font or larger text would
 otherwise clip it -- `_LeftPanelWidth` in `ui_builder.py`), wrapped

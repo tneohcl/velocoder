@@ -10,7 +10,7 @@ import sys
 import weakref
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSettings, QProcess, QTimer
+from PySide6.QtCore import Qt, QEvent, QSettings, QProcess, QTimer
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFormLayout, QMainWindow, QTreeWidgetItem,
@@ -69,6 +69,10 @@ DEFAULT_SETTINGS = {
 }
 
 
+# The narrowest the window goes at the default text size.
+MIN_WINDOW_WIDTH = 960
+
+
 class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
     def __init__(self):
         super().__init__()
@@ -91,7 +95,10 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # from 470 to 456 -- left as the first thing to test at, rather
         # than tightening it to match, before drawing any conclusion about
         # how the narrower inspector actually behaves at the floor.
-        self.setMinimumWidth(960)
+        # Raised to what the content needs when larger text needs more
+        # (_fit_minimum_width): a fixed 960 let a 22 pt window be squeezed
+        # until the queue side clipped.
+        self.setMinimumWidth(MIN_WINDOW_WIDTH)
 
         self._res_label = {(r["width"], r["height"]): r["label"] for r in RESOLUTIONS}
         self._preview_audio_cache: dict[tuple, str | None] = {}
@@ -515,11 +522,35 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
 
     def _on_system_theme_changed(self, _scheme):
         if self._theme_choice == "system":
-            _load_stylesheet(QApplication.instance(), _resolve_theme("system"))
-            self._refresh_status_icons()
-            refresh_icons(self)
-            if getattr(self, "_help_window", None) is not None:
-                self._help_window.refresh_theme()
+            self._reload_stylesheet()
+
+    def _reload_stylesheet(self):
+        _load_stylesheet(QApplication.instance(), _resolve_theme(self._theme_choice))
+        self._refresh_status_icons()
+        refresh_icons(self)
+        if getattr(self, "_help_window", None) is not None:
+            self._help_window.refresh_theme()
+
+    def event(self, event):  # noqa: N802 (Qt API)
+        kind = event.type()
+        if kind == QEvent.ApplicationFontChange and self.isVisible():
+            # The desktop text size changed (System Settings > Fonts):
+            # style.qss's sizes follow it (theming.text_scale), and the
+            # queue columns are sized from the font. A closed window skips
+            # it: the stylesheet is app-wide, one reload re-polishes all.
+            self._reload_stylesheet()
+            self.queue_list.fit_columns()
+        elif kind == QEvent.LayoutRequest:
+            handled = super().event(event)  # lets the layout settle first
+            self._fit_minimum_width()
+            return handled
+        return super().event(event)
+
+    def _fit_minimum_width(self):
+        """960 px, or as wide as the content needs at the current text size."""
+        need = max(MIN_WINDOW_WIDTH, self.layout().minimumSize().width())
+        if self.minimumWidth() != need:
+            self.setMinimumWidth(need)
 
     def _update_settings_scope_label(self, selected=None):
         # Reported live: nothing distinguished "these controls are about

@@ -35,7 +35,7 @@ from PySide6.QtGui import (  # noqa: E402
     QFontMetrics, QKeySequence, QPainter, QPalette, QPixmap, QShortcut, QWheelEvent,
 )
 from PySide6.QtWidgets import (  # noqa: E402
-    QApplication, QFormLayout, QGroupBox, QHeaderView, QLabel, QScrollArea, QStyle, QStyleOptionGroupBox,
+    QApplication, QFormLayout, QGroupBox, QHeaderView, QLabel, QPushButton, QScrollArea, QStyle, QStyleOptionGroupBox,
     QStyleOptionViewItem, QTabWidget, QWidget,
 )
 from PySide6.QtTest import QTest  # noqa: E402
@@ -184,8 +184,9 @@ def _add_dummy_item(window, name: str, **overrides) -> "main_window.QTreeWidgetI
 
 class _FakeApp:
     """Stand-in for QApplication -- needs setStyleSheet() (the whole point
-    of _load_stylesheet) and now also palette() (_system_accent_tokens
-    reads QPalette.Accent/.Highlight off whatever's passed as app)."""
+    of _load_stylesheet), palette() (_system_accent_tokens reads
+    QPalette.Accent/.Highlight off whatever's passed as app) and font()
+    (theming.text_scale: a 10 pt desktop, so sizes are as written)."""
     received = None
 
     def setStyleSheet(self, text):
@@ -194,12 +195,28 @@ class _FakeApp:
     def palette(self):
         return QPalette()
 
+    def font(self):
+        font = QFont()
+        font.setPointSizeF(10)
+        return font
+
 
 class TestStylesheetLoading(unittest.TestCase):
     def test_missing_file_does_not_crash_startup(self):
         app = _FakeApp()
         main_window._load_stylesheet(app, style_path=Path("/nonexistent/style.qss"))  # must not raise
         self.assertIsNone(app.received)
+
+    def test_font_sizes_scale_with_the_desktop_font(self):
+        class LargeTextApp(_FakeApp):
+            def font(self):
+                font = QFont()
+                font.setPointSizeF(15)
+                return font
+        app = LargeTextApp()
+        main_window._load_stylesheet(app, style_path=STYLE_QSS)
+        self.assertIn("font-size: 15pt", app.received)  # QWidget's 10 pt body
+        self.assertNotIn("font-size: 10pt", app.received)
 
     def test_real_stylesheet_file_loads(self):
         app = _FakeApp()
@@ -4221,6 +4238,162 @@ class TestLargeTextFits(unittest.TestCase):
                             continue
                         with self.subTest(points=points, mode=mode.text(), label=label.text()):
                             self.assertGreaterEqual(label.width(), label.sizeHint().width())
+
+
+class TestDesktopTextSize(unittest.TestCase):
+    # VeloCoder follows the desktop font size (System Settings > Fonts): every
+    # font-size in style.qss scales by desktop pt / 10, never below 10 pt.
+    # It used to pin 10 pt, so a 22 pt desktop changed nothing. At 22 pt the
+    # window must still fit 1280 px: Add Videos…, Remove, Open Folder,
+    # Change… and Open drop to their icons when their row is short of room.
+    def setUp(self):
+        app = QApplication.instance()
+        original = QFont(app.font())
+        self.addCleanup(QApplication.processEvents)
+        self.addCleanup(app.setFont, original)
+
+    def _set_desktop_points(self, points):
+        font = QFont(QApplication.instance().font())
+        font.setPointSizeF(points)
+        QApplication.instance().setFont(font)
+        for _ in range(5):
+            QApplication.processEvents()
+
+    def _window(self, width=1280):
+        window = main_window.MainWindow()
+        window.resize(width, 800)
+        window.show()
+        self.addCleanup(QApplication.sendPostedEvents, None, QEvent.DeferredDelete)
+        self.addCleanup(window.deleteLater)
+        self.addCleanup(window.close)
+        for _ in range(5):
+            QApplication.processEvents()
+        return window
+
+    def _settle(self, window, width):
+        window.resize(max(width, window.minimumWidth()), 800)
+        for _ in range(5):
+            QApplication.processEvents()
+
+    def test_text_follows_the_desktop_font_size_live(self):
+        window = self._window()
+        self.assertEqual(window.start_btn.font().pointSizeF(), 10)
+        self._set_desktop_points(22)
+        self.assertEqual(window.start_btn.font().pointSizeF(), 22)
+        self.assertEqual(window.findChild(QLabel, "appTitle").font().pointSizeF(), 16 * 2.2)
+
+    def test_text_never_goes_below_ten_points(self):
+        self._set_desktop_points(8)
+        window = self._window()
+        self.assertEqual(window.start_btn.font().pointSizeF(), 10)
+
+    def test_window_minimum_is_960_or_what_the_content_needs(self):
+        window = self._window()
+        self.assertEqual(window.minimumWidth(), main_window.MIN_WINDOW_WIDTH)
+        self._set_desktop_points(22)
+        self.assertEqual(window.minimumWidth(), max(960, window.layout().minimumSize().width()))
+        self.assertGreater(window.minimumWidth(), 960)
+
+    def test_window_fits_1280_at_22_points(self):
+        self._set_desktop_points(22)
+        window = self._window()
+        self.assertLessEqual(window.minimumWidth(), 1280)
+        self.assertLessEqual(window.width(), 1280)
+
+    def test_queue_buttons_drop_to_icons_only_when_short_of_room(self):
+        self._set_desktop_points(22)
+        window = self._window()
+        buttons = {window.add_files_btn: "Add Videos…", window.remove_queue_btn: "Remove"}
+        for button, text in buttons.items():
+            with self.subTest(text):
+                self.assertEqual(button.text(), "")
+                self.assertFalse(button.icon().isNull())
+                self.assertEqual(button.accessibleName(), text)
+                self.assertTrue(button.toolTip())
+        self._settle(window, 2400)
+        for button, text in buttons.items():
+            with self.subTest(text, width=2400):
+                self.assertEqual(button.text(), text)
+        # Convert keeps its words: the Queue menu mirrors them.
+        self.assertTrue(window.start_btn.text())
+
+    def test_mid_run_cancel_keeps_its_label_and_the_menu_keeps_words(self):
+        self._set_desktop_points(22)
+        window = self._window()
+        window._apply_run_phase_visuals("converting")
+        for _ in range(5):
+            QApplication.processEvents()
+        self.assertLessEqual(window.width(), 1280)
+        self.assertEqual(window.stop_btn.text(), "Cancel")
+        self.assertEqual(window.start_btn.text(), "")  # dropped before Cancel
+        self.assertEqual(window.start_btn.accessibleName(), "Converting…")
+        window._button_mirror.sync()
+        self.assertEqual(window.convert_action.text(), "Converting…")
+
+    def test_a_long_status_line_never_widens_the_window(self):
+        # The run-status lines elide instead: a long filename used to set the
+        # window's minimum (1489 px mid-run at 22 pt).
+        name = "a-very-long-holiday-video-name-from-the-camcorder-tape-2019.mkv"
+        for points in (10, 22):
+            self._set_desktop_points(points)
+            window = self._window()
+            window._apply_run_phase_visuals("converting")
+            window._set_status(f"Converting 3 of 4 — {name}")
+            window.eta_label.setText(f"About 8 minutes remaining for {name}")
+            window.stats_label.setText(f"{name} · 2.3x · 41 fps · 1.2 Mb/s")
+            for _ in range(5):
+                QApplication.processEvents()
+            with self.subTest(points=points):
+                self.assertEqual(window.minimumWidth(), max(960, window.layout().minimumSize().width()))
+                self.assertLessEqual(window.width(), 1280)
+                self.assertIn(name, window.status_label.text())  # full text kept (and as tooltip)
+                self.assertIn(name, window.status_label.toolTip())
+
+    def test_no_toolbar_label_is_clipped(self):
+        for points in (10, 14, 22):
+            self._set_desktop_points(points)
+            window = self._window()
+            for phase in ("idle", "converting"):
+                window._apply_run_phase_visuals(phase)
+                for _ in range(5):
+                    QApplication.processEvents()
+                for button in window.findChild(QWidget, "appToolbar").findChildren(QPushButton):
+                    if button.isVisible() and button.text():
+                        with self.subTest(points=points, phase=phase, button=button.text()):
+                            self.assertGreaterEqual(button.width(), button.sizeHint().width())
+
+    def test_buttons_keep_their_text_at_ten_points(self):
+        window = self._window()
+        self._settle(window, 960)
+        self.assertEqual(window.add_files_btn.text(), "Add Videos…")
+        self.assertEqual(window.remove_queue_btn.text(), "Remove")
+
+    def test_labelled_width_matches_the_buttons_own_size_hint(self):
+        # _IconOnlyWhenTight decides from this without showing the text.
+        for points in (10, 22):
+            self._set_desktop_points(points)
+            window = self._window(2400)
+            for button in (window.add_files_btn, window.remove_queue_btn):
+                with self.subTest(points=points, button=button.text()):
+                    self.assertTrue(button.text())
+                    width = ui_builder._IconOnlyWhenTight.width_for(button, button.text())
+                    self.assertEqual(width, button.sizeHint().width())
+
+    def test_section_icons_line_up_with_the_rows_at_every_size(self):
+        for points in (10, 14, 22):
+            self._set_desktop_points(points)
+            window = self._window(1600)
+            group = window.quality_form.parentWidget()
+            icon = group.findChild(ui_builder._GroupTitleIcon)
+            label = window.quality_form.itemAt(0, QFormLayout.LabelRole).widget()
+            with self.subTest(points=points):
+                self.assertEqual(icon.x(), label.x())
+
+    def test_help_text_scales_with_the_desktop_font(self):
+        self._set_desktop_points(20)
+        self.assertEqual(theming.scale_font_sizes("p { font-size: 9pt; }"), "p { font-size: 18pt; }")
+        self._set_desktop_points(9)
+        self.assertEqual(theming.scale_font_sizes("p { font-size: 9pt; }"), "p { font-size: 9pt; }")
 
 
 class TestLeftPanelScrolling(unittest.TestCase):

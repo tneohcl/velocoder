@@ -5,6 +5,7 @@ focus rect), and theme-choice resolution. Nothing here depends on
 MainWindow -- everything took an explicit `app` (or, for the event
 filters/proxy style, whatever QObject/QWidget it's applied to) already,
 so this was already a self-contained concern before the move."""
+import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QEvent, QObject
@@ -19,6 +20,31 @@ from velocoder.ui._vendor.odcs_ui import theming as odcs_theming
 # _ComboPopupBackgroundFilter so a popup styled after a theme change gets
 # the theme it was opened under, not whatever was loaded at startup.
 _current_theme_palette: dict = {}
+
+# style.qss and the few font sizes set in code are written for a 10 pt
+# desktop font. A larger desktop font scales every one of them by the same
+# factor, so the app follows the user's text size the way native apps do
+# (before, style.qss pinned 10 pt and a 22 pt desktop changed nothing).
+BASE_TEXT_PT = 10.0
+_FONT_SIZE = re.compile(r"font-size:\s*([\d.]+)pt")
+
+
+def text_scale(app=None) -> float:
+    """How many times larger than 10 pt the desktop's text is. Never below
+    1: a 9 or 9.5 pt desktop (and offscreen Qt's 9 pt) keeps the 10 pt the
+    layout was designed at."""
+    app = app or QApplication.instance()
+    points = app.font().pointSizeF() if app is not None else -1
+    return max(1.0, points / BASE_TEXT_PT) if points > 0 else 1.0
+
+
+def scale_font_sizes(css: str, factor: float | None = None) -> str:
+    """css with every `font-size: Npt` multiplied by factor (default: the
+    desktop's text_scale())."""
+    factor = text_scale() if factor is None else factor
+    if factor == 1:
+        return css
+    return _FONT_SIZE.sub(lambda m: f"font-size: {float(m.group(1)) * factor:g}pt", css)
 
 
 def _system_accent_tokens(app) -> dict:
@@ -177,7 +203,7 @@ def _load_stylesheet(app, theme_name: str = "dark", style_path: Path = Path(__fi
             if token.endswith("_ICON"):
                 value = str(assets_dir / value)
             text = text.replace(f"${token}", value)
-        app.setStyleSheet(text)
+        app.setStyleSheet(scale_font_sizes(text, text_scale(app)))
         _current_theme_palette.clear()
         _current_theme_palette.update(palette)
     except OSError as exc:

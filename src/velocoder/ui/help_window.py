@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 
 from velocoder.core import help_content
 from velocoder.core.constants import APP_NAME
-from velocoder.ui.theming import _current_theme_palette
+from velocoder.ui.theming import _current_theme_palette, scale_font_sizes
 
 _TOPIC_ID_ROLE = Qt.UserRole + 1
 # topic_tree runs at indentation()==0 (see _RoundedSelectionDelegate's
@@ -327,7 +327,8 @@ class HelpWindow(QWidget):
         bg = _current_theme_palette.get("BG_PANEL", "#21252c")
         card_bg = _current_theme_palette.get("BG_CONTROL", "#2a2f38")
         border = _current_theme_palette.get("BORDER", "#333944")
-        return (
+        # Point sizes follow the desktop's text size, like style.qss's.
+        return scale_font_sizes(
             f"<html><head><style>"
             f"body {{ background-color: {bg}; color: {fg};"
             f" font-family: sans-serif; font-size: 10pt; }}"

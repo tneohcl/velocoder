@@ -292,7 +292,11 @@ notice on top of it.
   lands on Video, so a dragged width survives it. A font or style change
   refits all four and drops the dragged widths, and so does right-click on
   the header → **Automatic Column Widths**. Widths aren't saved between
-  sessions.
+  sessions. When the list is too narrow to show about 10 characters of
+  each name beside the other columns (large text, a narrow window),
+  **Duration** and then **Size** move into each row's second line
+  ("0:03 · 53.1KB · H.264 1920x1080") and come back once there's room;
+  after that, **Video** and **Status** share the width.
 - **Source metadata probe** — each added file immediately kicks off an
   async, non-blocking `ffprobe -show_entries format=duration:stream=...`
   call (`worker.build_probe_args`/`parse_probe_output`, header-only, no

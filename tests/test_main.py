@@ -5926,6 +5926,73 @@ class TestConvertOnlyUnfinished(unittest.TestCase):
         mock_start.assert_not_called()
 
 
+class TestQueueAtLargeText(unittest.TestCase):
+    # At 22 pt the queue is ~390 px wide and Duration, Size and Status
+    # alone wanted ~690, so Video got its 86 px minimum and every name read
+    # "h…". Video now keeps room for about 10 characters: Duration, then
+    # Size, move into each row's second line, and Status shares the rest.
+    def setUp(self):
+        app = QApplication.instance()
+        original = QFont(app.font())
+        self.addCleanup(QApplication.processEvents)
+        self.addCleanup(app.setFont, original)
+
+    def _window(self, points, width=1280):
+        font = QFont(QApplication.instance().font())
+        font.setPointSizeF(points)
+        QApplication.instance().setFont(font)
+        window = main_window.MainWindow()
+        window.resize(width, 800)
+        window.show()
+        self.addCleanup(QApplication.sendPostedEvents, None, QEvent.DeferredDelete)
+        self.addCleanup(window.deleteLater)
+        self.addCleanup(window.close)
+        row = _queue_row(window, "harbour-timelapse.mp4")
+        row.setText(main_window.DURATION_COL, "0:03")
+        row.setText(main_window.SIZE_COL, "53.1KB")
+        row.setData(main_window.VIDEO_COL, queue_widget.VIDEO_SUBTITLE_ROLE, "H.264 320x180")
+        for _ in range(8):
+            QApplication.processEvents()
+        return window, row
+
+    def _subtitle(self, window, row):
+        index = window.queue_list.indexFromItem(row, main_window.VIDEO_COL)
+        return queue_widget.row_subtitle(index, window.queue_list)
+
+    def test_video_keeps_room_for_a_name_at_22_points(self):
+        window, row = self._window(22)
+        queue = window.queue_list
+        header = queue.header()
+        self.assertGreaterEqual(header.sectionSize(main_window.VIDEO_COL), 10 * queue.fontMetrics().averageCharWidth())
+        self.assertTrue(header.isSectionHidden(main_window.DURATION_COL))
+        self.assertTrue(header.isSectionHidden(main_window.SIZE_COL))
+        self.assertFalse(header.isSectionHidden(main_window.RESULT_COL))
+        self.assertEqual(self._subtitle(window, row), "0:03  ·  53.1KB  ·  H.264 320x180")
+        self.assertEqual(header.length(), queue.viewport().width())  # nothing scrolls sideways
+
+    def test_columns_come_back_when_there_is_room(self):
+        window, row = self._window(22)
+        window.resize(2400, 800)
+        for _ in range(5):
+            QApplication.processEvents()
+        header = window.queue_list.header()
+        self.assertFalse(header.isSectionHidden(main_window.DURATION_COL))
+        self.assertFalse(header.isSectionHidden(main_window.SIZE_COL))
+        self.assertEqual(self._subtitle(window, row), "H.264 320x180")
+
+    def test_nothing_folds_at_ten_points_even_in_the_narrowest_window(self):
+        window, row = self._window(10, 960)
+        header = window.queue_list.header()
+        self.assertFalse(header.isSectionHidden(main_window.DURATION_COL))
+        self.assertFalse(header.isSectionHidden(main_window.SIZE_COL))
+        self.assertEqual(self._subtitle(window, row), "H.264 320x180")
+
+    def test_a_failed_row_still_shows_its_reason(self):
+        window, row = self._window(22)
+        row.setData(main_window.VIDEO_COL, queue_widget.FAILURE_REASON_ROLE, "Demo failure")
+        self.assertEqual(self._subtitle(window, row), "Failed: Demo failure")
+
+
 class TestQueueColumnsFitTheirContent(unittest.TestCase):
     """Size was a fixed 60 px ("11.2GB" showed as "11.2…") and Status lost
     its live % at the minimum window size."""
@@ -5965,7 +6032,10 @@ class TestQueueColumnsFitTheirContent(unittest.TestCase):
         self._assert_columns_fit(self._window(1186, 720))
 
     def test_larger_text_grows_the_columns(self):
-        window = self._window()
+        # The default window: at 960 px, 11.5 pt queue text leaves Video
+        # short of room and Duration folds into the rows' second line
+        # (TestQueueAtLargeText).
+        window = self._window(1186, 720)
         before = window.queue_list.header().sectionSize(main_window.RESULT_COL)
         # Through the stylesheet: style.qss pins the font size, so setFont()
         # alone would change nothing.

@@ -29,6 +29,16 @@ BASE_TEXT_PT = 10.0
 _FONT_SIZE = re.compile(r"font-size:\s*([\d.]+)pt")
 
 
+# The text_scale the current app stylesheet was built with (_load_stylesheet).
+_loaded_text_scale = [1.0]
+
+
+def stylesheet_is_current(app=None) -> bool:
+    """Whether the loaded stylesheet already has the desktop's text scale,
+    so a font change in one window needn't reload it for every other."""
+    return _loaded_text_scale[0] == text_scale(app)
+
+
 def text_scale(app=None) -> float:
     """How many times larger than 10 pt the desktop's text is. Never below
     1: a 9 or 9.5 pt desktop (and offscreen Qt's 9 pt) keeps the 10 pt the
@@ -203,7 +213,10 @@ def _load_stylesheet(app, theme_name: str = "dark", style_path: Path = Path(__fi
             if token.endswith("_ICON"):
                 value = str(assets_dir / value)
             text = text.replace(f"${token}", value)
-        app.setStyleSheet(scale_font_sizes(text, text_scale(app)))
+        scale = text_scale(app)
+        app.setStyleSheet(scale_font_sizes(text, scale))
+        if app is QApplication.instance():  # not a test's stand-in app
+            _loaded_text_scale[0] = scale
         _current_theme_palette.clear()
         _current_theme_palette.update(palette)
     except OSError as exc:

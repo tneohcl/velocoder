@@ -34,7 +34,10 @@ from PySide6.QtGui import (  # noqa: E402
     QColor, QDragEnterEvent, QIcon, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QFocusEvent, QFont,
     QFontMetrics, QKeySequence, QPainter, QPalette, QPixmap, QShortcut, QWheelEvent,
 )
-from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QScrollArea, QStyleOptionViewItem, QTabWidget, QWidget  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication, QFormLayout, QGroupBox, QHeaderView, QLabel, QScrollArea, QStyle, QStyleOptionGroupBox,
+    QStyleOptionViewItem, QTabWidget, QWidget,
+)
 from PySide6.QtTest import QTest  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
@@ -47,6 +50,7 @@ from velocoder.ui import queue_controller  # noqa: E402
 from velocoder.ui import queue_widget  # noqa: E402
 from velocoder.ui import session  # noqa: E402
 from velocoder.ui import theming  # noqa: E402
+from velocoder.ui import ui_builder  # noqa: E402
 from velocoder.ui._vendor.odcs_ui import desktop as odcs_desktop  # noqa: E402
 from velocoder.core import ffmpeg  # noqa: E402
 
@@ -4159,6 +4163,64 @@ class TestLeftPanelWidth(unittest.TestCase):
         # The toolbar title tracks it, so Add Videos… stays over the queue.
         title = window.findChild(QLabel, "appTitle")
         self.assertEqual(title.width(), left.width() - 24)
+
+
+class TestLargeTextFits(unittest.TestCase):
+    # The settings cards at the default text size and at the large sizes a
+    # low-vision user picks (DESIGN.md: test at 10, 14 and 22 pt). At 22 pt
+    # the card titles used to run into their first row (a fixed 19 px of
+    # headroom) and the Quality card's labels kept their 10 pt width.
+    SIZES = (10, 14, 22)
+
+    def _window(self, points):
+        window = main_window.MainWindow()
+        window.resize(1280, 800)
+        window.show()
+        window.setStyleSheet(f"* {{ font-size: {points}pt; }}")
+        for _ in range(5):
+            QApplication.processEvents()
+        self.addCleanup(window.close)
+        return window
+
+    @staticmethod
+    def _title_rect(group):
+        option = QStyleOptionGroupBox()
+        group.initStyleOption(option)
+        return group.style().subControlRect(QStyle.CC_GroupBox, option, QStyle.SC_GroupBoxLabel, group)
+
+    def test_card_titles_sit_above_their_first_row(self):
+        for points in self.SIZES:
+            window = self._window(points)
+            for tab in (0, 1):
+                window.findChild(QTabWidget).setCurrentIndex(tab)
+                QApplication.processEvents()
+                for group in window._left_panel_content.findChildren(QGroupBox):
+                    rows = [
+                        child for child in group.findChildren(QWidget, options=Qt.FindDirectChildrenOnly)
+                        if child.isVisible() and not isinstance(child, ui_builder._GroupTitleIcon)
+                    ]
+                    if not group.isVisible() or not rows:
+                        continue  # a collapsed section has nothing under its title
+                    with self.subTest(points=points, group=group.title()):
+                        first_row = min(child.geometry().top() for child in rows)
+                        self.assertLessEqual(self._title_rect(group).bottom(), first_row)
+
+    def test_no_form_label_is_clipped(self):
+        for points in self.SIZES:
+            window = self._window(points)
+            # Target Size only shows in File Size mode, and is the widest label.
+            for mode in (window.mode_quality_btn, window.mode_filesize_btn):
+                mode.click()
+                for _ in range(3):
+                    QApplication.processEvents()
+                for form in window._left_panel_content.findChildren(QFormLayout):
+                    for row in range(form.rowCount()):
+                        item = form.itemAt(row, QFormLayout.LabelRole)
+                        label = item.widget() if item else None
+                        if label is None or not label.isVisible():
+                            continue
+                        with self.subTest(points=points, mode=mode.text(), label=label.text()):
+                            self.assertGreaterEqual(label.width(), label.sizeHint().width())
 
 
 class TestLeftPanelScrolling(unittest.TestCase):

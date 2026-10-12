@@ -746,10 +746,11 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         # Mode/Quality-tier/Target-Size choice on every H.265<->H.264
         # switch (e.g. File Size 800 MB reverting to Quality Balanced).
         # Same capture-before/restore-after shape as _on_processing_choice
-        # -- carry the *tier* across when the old value matched one
-        # (libx265/libx264 share identical QUALITY_TIERS/RC_MODE_FRIENDLY
-        # values, so this is normally a same-value round-trip, but the
-        # combo rebuild still needs it re-applied); bitrate-family
+        # -- re-apply the quality value, carrying its *tier* across only
+        # when the two encoders' scales differ (libx265/libx264 share
+        # identical QUALITY_TIERS/RC_MODE_FRIENDLY values, so an Expert
+        # value like CRF 20 stays 20; the combo rebuild still needs it
+        # re-applied); bitrate-family
         # selections (File Size's MB target) need no translation at all,
         # just re-application, since libx265/libx264 share the same
         # "bitrate" rc_mode and a plain MB number has no per-encoder scale.
@@ -757,11 +758,9 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         old_key = self._current_encoder_key()
         self._on_encoder_changed()
         new_key = self._current_encoder_key()
-        if old_key != new_key and settings["rc_mode"] == RC_MODE_FRIENDLY[old_key]["quality"]:
-            old_tier = next(
-                (tier for tier, value in QUALITY_TIERS.get(old_key, {}).items()
-                 if value == settings["quality_value"]), "balanced"
-            )
+        if (old_key != new_key and settings["rc_mode"] == RC_MODE_FRIENDLY[old_key]["quality"]
+                and QUALITY_TIERS[old_key] != QUALITY_TIERS[new_key]):
+            old_tier = formatting.quality_tier(settings["quality_value"], QUALITY_TIERS[old_key])
             settings["rc_mode"] = RC_MODE_FRIENDLY[new_key]["quality"]
             settings["quality_value"] = QUALITY_TIERS[new_key][old_tier]
         self._apply_settings_to_controls(settings)
@@ -795,25 +794,28 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
     def _on_quality_changed(self):
         rc_mode = self.rc_mode_combo.currentData()
         self.quality_label.setText(f"{self.quality_slider.value()} ({rc_mode})")
-        # Fraction 0 = the lowest ICQ/CQP/CRF number = the *best* quality
-        # end (these all share the same lower-is-better convention) -- so
-        # the first label here is what belongs at that end, not what reads
-        # first. "Movies & TV" and the near-lossless/lighter-footage labels
-        # either side of it are the original 3-tier set, kept as the
-        # anchors readers may already recognize; the other 3 fill in the
-        # gaps a plain 3-way split left too wide. Trimmed to a short
-        # "Label -- descriptor" pair per tier -- the original wordier
-        # phrasing read as too long next to Speed's captions once both
-        # sat in the same size fuzzyGroup box.
-        self.quality_tier_label.setText(formatting.tier_label(
-            formatting.fraction_of(self.quality_slider),
-            "Archival -- near-lossless",
-            "High quality -- crisp detail",
-            "Movies & TV -- general purpose",
-            "Streaming -- efficient",
-            "Lighter footage -- more compression",
-            "Heavy compression -- visible quality loss",
-        ))
+        # On the encoder's own Quality mode the caption uses the tier
+        # buttons' words (formatting.quality_caption) and the slider marks
+        # where each tier sits. The tiers never apply to Intel's CQP, so it keeps
+        # the descriptive captions, in equal slices of the range. Fraction
+        # 0 = the lowest number = the *best* quality end.
+        key = self._current_encoder_key()
+        if rc_mode == RC_MODE_FRIENDLY[key]["quality"]:
+            tiers = QUALITY_TIERS[key]
+            self.quality_slider.set_tick_values(tiers.values())
+            caption = formatting.quality_caption(self.quality_slider.value(), tiers)
+        else:
+            self.quality_slider.set_tick_values(())
+            caption = formatting.tier_label(
+                formatting.fraction_of(self.quality_slider),
+                "Archival -- near-lossless",
+                "High quality -- crisp detail",
+                "Movies & TV -- general purpose",
+                "Streaming -- efficient",
+                "Lighter footage -- more compression",
+                "Heavy compression -- visible quality loss",
+            )
+        self.quality_tier_label.setText(caption)
         self._on_control_changed()
 
     def _set_rc_mode(self, value: str):
@@ -984,10 +986,10 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         rc_mode = self.rc_mode_combo.currentData()
         matched_tier = None
         if rc_mode == RC_MODE_FRIENDLY[key]["quality"]:
-            value = self.quality_slider.value()
-            matched_tier = next(
-                (tier for tier, tier_value in QUALITY_TIERS[key].items() if tier_value == value), None
-            )
+            # The tier whose range the value is in, not only an exact
+            # match, so the lit button always agrees with Exact Quality's
+            # caption.
+            matched_tier = formatting.quality_tier(self.quality_slider.value(), QUALITY_TIERS[key])
         tier_buttons = {
             "smaller": self.quality_smaller_btn,
             "balanced": self.quality_balanced_btn,
@@ -996,9 +998,9 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         if matched_tier is not None:
             tier_buttons[matched_tier].setChecked(True)
         else:
-            # No exact match (e.g. the Expert quality slider was dragged
-            # to some in-between value) -- none of the three should read
-            # as selected. QButtonGroup's own exclusivity won't let a
+            # Not the encoder's Quality mode (File Size, or Intel's CQP) --
+            # none of the three should read as selected. QButtonGroup's own
+            # exclusivity won't let a
             # single setChecked(False) leave the group with nothing
             # checked, so exclusivity is dropped just long enough to
             # clear all three.
@@ -1047,14 +1049,11 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
                 # Processing switch left it matching none of QUALITY_
                 # TIERS' three named tiers (confirmed live: switching
                 # CPU's default CRF 23 to Intel left Quality showing no
-                # selection at all). Carries the *tier* across instead,
-                # when the old value matched one; falls back to
-                # "balanced" when it didn't (e.g. after an Expert-mode
-                # slider drag).
-                old_tier = next(
-                    (tier for tier, value in QUALITY_TIERS.get(old_key, {}).items()
-                     if value == settings["quality_value"]), "balanced"
-                )
+                # selection at all). Carries the *tier* across instead:
+                # the one whose range the old value is in
+                # (formatting.quality_tier), even after an Expert-mode
+                # slider drag.
+                old_tier = formatting.quality_tier(settings["quality_value"], QUALITY_TIERS[old_key])
                 settings["rc_mode"] = new_friendly["quality"]
                 settings["quality_value"] = QUALITY_TIERS[new_key][old_tier]
             elif old_rc == old_friendly["file_size"]:

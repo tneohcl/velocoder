@@ -67,6 +67,32 @@ def tier_label(fraction: float, *labels: str) -> str:
     return labels[bucket]
 
 
+def quality_tier(value: int, tiers: dict) -> str:
+    """Which tier button a quality value belongs to. tiers is
+    QUALITY_TIERS[encoder], where lower values are better quality: Better
+    Quality owns its value and everything better, Smaller File its value
+    and everything smaller, and Balanced everything in between (ICQ/CQP:
+    under 17, 17-35, over 35)."""
+    if value <= tiers["better"]:
+        return "better"
+    if value >= tiers["smaller"]:
+        return "smaller"
+    return "balanced"
+
+
+QUALITY_TIER_CAPTIONS = {
+    "better": "Better Quality — crisp detail",
+    "balanced": "Balanced — general purpose",
+    "smaller": "Smaller File — efficient",
+}
+
+
+def quality_caption(value: int, tiers: dict) -> str:
+    """Exact Quality's caption in the tier buttons' own words, so the
+    slider and Smaller File/Balanced/Better Quality never disagree."""
+    return QUALITY_TIER_CAPTIONS[quality_tier(value, tiers)]
+
+
 def settings_differ(a: dict, b: dict) -> bool:
     # Plain != would treat a dict missing "gpu_vendor" entirely (every
     # built-in CPU preset, which never had a reason to define it) as

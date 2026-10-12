@@ -12,18 +12,18 @@ Mixed in as `class MainWindow(QMainWindow, _UiBuilderMixin)`, not
 in the MRO fine, but multiple-inheriting from two QObject-derived
 classes is a well-known source of real, hard-to-diagnose problems. A
 plain mixin sidesteps that entirely."""
-from PySide6.QtCore import Qt, QEvent, QObject, QSize, QMargins
-from PySide6.QtGui import QAction, QActionGroup, QFont, QFontMetrics, QKeySequence, QPainter
+from PySide6.QtCore import Qt, QEvent, QObject, QPointF, QSize, QMargins
+from PySide6.QtGui import QAction, QActionGroup, QFont, QFontMetrics, QColor, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QMenu, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-    QSizePolicy, QSlider, QSpinBox, QStyle, QStyleOptionButton, QStyleOptionGroupBox, QTabWidget, QVBoxLayout,
+    QSizePolicy, QSlider, QSpinBox, QStyle, QStyleOptionButton, QStyleOptionGroupBox, QStyleOptionSlider, QTabWidget, QVBoxLayout,
     QWidget,
 )
 
 from velocoder.core import formatting
 from velocoder.core.constants import (
-    AUDIO_BITRATES, AUDIO_TRACK_LABELS, CODECS, CONTAINERS, ENCODERS, RC_MODE_FRIENDLY,
+    AUDIO_BITRATES, AUDIO_TRACK_LABELS, CODECS, CONTAINERS, ENCODERS, QUALITY_RANGES, RC_MODE_FRIENDLY,
     RESOLUTIONS, X265_PRESETS, X265_TUNES,
 )
 from velocoder.ui.queue_widget import (
@@ -33,7 +33,7 @@ from velocoder.ui.queue_widget import (
 from velocoder.ui.icons import (
     _TEXT_GAP, icon_button, icon_label, icon_size_for, icon_tabs, refresh_button_icon,
 )
-from velocoder.ui.theming import _NoItemFocusRectStyle
+from velocoder.ui.theming import _NoItemFocusRectStyle, _current_theme_palette
 
 PANEL_MARGIN = 8
 # The settings column's width (see _build_ui): fixed, never drag-resized,
@@ -275,6 +275,86 @@ class _ButtonActionMirror(QObject):
         if event.type() == QEvent.EnabledChange and obj in self.pairs:
             self.pairs[obj].setEnabled(obj.isEnabled())
         return False
+
+
+class _WidestValueLabel(QLabel):
+    """A slider's value label that is always as wide as its widest value
+    (samples), so the slider beside it keeps its width as the number
+    changes ("9 (CRF)" was narrower than "23 (CRF)"). Measured in the
+    current font, so it follows text size changes."""
+
+    def __init__(self, samples, parent=None):
+        super().__init__(parent)
+        self._samples = tuple(samples)
+
+    def _widest(self) -> int:
+        metrics = self.fontMetrics()
+        margins = self.contentsMargins()
+        # size(), as QLabel measures its own text (horizontalAdvance can
+        # come out a pixel narrower).
+        widest = max(metrics.size(Qt.TextSingleLine, text).width() for text in self._samples)
+        return widest + margins.left() + margins.right()
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        return QSize(max(hint.width(), self._widest()), hint.height())
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        return QSize(max(hint.width(), self._widest()), hint.height())
+
+
+class _TierTickSlider(QSlider):
+    """Exact Quality's slider, with a small dot on the groove at each of
+    the current encoder's Smaller File/Balanced/Better Quality values
+    (set_tick_values). QSlider's own tick marks can only be evenly spaced."""
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self._tick_values = ()
+
+    def tick_values(self):
+        return self._tick_values
+
+    def set_tick_values(self, values):
+        values = tuple(values)
+        if values != self._tick_values:
+            self._tick_values = values
+            self.update()
+
+    def _option(self):
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        return opt
+
+    def tick_x(self, value: int) -> int:
+        """The x of value's mark: where the handle's centre sits at value."""
+        opt = self._option()
+        groove = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
+        handle = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
+        span = groove.width() - handle.width()
+        return groove.x() + handle.width() // 2 + QStyle.sliderPositionFromValue(
+            self.minimum(), self.maximum(), value, span, opt.upsideDown)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._tick_values:
+            return
+        # Over the finished slider (the stylesheet draws the groove's
+        # filled part only alongside the handle), then the handle again so
+        # it stays on top of the marks.
+        painter = QPainter(self)
+        opt = self._option()
+        style = self.style()
+        groove = style.subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
+        centre = groove.center().y()
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(_current_theme_palette.get("TEXT_SECONDARY", "#9098a6")))
+        for value in self._tick_values:
+            painter.drawEllipse(QPointF(self.tick_x(value), centre + 0.5), 3, 3)
+        opt.subControls = QStyle.SC_SliderHandle
+        style.drawComplexControl(QStyle.CC_Slider, opt, painter, self)
 
 
 class _UiBuilderMixin:
@@ -1068,7 +1148,7 @@ class _UiBuilderMixin:
         form.addRow("Rate Control:", self.rc_mode_combo)
 
         quality_row = QHBoxLayout()
-        self.quality_slider = QSlider(Qt.Horizontal)
+        self.quality_slider = _TierTickSlider(Qt.Horizontal)
         # Left = worse quality/smaller, right = better quality/larger --
         # the intuitive direction for a horizontal slider. The underlying
         # ICQ/CQP/CRF value this drives is the opposite (lower number is
@@ -1080,10 +1160,13 @@ class _UiBuilderMixin:
         self.quality_slider.setInvertedControls(True)
         self.quality_slider.setToolTip(
             "Left: more compression, smaller file.\n"
-            "Right: higher quality, larger file."
+            "Right: higher quality, larger file.\n"
+            "Dots: Smaller File, Balanced and Better Quality."
         )
         self.quality_slider.valueChanged.connect(self._on_quality_changed)
-        self.quality_label = QLabel()
+        self.quality_label = _WidestValueLabel(
+            f"{value} ({mode})" for mode, (lo, hi, _default) in QUALITY_RANGES.items() for value in range(lo, hi + 1)
+        )
         self.quality_label.setObjectName("smallText")  # 9 pt, style.qss
         quality_row.addWidget(self.quality_slider, 1)
         quality_row.addWidget(self.quality_label)
@@ -1364,7 +1447,7 @@ class _UiBuilderMixin:
         )
         self.audio_bitrate_slider.valueChanged.connect(self._on_audio_bitrate_slider_changed)
         audio_bitrate_row.addWidget(self.audio_bitrate_slider, 1)
-        self.audio_bitrate_label = QLabel()
+        self.audio_bitrate_label = _WidestValueLabel(AUDIO_BITRATES)
         self.audio_bitrate_label.setObjectName("smallText")  # 9 pt, style.qss
         audio_bitrate_row.addWidget(self.audio_bitrate_label)
 

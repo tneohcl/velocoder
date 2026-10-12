@@ -6269,8 +6269,10 @@ class TestQualitySliderSpeaksTheTierNames(unittest.TestCase):
     """Expert's Exact Quality caption was six equal slices of the slider's
     range, so it disagreed with Normal's tier buttons: on CPU, Better
     Quality and Balanced both read "Movies & TV", and on Intel/AMD Balanced
-    read "Streaming". The caption now names the tier the slider is on (or
-    between), and the slider marks where the three tiers sit."""
+    read "Streaming". Each tier now owns a range of values: its own value
+    and everything past it for Better Quality and Smaller File, everything
+    between them for Balanced. The caption and the lit button both follow
+    that range, and the slider marks the three tier values."""
 
     TIERS = (("smaller", "Smaller File"), ("balanced", "Balanced"), ("better", "Better Quality"))
 
@@ -6280,6 +6282,9 @@ class TestQualitySliderSpeaksTheTierNames(unittest.TestCase):
         window.encoder_combo.setCurrentText(encoder)
         return window
 
+    def _lit(self, window):
+        return [tier for tier, _name in self.TIERS if getattr(window, f"quality_{tier}_btn").isChecked()]
+
     def test_caption_names_the_tier_button_on_every_encoder(self):
         for encoder in ("CPU", "Intel (iGPU)", "AMD (GPU)"):
             window = self._window(encoder)
@@ -6288,17 +6293,85 @@ class TestQualitySliderSpeaksTheTierNames(unittest.TestCase):
                 self.assertTrue(window.quality_tier_label.text().startswith(f"{name} — "),
                                 (encoder, tier, window.quality_tier_label.text()))
 
-    def test_caption_between_and_beyond_the_tiers(self):
-        window = self._window()  # CPU: Better 18, Balanced 23, Smaller 28
+    def test_each_tier_owns_a_range(self):
+        # Intel/AMD: under 17 Better, 17-35 Balanced, over 35 Smaller.
+        # CPU, the same rule on its own values: 18 and under, 19-27, 28 and over.
+        cases = {
+            "Intel (iGPU)": ((1, "better"), (16, "better"), (17, "balanced"), (26, "balanced"),
+                             (35, "balanced"), (36, "smaller"), (51, "smaller")),
+            "AMD (GPU)": ((0, "better"), (16, "better"), (17, "balanced"), (35, "balanced"),
+                          (36, "smaller"), (52, "smaller")),
+            "CPU": ((0, "better"), (18, "better"), (19, "balanced"), (27, "balanced"),
+                    (28, "smaller"), (51, "smaller")),
+        }
+        names = dict(self.TIERS)
+        for encoder, values in cases.items():
+            window = self._window(encoder)
+            for value, tier in values:
+                window.quality_slider.setValue(value)
+                self.assertEqual(self._lit(window), [tier], (encoder, value))
+                self.assertTrue(window.quality_tier_label.text().startswith(f"{names[tier]} — "),
+                                (encoder, value, window.quality_tier_label.text()))
+
+    def test_clicking_the_lit_button_snaps_to_its_value(self):
+        window = self._window("Intel (iGPU)")
+        window.quality_slider.setValue(30)
+        window.quality_balanced_btn.click()
+        self.assertEqual(window.quality_slider.value(), 26)
+
+    def test_switching_encoder_keeps_the_range_not_just_an_exact_value(self):
+        # 10 on Intel is Better Quality, so CPU gets Better's 18, not the
+        # Balanced fallback an exact-match lookup gave.
+        window = self._window("Intel (iGPU)")
+        window.quality_slider.setValue(10)
+        window.processing_cpu_btn.click()
+        self.assertEqual(window._current_encoder_key(), "libx265")
+        self.assertEqual(window.quality_slider.value(), 18)
+        self.assertEqual(self._lit(window), ["better"])
+
+    def test_h265_to_h264_keeps_an_exact_value(self):
+        # Both CPU codecs share one scale, so there's nothing to translate.
+        window = self._window()
+        window.quality_slider.setValue(20)
+        window.codec_combo.setCurrentText("H.264 (AVC)")
+        self.assertEqual(window.quality_slider.value(), 20)
+        self.assertEqual(self._lit(window), ["balanced"])
+
+    def _shown(self):
+        window = self._window()
+        window.resize(1186, 720)
+        window.show()
+        self.addCleanup(window.close)
+        window.video_expert_group.setChecked(True)
+        return window
+
+    def _settle(self):
+        for _ in range(5):
+            QApplication.processEvents()
+
+    def test_slider_keeps_its_width_as_the_number_changes(self):
+        # The number beside it ("9 (CRF)" vs "23 (CRF)") used to take only
+        # its own text's width, so the slider shrank and grew as it moved.
+        window = self._shown()
         slider = window.quality_slider
-        for value, caption in ((20, "Between Balanced and Better Quality"),
-                               (25, "Between Smaller File and Balanced")):
+        widths = set()
+        for value in (23, 9, 0, 51):
             slider.setValue(value)
-            self.assertEqual(window.quality_tier_label.text(), caption)
-        slider.setValue(slider.minimum())
-        self.assertTrue(window.quality_tier_label.text().startswith("Beyond Better Quality — "))
-        slider.setValue(slider.maximum())
-        self.assertTrue(window.quality_tier_label.text().startswith("Beyond Smaller File — "))
+            self._settle()
+            widths.add(slider.width())
+        self.assertEqual(len(widths), 1, widths)
+
+    def test_audio_bitrate_slider_keeps_its_width(self):
+        # Same for Audio's "96k" vs "128k".
+        window = self._shown()
+        window.findChild(QTabWidget).setCurrentIndex(1)
+        slider = window.audio_bitrate_slider
+        widths = set()
+        for index in range(slider.minimum(), slider.maximum() + 1):
+            slider.setValue(index)
+            self._settle()
+            widths.add(slider.width())
+        self.assertEqual(len(widths), 1, widths)
 
     def test_slider_marks_the_current_encoders_tiers(self):
         for encoder in ("CPU", "Intel (iGPU)", "AMD (GPU)"):
@@ -6316,7 +6389,7 @@ class TestQualitySliderSpeaksTheTierNames(unittest.TestCase):
         for _tier, name in self.TIERS:
             self.assertNotIn(name, caption)
 
-    def test_marks_are_drawn_left_to_right_smaller_to_better(self):
+    def test_dots_are_drawn_left_to_right_smaller_to_better(self):
         window = self._window()
         window.resize(1186, 720)
         window.show()
@@ -6336,7 +6409,7 @@ class TestQualitySliderSpeaksTheTierNames(unittest.TestCase):
         plain = slider.grab().toImage()
         for x in xs:
             column = [marked.pixel(x, y) != plain.pixel(x, y) for y in range(marked.height())]
-            self.assertTrue(any(column), f"no mark drawn at x={x}")
+            self.assertTrue(any(column), f"no dot drawn at x={x}")
 
 
 if __name__ == "__main__":

@@ -91,7 +91,13 @@ same underlying value, never two independently-tracked ones.
   — picks which of the next two rows is shown.
 - **Quality** (Mode = Quality) — **Smaller File** / **Balanced** /
   **Better Quality**, three fixed points on the current encoder's own
-  quality scale (`constants.QUALITY_TIERS`). Exact numeric control over
+  quality scale (`constants.QUALITY_TIERS`). Each also owns a range
+  (`formatting.quality_tier`): Better Quality its value and everything
+  better, Smaller File its value and everything smaller, Balanced
+  everything between — on Intel/AMD under 17, 17–35 and over 35; on CPU
+  18 and under, 19–27, 28 and over. The button for the current value's
+  range is lit, and switching Processing carries that tier across.
+  Exact numeric control over
   the same value lives in Expert's **Exact Quality** (below) — both
   read/write the identical `quality_value`, never two independently-
   tracked numbers.
@@ -147,12 +153,11 @@ anything already in Normal:
   `setInvertedControls` flip the slider so **left is worse/smaller,
   right is better/larger** — every rc_mode's underlying scale runs the
   opposite way (a *lower* number means *better* quality) otherwise.
-  Small marks on the slider show where **Smaller File**, **Balanced** and
+  Small dots on the slider show where **Smaller File**, **Balanced** and
   **Better Quality** sit for the current encoder, and the caption
-  underneath uses the same words: "Balanced — general purpose" on a tier,
-  "Between Balanced and Better Quality" between two, "Beyond Better
-  Quality — near-lossless" past the ends (`formatting.quality_caption`).
-  Intel's Advanced (CQP) mode has no tiers, so there it shows no marks
+  underneath names the range the value is in, e.g. "Balanced — general
+  purpose" (`formatting.quality_caption`), always matching the lit
+  button. Intel's Advanced (CQP) mode has no tiers, so there it shows no dots
   and a descriptive caption ("Movies & TV -- general purpose", etc.).
 - **Encoding Speed** — "Faster" to "Slower" for either engine
   (`-compression_level` 1–7 for VAAPI, x265/x264's own preset ladder

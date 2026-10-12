@@ -466,6 +466,17 @@ notice on top of it.
   widget rather than duplicating it. `queue_list`'s own stretch factor
   simply claims the space Log used to share space with it for.
 
+## Larger text
+
+VeloCoder uses your desktop's font size (System Settings ▸ Fonts, or
+your desktop's equivalent): at 10 pt it looks as designed, and a larger
+size scales all of its text, live. Below 10 pt it stays at 10 pt. When
+the window is too narrow for every button label, buttons show just their
+icon, least needed first: **Add Videos…**, **Remove**, **Open Folder**,
+**Change…** and **Open**, then **Convert**, and **Stop**/**Cancel**
+last. Hover for the name; the menus keep it too. Labels come back as
+soon as there's room.
+
 ## Help & About
 
 <img src="screenshots/help_dark.png" alt="Help window" width="380"> <img src="screenshots/about_dark.png" alt="About VeloCoder" width="220"> <img src="screenshots/system_information_dark.png" alt="System Information" width="220">

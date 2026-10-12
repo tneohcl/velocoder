@@ -141,13 +141,6 @@ QGroupBox::title {
     color: $TEXT_PRIMARY;
 }
 
-/* A section heading with an icon (ui_builder._GroupTitleIcon): the icon is
-   placed in front of the text, inside this extra left padding. em, so it
-   grows with the text and its icon. */
-QGroupBox[titleIcon="true"]::title {
-    padding-left: 1.9em;
-}
-
 /* Effective Command / Log -- an ordinary checkable QGroupBox otherwise
    identical to every other section (same title subcontrol, same border,
    same everything -- deliberately not styled differently, so collapsing a
@@ -740,6 +733,17 @@ QLabel#scopeLabel {
    efficient") -- see TEXT_CAPTION's own comment in themes.py for why
    these get their own token instead of either scopeLabel's full
    $TEXT_SECONDARY or the queue's genuinely-fuzzy empty-state hint. */
+/* Small notes beside a control (size estimate, exact quality and bitrate
+   readouts) and the run summary. Here, not in setStyleSheet calls, so they
+   scale with the desktop text size like every other font-size in this file. */
+QLabel#smallText {
+    font-size: 9pt;
+}
+
+QLabel#statsLabel {
+    font-size: 10pt;
+}
+
 QLabel#captionLabel {
     font-size: 9pt;
     color: $TEXT_CAPTION;

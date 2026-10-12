@@ -17,7 +17,8 @@ from PySide6.QtGui import QAction, QActionGroup, QFont, QFontMetrics, QKeySequen
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QMenu, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-    QSizePolicy, QSlider, QSpinBox, QStyle, QStyleOptionGroupBox, QTabWidget, QVBoxLayout, QWidget,
+    QSizePolicy, QSlider, QSpinBox, QStyle, QStyleOptionButton, QStyleOptionGroupBox, QTabWidget, QVBoxLayout,
+    QWidget,
 )
 
 from velocoder.core import formatting
@@ -29,7 +30,9 @@ from velocoder.ui.queue_widget import (
     DropTreeWidget, VIDEO_COL, DURATION_COL, SIZE_COL,
     RESULT_COL, QUEUE_COLUMN_HEADERS,
 )
-from velocoder.ui.icons import icon_button, icon_label, icon_tabs
+from velocoder.ui.icons import (
+    _TEXT_GAP, icon_button, icon_label, icon_size_for, icon_tabs, refresh_button_icon,
+)
 from velocoder.ui.theming import _NoItemFocusRectStyle
 
 PANEL_MARGIN = 8
@@ -119,32 +122,39 @@ class _LeftPanelWidth(QObject):
 
 class _GroupTitleIcon(QLabel):
     """A section heading's icon. QGroupBox titles are text only, so this is a
-    child label placed just before the title text, which style.qss moves
-    right to make room (QGroupBox[titleIcon="true"]::title). Placed from the
-    style's own title rect, so it follows the title at any text size."""
+    child label in front of the title text, lined up with the rows below
+    it. The title's left padding (where its text starts) is set to the
+    icon's inset plus its width plus a gap, in px, at every text size: an
+    em padding in style.qss scaled with the text while the rows' 10 px
+    inset didn't, so the icon drifted right of the labels as text grew."""
 
     GAP = 5
 
     def __init__(self, group: QGroupBox, name: str):
         super().__init__(group)
-        group.setProperty("titleIcon", True)
+        self._padding = None
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         icon_label(self, name)
         group.installEventFilter(self)
+        self.installEventFilter(self)  # its size follows the text (refresh_icons)
 
     def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
-        if event.type() in (QEvent.Resize, QEvent.Show, QEvent.StyleChange, QEvent.FontChange, QEvent.Polish):
-            self._place(obj)
+        kinds = (QEvent.Resize, QEvent.Show, QEvent.StyleChange, QEvent.FontChange, QEvent.Polish)
+        if event.type() in kinds:
+            self._place(self.parentWidget())
         return False
 
     def _place(self, group: QGroupBox):
+        layout = group.layout()
+        inset = group.contentsRect().left() + (layout.contentsMargins().left() if layout else 0)
+        padding = inset + self.width() + self.GAP
+        if padding != self._padding:
+            self._padding = padding
+            group.setStyleSheet(f"QGroupBox::title {{ padding-left: {padding}px; }}")
         option = QStyleOptionGroupBox()
         group.initStyleOption(option)
         title = group.style().subControlRect(QStyle.CC_GroupBox, option, QStyle.SC_GroupBoxLabel, group)
-        font = QFont(group.font())
-        font.setWeight(QFont.Weight(600))  # QGroupBox is semibold (style.qss)
-        text_left = title.right() - 6 - QFontMetrics(font).horizontalAdvance(group.title())
-        self.move(text_left - self.width() - self.GAP, title.center().y() - self.height() // 2 + 1)
+        self.move(inset, title.center().y() - self.height() // 2 + 1)
 
 
 class _SharedLabelWidth(QObject):
@@ -170,6 +180,79 @@ class _SharedLabelWidth(QObject):
         return False
 
 
+class _IconOnlyWhenTight(QObject):
+    """Shows some of a row's buttons as just their icon while the row is too
+    narrow for their text; the text stays as tooltip and accessible name
+    (which _ButtonActionMirror reads for the Queue menu). Large desktop text
+    otherwise made the toolbar alone need ~1390 px at 22 pt mid-run.
+
+    Each button's minimum width is its icon-only width, so the window's
+    minimum counts the icons, not the words. Labels drop in list order
+    (least needed first) until the rest fit, judged from widths that don't
+    depend on which form is showing, so they don't flip back and forth."""
+
+    def __init__(self, host: QWidget, row, buttons):
+        super().__init__(host)
+        self.row = row
+        self.texts = {}
+        self._own_tooltips = {button for button in buttons if not button.toolTip()}
+        for button in buttons:
+            self._remember(button, button.text())
+        host.installEventFilter(self)
+        self.fit()
+
+    def _remember(self, button, text: str):
+        self.texts[button] = text
+        button.setAccessibleName(text)
+        if button in self._own_tooltips:
+            button.setToolTip(text)
+
+    def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
+        if event.type() in (QEvent.Resize, QEvent.LayoutRequest, QEvent.Show):
+            self.fit()
+        return False
+
+    def fit(self):
+        for button, text in self.texts.items():
+            if button.text() and button.text() != text:
+                # The app relabelled it ("Converting…", "Cancel"); hiding
+                # that again below if the row is still short of room.
+                self._remember(button, button.text())
+        extras = []  # what each shown button's label adds, in collapse order
+        for button, text in self.texts.items():
+            icon_only = self.width_for(button, "")
+            if button.minimumWidth() != icon_only:
+                button.setMinimumWidth(icon_only)
+            shown = button.isVisibleTo(button.parentWidget())
+            extras.append(self.width_for(button, text) - icon_only if shown else 0)
+        available = self.row.geometry().width()
+        if available <= 0:
+            return  # not laid out yet
+        # Drop labels in list order until the rest fit.
+        base = self.row.minimumSize().width()
+        collapse = 0
+        while collapse < len(extras) and base + sum(extras[collapse:]) > available:
+            collapse += 1
+        for index, (button, text) in enumerate(self.texts.items()):
+            wanted = "" if index < collapse else text
+            if button.text() != wanted:
+                button.setText(wanted)
+                refresh_button_icon(button)  # the icon's gap follows the text
+
+    @staticmethod
+    def width_for(button, text: str) -> int:
+        """The button's sizeHint width if it showed text (QPushButton's sum:
+        icon + 4 + text, then the style's padding and border)."""
+        icon = icon_size_for(button, _TEXT_GAP if text else 0)
+        option = QStyleOptionButton()
+        button.initStyleOption(option)
+        option.text = text
+        option.iconSize = icon
+        text_size = button.fontMetrics().size(Qt.TextShowMnemonic, text) if text else QSize(0, 0)
+        contents = QSize(icon.width() + 4 + text_size.width(), max(icon.height(), text_size.height()))
+        return button.style().sizeFromContents(QStyle.CT_PushButton, option, contents, button).width()
+
+
 class _ButtonActionMirror(QObject):
     """Keeps menu actions in step with the buttons that own the run state:
     enabled state live (so a shortcut never fires a disabled command) and the
@@ -185,7 +268,8 @@ class _ButtonActionMirror(QObject):
     def sync(self):
         for button, action in self.pairs.items():
             action.setEnabled(button.isEnabled())
-            action.setText(button.text())
+            # An icon-only button keeps its words in accessibleName.
+            action.setText(button.text() or button.accessibleName())
 
     def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
         if event.type() == QEvent.EnabledChange and obj in self.pairs:
@@ -267,6 +351,10 @@ class _UiBuilderMixin:
         row.addStretch(1)
         for button in (self.open_folder_btn, self.stop_btn, self.start_btn):
             row.addWidget(button)
+        # Collapse order: the queue commands first, Convert next ("Converting…"
+        # mid-run, which the progress line repeats), Stop/Cancel last.
+        self._toolbar_icon_only = _IconOnlyWhenTight(
+            bar, row, [self.add_files_btn, self.remove_queue_btn, self.open_folder_btn, self.start_btn, self.stop_btn])
         return bar
 
     def _build_menu_bar(self):
@@ -778,7 +866,7 @@ class _UiBuilderMixin:
         self.size_spin.setToolTip("Target output size -- the actual bitrate is computed from this file's length.")
         self.size_spin.valueChanged.connect(self._on_control_changed)
         self.size_estimate_label = QLabel()
-        self.size_estimate_label.setStyleSheet("font-size: 9pt;")
+        self.size_estimate_label.setObjectName("smallText")  # 9 pt, style.qss
         # Unlike the fuzzy-caption labels above (which sit on their own
         # line, full box width), this one shares a row with size_spin --
         # noticeably less horizontal room. Shortened every message this
@@ -996,7 +1084,7 @@ class _UiBuilderMixin:
         )
         self.quality_slider.valueChanged.connect(self._on_quality_changed)
         self.quality_label = QLabel()
-        self.quality_label.setStyleSheet("font-size: 9pt;")
+        self.quality_label.setObjectName("smallText")  # 9 pt, style.qss
         quality_row.addWidget(self.quality_slider, 1)
         quality_row.addWidget(self.quality_label)
 
@@ -1277,7 +1365,7 @@ class _UiBuilderMixin:
         self.audio_bitrate_slider.valueChanged.connect(self._on_audio_bitrate_slider_changed)
         audio_bitrate_row.addWidget(self.audio_bitrate_slider, 1)
         self.audio_bitrate_label = QLabel()
-        self.audio_bitrate_label.setStyleSheet("font-size: 9pt;")
+        self.audio_bitrate_label.setObjectName("smallText")  # 9 pt, style.qss
         audio_bitrate_row.addWidget(self.audio_bitrate_label)
 
         self.audio_bitrate_tier_label = QLabel()
@@ -1421,6 +1509,7 @@ class _UiBuilderMixin:
         out_row.addWidget(browse_btn)
         out_row.addWidget(open_btn)
         layout.addLayout(out_row)
+        self._save_row_icon_only = _IconOnlyWhenTight(right, out_row, [browse_btn, open_btn])
 
         # "Stop After Current Video" (self.pause_after_check, still that
         # attribute name) now lives in the Queue menu (_build_menu_bar), not
@@ -1457,7 +1546,7 @@ class _UiBuilderMixin:
         self.stats_label = QLabel("—")
         # palette(mid) reads as near-invisible on a dark theme -- default
         # text color, smaller size instead.
-        self.stats_label.setStyleSheet("font-size: 10pt;")
+        self.stats_label.setObjectName("statsLabel")  # style.qss
         layout.addWidget(self.stats_label)
 
         # Convert is the window's primary action: the toolbar places it
@@ -1466,19 +1555,20 @@ class _UiBuilderMixin:
         self.start_btn.setObjectName("startButton")
         icon_button(self.start_btn, "play", on_accent=True)
         self.start_btn.setDefault(True)
-        # A capped max width, not just a stretch ratio -- 3:1 alone still
-        # let the primary action grow to whatever width a wide window
-        # happened to give this row, reported live as reading as an
-        # unintentional stretch rather than a deliberately sized button.
-        # Real controls (macOS's own default-action buttons included)
-        # stay a comfortable width regardless of how much space they're
-        # offered; the trailing stretch below is what actually absorbs
-        # the leftover instead.
-        self.start_btn.setMaximumWidth(280)
+        # Never wider than its label -- 3:1 alone still let the primary
+        # action grow to whatever width a wide window happened to give this
+        # row, reported live as reading as an unintentional stretch rather
+        # than a deliberately sized button. Real controls (macOS's own
+        # default-action buttons included) stay a comfortable width
+        # regardless of how much space they're offered; the toolbar's
+        # stretch absorbs the leftover instead. A size policy, not the
+        # old 280 px cap: px caps clipped the label at large text sizes.
+        self.start_btn.setSizePolicy(QSizePolicy.Maximum, self.start_btn.sizePolicy().verticalPolicy())
         self.start_btn.clicked.connect(self._start)
         self.stop_btn = QPushButton("Stop")
         icon_button(self.stop_btn, "stop")
-        self.stop_btn.setMaximumWidth(110)
+        # Its label's width, not a px cap: 110 px clipped "Cancel" at 22 pt.
+        self.stop_btn.setSizePolicy(QSizePolicy.Maximum, self.stop_btn.sizePolicy().verticalPolicy())
         self.stop_btn.clicked.connect(self._stop)
         self.stop_btn.setEnabled(False)
         # Neutral secondary styling, same as every other plain QPushButton

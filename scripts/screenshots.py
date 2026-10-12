@@ -7,11 +7,10 @@ Never touches the real user's data: HOME and the XDG config/data dirs point at
 a throwaway directory, the session file is neither loaded nor saved, and the
 demo videos are short generated clips. Intel and AMD are faked present (as the
 test suite does) so the Processing row shows every segment on any machine.
-Text sizes beyond 10 pt scale every font-size in style.qss, the way a larger
-desktop font would."""
+Text sizes are the desktop font size (QApplication.setFont), which the app
+scales style.qss by."""
 import argparse
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -31,12 +30,12 @@ sys.path.insert(0, str(REPO / "src"))
 
 from unittest.mock import patch  # noqa: E402
 
+from PySide6.QtGui import QFont  # noqa: E402
 from PySide6.QtWidgets import QApplication, QTabWidget  # noqa: E402
 
 from velocoder.core import ffmpeg  # noqa: E402
 from velocoder.ui import session  # noqa: E402
 from velocoder.ui._vendor.odcs_ui import desktop as odcs_desktop  # noqa: E402
-from velocoder.ui.icons import refresh_icons  # noqa: E402
 
 DEMO_VIDEOS = ["harbour-timelapse.mp4", "family-dinner.mkv", "drone-coastline-4k.mp4", "old-camcorder-tape.avi"]
 
@@ -72,17 +71,12 @@ def _settle(app, seconds=0.3):
 
 
 def _set_text_size(app, window, points: float):
-    base = window._base_stylesheet
-    if points != 10:
-        factor = points / 10
-        base = re.sub(r"font-size:\s*([\d.]+)pt", lambda m: f"font-size: {float(m.group(1)) * factor:g}pt", base)
-    app.setStyleSheet(base)
-    refresh_icons(window)
-    window.queue_list.fit_columns()
-    # A window manager never lets a window be narrower than its minimum;
-    # offscreen Qt does, and would squeeze the layout instead.
+    # The desktop font size, as System Settings > Fonts sets it: the app
+    # scales style.qss from it (theming.text_scale) and refits the window.
+    font = QFont(app.font())
+    font.setPointSizeF(points)
+    app.setFont(font)
     _settle(app)
-    window.resize(max(window.width(), window.minimumSizeHint().width()), window.height())
 
 
 def _grab(app, window, path: Path):
@@ -134,7 +128,6 @@ def main():
         for theme in args.themes:
             window = main_window.MainWindow()
             window._apply_theme(theme)
-            window._base_stylesheet = app.styleSheet()
             window.resize(args.width, args.height)
             window.show()
             for points in args.sizes:

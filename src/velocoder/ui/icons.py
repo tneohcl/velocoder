@@ -82,6 +82,14 @@ def icon_button(button, name: str, on_accent: bool = False):
     return button
 
 
+def refresh_button_icon(button):
+    """Redraws a button's icon set up by icon_button, for the current theme,
+    text size and whether the button has text (the icon's gap)."""
+    name = button.property(_ICON_NAME_PROPERTY)
+    if name:
+        icon_button(button, name, bool(button.property(_ON_ACCENT_PROPERTY)))
+
+
 def icon_tabs(tabs: QTabWidget, names: list[str]):
     """One icon per tab, in tab order."""
     tabs.setProperty(_ICON_NAME_PROPERTY, names)
@@ -103,9 +111,7 @@ def refresh_icons(root):
     """Re-tints every icon set up by this module under root for the current
     theme (and the current text size)."""
     for button in root.findChildren(QAbstractButton):
-        name = button.property(_ICON_NAME_PROPERTY)
-        if name:
-            icon_button(button, name, bool(button.property(_ON_ACCENT_PROPERTY)))
+        refresh_button_icon(button)
     for tabs in root.findChildren(QTabWidget):
         names = tabs.property(_ICON_NAME_PROPERTY)
         if names:

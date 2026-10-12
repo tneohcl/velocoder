@@ -1,7 +1,12 @@
 """The bundled odcs-ui must be exactly the pinned release (scripts/sync-odcs-ui.sh)."""
+
 import sys
-import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _sandbox  # noqa: E402,F401  (first: keeps the suite out of the real home)
+
+import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))

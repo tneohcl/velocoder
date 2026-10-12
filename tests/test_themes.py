@@ -3,9 +3,14 @@
 themes.py is shared with Keep; every readable TEXT_* token must reach 4.5:1
 on the surfaces text actually sits on. TEXT_DISABLED is WCAG-exempt.
 """
+
 import sys
-import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _sandbox  # noqa: E402,F401  (first: keeps the suite out of the real home)
+
+import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from velocoder.ui import themes  # noqa: E402

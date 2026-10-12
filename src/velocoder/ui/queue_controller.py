@@ -6,12 +6,15 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QProcess, QUrl
 from PySide6.QtGui import QDesktopServices, QIcon
-from PySide6.QtWidgets import QFileDialog, QMenu, QMessageBox, QTreeWidgetItem
+from PySide6.QtWidgets import (
+    QFileDialog, QHBoxLayout, QMenu, QMessageBox, QToolButton, QTreeWidgetItem, QWidget,
+)
 import shiboken6
 
 from velocoder.core import ffmpeg
 from velocoder.core import formatting
 from velocoder.ui import session
+from velocoder.ui.icons import icon_button
 from velocoder.core.constants import VIDEO_FILTER
 from velocoder.ui.queue_widget import (
     VIDEO_COL, DURATION_COL, SIZE_COL, RESULT_COL,
@@ -680,6 +683,30 @@ class _QueueControllerMixin:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.output_dir)))
 
+    def _add_reveal_output_button(self, item: QTreeWidgetItem):
+        """A finished row's one-click way to its output: a small folder button
+        at the trailing end of the Status cell (the column is sized for it,
+        DropTreeWidget.fit_columns). Same action as the context menu's Reveal
+        Output File."""
+        button = QToolButton()
+        button.setObjectName("revealOutputButton")
+        button.setToolTip("Show output file — opens the folder it was saved to")
+        button.setAccessibleName("Show output file")
+        icon_button(button, "reveal_output")
+        button.clicked.connect(lambda: self._reveal_output_file(item.data(STATUS_COL, Qt.UserRole)))
+        cell = QWidget()
+        row = QHBoxLayout(cell)
+        row.setContentsMargins(0, 0, 4, 0)
+        row.addStretch(1)
+        row.addWidget(button)
+        self.queue_list.setItemWidget(item, RESULT_COL, cell)
+
+    @staticmethod
+    def _reveal_output_file(job: dict):
+        output_path = job.get("_completed_output_path")
+        if output_path is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(output_path).parent)))
+
     def _build_queue_context_menu(self, job: dict) -> QMenu:
         # Split out from _on_queue_context_menu below purely so the menu's
         # construction (which actions exist, which are enabled) can be
@@ -710,9 +737,7 @@ class _QueueControllerMixin:
         if action.text() == "Reveal Source File":
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(job["path"].parent)))
         elif action.text() == "Reveal Output File":
-            output_path = job.get("_completed_output_path")
-            if output_path is not None:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(output_path).parent)))
+            _QueueControllerMixin._reveal_output_file(job)
 
     def _on_queue_context_menu(self, pos):
         item = self.queue_list.itemAt(pos)
@@ -1040,6 +1065,7 @@ class _QueueControllerMixin:
         for item in self._running_items:
             self._clear_status_icon(item)  # clear any status icon left from a previous run
             item.setText(RESULT_COL, "Ready")  # clear a previous run's result too
+            self.queue_list.removeItemWidget(item, RESULT_COL)  # and its Show output button
             item.setData(VIDEO_COL, FAILURE_REASON_ROLE, None)  # and a previous failure's reason
         # Otherwise a new run's very first job, if it fails preflight
         # before job_started ever reaches it, would get blamed on
@@ -1232,6 +1258,7 @@ class _QueueControllerMixin:
             job = self._current_running_item.data(STATUS_COL, Qt.UserRole)
             job["_completed_output_path"] = output_path
             self._current_running_item.setData(STATUS_COL, Qt.UserRole, job)
+            self._add_reveal_output_button(self._current_running_item)
             # This is the one moment a job's own persisted-eligibility
             # actually changes (see _unfinished_queue_snapshot) -- from
             # here on it's excluded from the saved session, so a crash

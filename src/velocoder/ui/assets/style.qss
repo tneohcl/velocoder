@@ -138,6 +138,13 @@ QGroupBox::title {
     color: $TEXT_PRIMARY;
 }
 
+/* A section heading with an icon (ui_builder._GroupTitleIcon): the icon is
+   placed in front of the text, inside this extra left padding. em, so it
+   grows with the text and its icon. */
+QGroupBox[titleIcon="true"]::title {
+    padding-left: 1.9em;
+}
+
 /* Effective Command / Log -- an ordinary checkable QGroupBox otherwise
    identical to every other section (same title subcontrol, same border,
    same everything -- deliberately not styled differently, so collapsing a
@@ -351,6 +358,16 @@ QPushButton#startButton:disabled {
    double up into a visibly thicker seam between buttons. */
 QPushButton#segLeft, QPushButton#segMid, QPushButton#segRight {
     border-radius: 0;
+}
+
+/* Segments carry an icon beside their text (icons.py), so they take
+   4 px side padding (ODCS: 4-8 inside a control) instead of a button's 10:
+   three icon + text segments still fit the fixed 456 px settings column
+   ("Better Quality" is the widest). Segments stretch to fill their row, so
+   this only shows at the row's minimum width. */
+QPushButton#segLeft, QPushButton#segMid, QPushButton#segRight {
+    padding-left: 4px;
+    padding-right: 4px;
 }
 
 QPushButton#segLeft {
@@ -1010,3 +1027,16 @@ QStatusBar::item {
     border: none;
 }
 
+
+/* A finished queue row's Show output button (queue_controller.
+   _add_reveal_output_button): compact, so it fits the row beside the
+   result text. */
+QToolButton#revealOutputButton {
+    padding: 2px;
+    border-color: $BORDER_STRONG;
+    background-color: $BG_CONTROL;
+}
+QToolButton#revealOutputButton:hover {
+    background-color: $BG_CONTROL_HOVER;
+    border-color: $ACCENT;
+}

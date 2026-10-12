@@ -4,6 +4,13 @@ Run with:  python3 -m unittest discover -s tests -v
 Runs headless via the "offscreen" Qt platform plugin (set below) -- no
 real display needed, and no window is ever actually shown.
 """
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _sandbox  # noqa: E402,F401  (first: keeps the suite out of the real home)
+
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -11,11 +18,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import shlex
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from contextlib import contextmanager
-from pathlib import Path
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -29,7 +34,7 @@ from PySide6.QtGui import (  # noqa: E402
     QColor, QDragEnterEvent, QIcon, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QFocusEvent, QFont,
     QFontMetrics, QKeySequence, QPainter, QPalette, QPixmap, QShortcut, QWheelEvent,
 )
-from PySide6.QtWidgets import QApplication, QScrollArea, QStyleOptionViewItem, QTabWidget, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QScrollArea, QStyleOptionViewItem, QTabWidget, QWidget  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
@@ -470,6 +475,8 @@ class TestFuzzyTextColor(unittest.TestCase):
     whole suite) and are exactly the condition each branch below needs to
     control precisely, not incidentally inherit."""
 
+    DARK_FIELD = {"BG_FIELD": "#171a1f"}
+
     @staticmethod
     def _widget_with_roles(window_text: QColor, placeholder: QColor):
         from PySide6.QtWidgets import QWidget
@@ -487,7 +494,10 @@ class TestFuzzyTextColor(unittest.TestCase):
         # Light text on the (default, dark) BG_FIELD, so it also clears the
         # 4.5:1 floor and is returned untouched, alpha included.
         widget = self._widget_with_roles(QColor(20, 20, 20), QColor(240, 240, 240, 200))
-        result = theming._fuzzy_text_color(widget)
+        # Pinned: an earlier test's window may have left the light palette
+        # behind, and the 4.5:1 check would then swap in TEXT_SECONDARY.
+        with patch.dict(theming._current_theme_palette, self.DARK_FIELD):
+            result = theming._fuzzy_text_color(widget)
         # A real, directly-usable QColor -- not a string. Reported live as
         # "always black text" in both themes when this used to return a
         # "rgba(...)" CSS string instead: queue_widget.py's paintEvent
@@ -500,7 +510,8 @@ class TestFuzzyTextColor(unittest.TestCase):
 
     def test_distinct_solid_placeholder_role_is_honored_as_is(self):
         widget = self._widget_with_roles(QColor(20, 20, 20), QColor(200, 200, 200))
-        result = theming._fuzzy_text_color(widget)
+        with patch.dict(theming._current_theme_palette, self.DARK_FIELD):
+            result = theming._fuzzy_text_color(widget)
         self.assertEqual((result.red(), result.green(), result.blue(), result.alpha()), (200, 200, 200, 255))
 
     def test_low_contrast_placeholder_falls_back_to_text_secondary(self):
@@ -4102,32 +4113,52 @@ class TestLiveAppendDuringRun(unittest.TestCase):
         self.assertNotIn(item, window._pending_mid_run_items)
 
 
-class TestLeftPanelFixedWidth(unittest.TestCase):
-    # Regression guard for the QSplitter -> QHBoxLayout change
-    # (ui_builder.py's _build_ui): the left settings panel is a deliberate
-    # design rule now (fixed 456px, right panel absorbs all resizing), not
-    # incidental sizing -- this exists so a future edit reintroducing
-    # splitter-style drag/resize behavior fails a test instead of silently
-    # regressing. 456, not the original 470 -- a density pass tried 410
-    # directly and confirmed real clipping by screenshot (the settings
-    # content's own sizeHint().width() is 450px regardless of hardware,
-    # driven by the Quality-tier row's button labels, not by anything
-    # padding/spacing could shrink); 456 leaves a small margin above that
-    # measured floor. See ui_builder.py's own comment on this same
-    # setFixedWidth call for the full measurement.
-    def test_left_panel_is_fixed_at_456(self):
+class TestLeftPanelWidth(unittest.TestCase):
+    # The settings column is 456 px (no splitter; the queue absorbs window
+    # resizing) unless its content needs more: a wider system font (DejaVu
+    # Sans on Ubuntu needs ~472 px at 10 pt) or larger text widens it
+    # instead of clipping the cards' right edges. DESIGN.md: the settings
+    # pane scrolls, never clips; it never scrolls sideways, so it grows.
+    def _window(self):
         window = main_window.MainWindow()
+        window.resize(1280, 800)
+        window.show()
+        QApplication.processEvents()
+        return window
+
+    def _assert_content_fits(self, window):
+        scroll = window._left_panel_scroll
+        self.assertLessEqual(window._left_panel_content.minimumSizeHint().width(), scroll.viewport().width())
+
+    def test_left_panel_is_456_or_what_its_content_needs(self):
+        window = self._window()
         left = window.findChild(QWidget, "leftPanel")
-        self.assertIsNotNone(left)
-        self.assertEqual(left.minimumWidth(), 456)
-        self.assertEqual(left.maximumWidth(), 456)
+        border = left.width() - left.contentsRect().width()  # #leftPanel's border-right
+        need = window._left_panel_content.minimumSizeHint().width() + border
+        self.assertEqual(left.width(), max(456, need))
+        self.assertEqual(left.minimumWidth(), left.maximumWidth())  # still not drag-resizable
+        self._assert_content_fits(window)
 
     def test_widening_the_window_does_not_change_left_panel_width(self):
-        window = main_window.MainWindow()
-        window.show()
+        window = self._window()
         left = window.findChild(QWidget, "leftPanel")
+        before = left.width()
         window.resize(1800, 820)
-        self.assertEqual(left.width(), 456)
+        QApplication.processEvents()
+        self.assertEqual(left.width(), before)
+
+    def test_larger_text_widens_the_panel_instead_of_clipping(self):
+        window = self._window()
+        left = window.findChild(QWidget, "leftPanel")
+        before = left.width()
+        window.setStyleSheet("* { font-size: 14pt; }")
+        QApplication.processEvents()
+        QApplication.processEvents()
+        self.assertGreater(left.width(), before)
+        self._assert_content_fits(window)
+        # The toolbar title tracks it, so Add Videos… stays over the queue.
+        title = window.findChild(QLabel, "appTitle")
+        self.assertEqual(title.width(), left.width() - 24)
 
 
 class TestLeftPanelScrolling(unittest.TestCase):
@@ -4454,29 +4485,35 @@ class TestDynamicProcessingButtons(unittest.TestCase):
         self.assertIsNone(window.processing_amd_btn)
         self.assertEqual(len(window.processing_button_group.buttons()), 1)
 
-    def test_intel_only_gets_a_two_segment_row(self):
+    def test_intel_only_gets_auto_cpu_intel(self):
         with patch.object(main_window.ffmpeg, "find_render_node", side_effect=_find_render_node_for(main_window.ffmpeg.INTEL_VENDOR_ID)):
             window = main_window.MainWindow()
-        self.assertEqual(window.processing_cpu_btn.objectName(), "segLeft")
+        # Auto leads the row (it isn't in the button group: a one-shot pick).
+        self.assertEqual(window.processing_auto_btn.objectName(), "segLeft")
+        self.assertEqual(window.processing_cpu_btn.objectName(), "segMid")
         self.assertEqual(window.processing_intel_btn.objectName(), "segRight")
         self.assertIsNone(window.processing_amd_btn)
         self.assertEqual(len(window.processing_button_group.buttons()), 2)
 
-    def test_amd_only_gets_a_two_segment_row(self):
+    def test_amd_only_gets_auto_cpu_amd(self):
         with patch.object(main_window.ffmpeg, "find_render_node", side_effect=_find_render_node_for(main_window.ffmpeg.AMD_VENDOR_ID)):
             window = main_window.MainWindow()
-        self.assertEqual(window.processing_cpu_btn.objectName(), "segLeft")
+        # Auto leads the row (it isn't in the button group: a one-shot pick).
+        self.assertEqual(window.processing_auto_btn.objectName(), "segLeft")
+        self.assertEqual(window.processing_cpu_btn.objectName(), "segMid")
         self.assertIsNone(window.processing_intel_btn)
         self.assertEqual(window.processing_amd_btn.objectName(), "segRight")
         self.assertEqual(len(window.processing_button_group.buttons()), 2)
 
-    def test_both_vendors_present_gets_the_original_three_segment_row(self):
+    def test_both_vendors_present_gets_auto_cpu_intel_amd(self):
         with patch.object(
             main_window.ffmpeg, "find_render_node",
             side_effect=_find_render_node_for(main_window.ffmpeg.INTEL_VENDOR_ID, main_window.ffmpeg.AMD_VENDOR_ID),
         ):
             window = main_window.MainWindow()
-        self.assertEqual(window.processing_cpu_btn.objectName(), "segLeft")
+        # Auto leads the row (it isn't in the button group: a one-shot pick).
+        self.assertEqual(window.processing_auto_btn.objectName(), "segLeft")
+        self.assertEqual(window.processing_cpu_btn.objectName(), "segMid")
         self.assertEqual(window.processing_intel_btn.objectName(), "segMid")
         self.assertEqual(window.processing_amd_btn.objectName(), "segRight")
         self.assertEqual(len(window.processing_button_group.buttons()), 3)
@@ -5665,7 +5702,17 @@ class TestQueueColumnsFitTheirContent(unittest.TestCase):
         row = _queue_row(window, "Old camcorder tape 07.avi")
         row.setText(main_window.SIZE_COL, "1023.9GB")
         row.setText(main_window.RESULT_COL, "1023.9GB (100% smaller)")
-        QApplication.processEvents()
+        # Until the layout settles: a geometry restored from an earlier
+        # test's window can take one more pass, and the drag tests measure
+        # their baseline from here.
+        header = window.queue_list.header()
+        sizes = None
+        for _ in range(10):
+            QApplication.processEvents()
+            now = [header.sectionSize(c) for c in range(header.count())] + [window.queue_list.viewport().width()]
+            if now == sizes:
+                break
+            sizes = now
         return window
 
     def _assert_columns_fit(self, window):
@@ -5697,6 +5744,54 @@ class TestQueueColumnsFitTheirContent(unittest.TestCase):
         header = window.queue_list.header()
         others = sum(header.sectionSize(c) for c in (main_window.DURATION_COL, main_window.SIZE_COL, main_window.RESULT_COL))
         self.assertEqual(header.sectionSize(main_window.VIDEO_COL) + others, window.queue_list.viewport().width())
+
+    def test_every_column_is_resizable_by_dragging(self):
+        header = self._window(1186, 720).queue_list.header()
+        for col in range(header.count()):
+            self.assertEqual(header.sectionResizeMode(col), QHeaderView.Interactive, col)
+
+    def test_dragged_video_width_survives_a_window_resize(self):
+        window = self._window(1186, 720)
+        header = window.queue_list.header()
+        status = header.sectionSize(main_window.RESULT_COL)
+        dragged = header.sectionSize(main_window.VIDEO_COL) - 120
+        header.resizeSection(main_window.VIDEO_COL, dragged)  # what a handle drag calls
+        QApplication.processEvents()
+        # Status takes up the slack, so the row still spans the list.
+        self.assertEqual(header.sectionSize(main_window.RESULT_COL), status + 120)
+        window.resize(1386, 720)
+        QApplication.processEvents()
+        # The extra window width goes to Video; the user's narrowing holds.
+        self.assertEqual(header.sectionSize(main_window.VIDEO_COL), dragged + 200)
+        self.assertEqual(header.sectionSize(main_window.RESULT_COL), status + 120)
+
+    def test_header_menu_restores_automatic_widths(self):
+        window = self._window(1186, 720)
+        header = window.queue_list.header()
+        fitted = [header.sectionSize(c) for c in range(header.count())]
+        header.resizeSection(main_window.VIDEO_COL, fitted[main_window.VIDEO_COL] - 150)
+        header.resizeSection(main_window.SIZE_COL, fitted[main_window.SIZE_COL] + 50)
+        QApplication.processEvents()
+        self.assertEqual(header.contextMenuPolicy(), Qt.CustomContextMenu)
+        menu = window.queue_list._build_header_menu()
+        [action] = [a for a in menu.actions() if a.text() == "Automatic Column Widths"]
+        action.trigger()
+        QApplication.processEvents()
+        self.assertEqual([header.sectionSize(c) for c in range(header.count())], fitted)
+        # Back to filling: the next window resize goes to Video again.
+        window.resize(1286, 720)
+        QApplication.processEvents()
+        self.assertEqual(header.sectionSize(main_window.VIDEO_COL), fitted[main_window.VIDEO_COL] + 100)
+
+    def test_widening_duration_takes_from_video_not_status(self):
+        window = self._window(1186, 720)
+        header = window.queue_list.header()
+        video, status = header.sectionSize(main_window.VIDEO_COL), header.sectionSize(main_window.RESULT_COL)
+        header.resizeSection(main_window.DURATION_COL, header.sectionSize(main_window.DURATION_COL) + 60)
+        QApplication.processEvents()
+        self.assertEqual(header.sectionSize(main_window.VIDEO_COL), video - 60)
+        self.assertEqual(header.sectionSize(main_window.RESULT_COL), status)
+        self.assertFalse(window.queue_list.horizontalScrollBar().isVisible())
 
 
 class TestControlsMatchTheDesignDecisions(unittest.TestCase):

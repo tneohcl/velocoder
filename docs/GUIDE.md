@@ -29,9 +29,11 @@ same underlying value, never two independently-tracked ones.
 **Video tab — Normal**
 
 *Encoding card*
-- **Processing** — which *engine* runs the encode: **Automatic**
-  (recommended — picks the fastest available option on this machine,
-  preferring Intel iGPU, then AMD GPU, then CPU) or an explicit **CPU**
+- **Processing** — which *engine* runs the encode, one segmented row
+  **Auto | CPU | Intel | AMD**. **Auto** (recommended) is a one-shot pick,
+  not a state: it chooses the fastest available option on this machine,
+  preferring Intel iGPU, then AMD GPU, then CPU, and selects that segment.
+  Otherwise an explicit **CPU**
   (software) / **Intel (iGPU)** / **AMD (GPU)** choice (the latter two
   both `hevc_vaapi`, distinguished by the `gpu_vendor` settings-dict key).
   The explicit choices are dynamic now, not a fixed list: `worker.
@@ -283,9 +285,14 @@ notice on top of it.
   **Duration**, **Size** and **Status** are sized from the current font to
   their widest real value ("00:00:00", "1023.9GB", "1023.9GB (100%
   smaller)") by `DropTreeWidget.fit_columns`, and refit when the font or
-  style changes, so the numbers you scan for are never truncated. The
-  trade: a Stretch section can't be drag-resized. (Until 2026-10-07 these
-  were hand-tuned px widths, and Size showed "11.2GB" as "11.2…".)
+  style changes, so the numbers you scan for are never truncated. (Until
+  2026-10-07 these were hand-tuned px widths, and Size showed "11.2GB" as
+  "11.2…".) Every column can be dragged: narrowing Video widens Status,
+  widening Duration or Size takes from Video, and a window resize always
+  lands on Video, so a dragged width survives it. A font or style change
+  refits all four and drops the dragged widths, and so does right-click on
+  the header → **Automatic Column Widths**. Widths aren't saved between
+  sessions.
 - **Source metadata probe** — each added file immediately kicks off an
   async, non-blocking `ffprobe -show_entries format=duration:stream=...`
   call (`worker.build_probe_args`/`parse_probe_output`, header-only, no
@@ -373,6 +380,17 @@ notice on top of it.
   directly either way. Clear Queue still asks for confirmation first
   (skipped entirely if the queue is already empty) — it can discard real
   per-file setup, so a destructive action like this always confirms first.
+- **Icons** (`ui/icons.py`, `ui/assets/icons/`): every button and segment
+  shows an icon beside its text (never instead of it), and the Encoding,
+  Quality, Format and Audio card titles carry one too. One SVG per glyph,
+  drawn in `currentColor` and tinted from the live theme palette, including
+  `TEXT_ON_ACCENT` for checked segments and Convert, so they follow the
+  system accent; `refresh_icons()` re-tints after every theme switch. Intel
+  and AMD use a GPU glyph on a vendor-coloured badge, not the vendors'
+  trademarked logos. Quality tiers are a three-segment gauge whose needle
+  moves left → right. A **finished row** gets a small folder button at the
+  end of its Status cell (**Show output file**, the same as the context
+  menu's Reveal Output File).
 - **Save to** (labelled **Output folder** in the sibling TITAN-i Transcoder
   app) — deliberately *not* the first thing in the window; it's a per-run
   detail, so it sits below the queue, near where it's used, not up with

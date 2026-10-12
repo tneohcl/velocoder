@@ -64,7 +64,9 @@ docs/                  This file, GUIDE.md, screenshots/, CONSUMER_FORK_PLAN.md.
 ```
 
 
-The GUI is a fixed-width (456px) settings inspector on the left, wrapped
+The GUI is a fixed-width settings inspector on the left (456px, or as
+wide as its content needs when a wider font or larger text would
+otherwise clip it -- `_LeftPanelWidth` in `ui_builder.py`), wrapped
 in a `QScrollArea` (a vertical scrollbar appears only if Expert's content
 ever exceeds the window height -- none under normal conditions), and a
 flexible workspace on the right, laid out with a plain `QHBoxLayout` (not
@@ -363,7 +365,14 @@ uses it too. For running a single file, class, or test during development,
 plain `unittest` is still fine and doesn't hit this — e.g.
 `python3 -m unittest tests.test_ffmpeg.TestTune -v` (main_window.py's tests need
 `QT_QPA_PLATFORM=offscreen` to run headless, but they set that themselves
-before importing Qt, so it works with or without a real display). Most
+before importing Qt, so it works with or without a real display).
+
+Every test module imports `tests/_sandbox.py` first. It points `HOME` and
+the XDG config/data/cache/state dirs at a throwaway directory per process,
+so the suite never reads or writes the real `VeloCoder.conf` (theme, window
+geometry, Expert state), `session.json` or `~/Videos/transcoded`.
+`test_sandbox.py` fails if a test module forgets the import, or imports Qt
+or the app before it. Most
 `test_ffmpeg.py` tests check the argv `build_args()`
 produces; several actually run ffmpeg against tiny synthetic clips (real
 hardware encode included, skipped automatically if `/dev/dri/by-path`

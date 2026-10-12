@@ -795,25 +795,28 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
     def _on_quality_changed(self):
         rc_mode = self.rc_mode_combo.currentData()
         self.quality_label.setText(f"{self.quality_slider.value()} ({rc_mode})")
-        # Fraction 0 = the lowest ICQ/CQP/CRF number = the *best* quality
-        # end (these all share the same lower-is-better convention) -- so
-        # the first label here is what belongs at that end, not what reads
-        # first. "Movies & TV" and the near-lossless/lighter-footage labels
-        # either side of it are the original 3-tier set, kept as the
-        # anchors readers may already recognize; the other 3 fill in the
-        # gaps a plain 3-way split left too wide. Trimmed to a short
-        # "Label -- descriptor" pair per tier -- the original wordier
-        # phrasing read as too long next to Speed's captions once both
-        # sat in the same size fuzzyGroup box.
-        self.quality_tier_label.setText(formatting.tier_label(
-            formatting.fraction_of(self.quality_slider),
-            "Archival -- near-lossless",
-            "High quality -- crisp detail",
-            "Movies & TV -- general purpose",
-            "Streaming -- efficient",
-            "Lighter footage -- more compression",
-            "Heavy compression -- visible quality loss",
-        ))
+        # On the encoder's own Quality mode the caption uses the tier
+        # buttons' words (formatting.quality_caption) and the slider marks
+        # where each tier sits. The tiers never apply to Intel's CQP, so it keeps
+        # the descriptive captions, in equal slices of the range. Fraction
+        # 0 = the lowest number = the *best* quality end.
+        key = self._current_encoder_key()
+        if rc_mode == RC_MODE_FRIENDLY[key]["quality"]:
+            tiers = QUALITY_TIERS[key]
+            self.quality_slider.set_tick_values(tiers.values())
+            caption = formatting.quality_caption(self.quality_slider.value(), tiers)
+        else:
+            self.quality_slider.set_tick_values(())
+            caption = formatting.tier_label(
+                formatting.fraction_of(self.quality_slider),
+                "Archival -- near-lossless",
+                "High quality -- crisp detail",
+                "Movies & TV -- general purpose",
+                "Streaming -- efficient",
+                "Lighter footage -- more compression",
+                "Heavy compression -- visible quality loss",
+            )
+        self.quality_tier_label.setText(caption)
         self._on_control_changed()
 
     def _set_rc_mode(self, value: str):

@@ -146,9 +146,14 @@ anything already in Normal:
   this re-ranges on every encoder/rc_mode change). `setInvertedAppearance`/
   `setInvertedControls` flip the slider so **left is worse/smaller,
   right is better/larger** — every rc_mode's underlying scale runs the
-  opposite way (a *lower* number means *better* quality) otherwise. A
-  fuzzy tier caption underneath ("Movies & TV — general purpose", etc.)
-  names what the current position is actually good for.
+  opposite way (a *lower* number means *better* quality) otherwise.
+  Small marks on the slider show where **Smaller File**, **Balanced** and
+  **Better Quality** sit for the current encoder, and the caption
+  underneath uses the same words: "Balanced — general purpose" on a tier,
+  "Between Balanced and Better Quality" between two, "Beyond Better
+  Quality — near-lossless" past the ends (`formatting.quality_caption`).
+  Intel's Advanced (CQP) mode has no tiers, so there it shows no marks
+  and a descriptive caption ("Movies & TV -- general purpose", etc.).
 - **Encoding Speed** — "Faster" to "Slower" for either engine
   (`-compression_level` 1–7 for VAAPI, x265/x264's own preset ladder
   `ultrafast`…`placebo` for CPU). VAAPI's own inverted-appearance

@@ -6265,5 +6265,79 @@ class TestFailuresReadWithoutHovering(unittest.TestCase):
         self.assertFalse(window.status_label.property("headline"))
 
 
+class TestQualitySliderSpeaksTheTierNames(unittest.TestCase):
+    """Expert's Exact Quality caption was six equal slices of the slider's
+    range, so it disagreed with Normal's tier buttons: on CPU, Better
+    Quality and Balanced both read "Movies & TV", and on Intel/AMD Balanced
+    read "Streaming". The caption now names the tier the slider is on (or
+    between), and the slider marks where the three tiers sit."""
+
+    TIERS = (("smaller", "Smaller File"), ("balanced", "Balanced"), ("better", "Better Quality"))
+
+    def _window(self, encoder="CPU"):
+        window = main_window.MainWindow()
+        self.addCleanup(window.deleteLater)
+        window.encoder_combo.setCurrentText(encoder)
+        return window
+
+    def test_caption_names_the_tier_button_on_every_encoder(self):
+        for encoder in ("CPU", "Intel (iGPU)", "AMD (GPU)"):
+            window = self._window(encoder)
+            for tier, name in self.TIERS:
+                getattr(window, f"quality_{tier}_btn").click()
+                self.assertTrue(window.quality_tier_label.text().startswith(f"{name} — "),
+                                (encoder, tier, window.quality_tier_label.text()))
+
+    def test_caption_between_and_beyond_the_tiers(self):
+        window = self._window()  # CPU: Better 18, Balanced 23, Smaller 28
+        slider = window.quality_slider
+        for value, caption in ((20, "Between Balanced and Better Quality"),
+                               (25, "Between Smaller File and Balanced")):
+            slider.setValue(value)
+            self.assertEqual(window.quality_tier_label.text(), caption)
+        slider.setValue(slider.minimum())
+        self.assertTrue(window.quality_tier_label.text().startswith("Beyond Better Quality — "))
+        slider.setValue(slider.maximum())
+        self.assertTrue(window.quality_tier_label.text().startswith("Beyond Smaller File — "))
+
+    def test_slider_marks_the_current_encoders_tiers(self):
+        for encoder in ("CPU", "Intel (iGPU)", "AMD (GPU)"):
+            window = self._window(encoder)
+            key = window._current_encoder_key()
+            self.assertEqual(sorted(window.quality_slider.tick_values()),
+                             sorted(main_window.QUALITY_TIERS[key].values()), encoder)
+
+    def test_cqp_has_no_tier_buttons_so_no_tier_names(self):
+        window = self._window("Intel (iGPU)")
+        window.rc_mode_combo.setCurrentText("CQP (fixed quantizer)")
+        self.assertEqual(tuple(window.quality_slider.tick_values()), ())
+        caption = window.quality_tier_label.text()
+        self.assertTrue(caption)
+        for _tier, name in self.TIERS:
+            self.assertNotIn(name, caption)
+
+    def test_marks_are_drawn_left_to_right_smaller_to_better(self):
+        window = self._window()
+        window.resize(1186, 720)
+        window.show()
+        self.addCleanup(window.close)
+        window.video_expert_group.setChecked(True)
+        slider = window.quality_slider
+        slider.setValue(slider.maximum())  # the handle at the far left, clear of the marks
+        for _ in range(5):
+            QApplication.processEvents()
+        self.assertTrue(slider.isVisible())
+        tiers = main_window.QUALITY_TIERS[window._current_encoder_key()]
+        xs = [slider.tick_x(tiers[tier]) for tier, _name in self.TIERS]
+        self.assertEqual(xs, sorted(xs))  # left is smaller/worse, right is better
+        self.assertGreater(xs[1] - xs[0], 4)
+        marked = slider.grab().toImage()
+        slider.set_tick_values(())
+        plain = slider.grab().toImage()
+        for x in xs:
+            column = [marked.pixel(x, y) != plain.pixel(x, y) for y in range(marked.height())]
+            self.assertTrue(any(column), f"no mark drawn at x={x}")
+
+
 if __name__ == "__main__":
     unittest.main()

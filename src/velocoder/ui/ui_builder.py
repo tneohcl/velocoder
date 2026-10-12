@@ -13,11 +13,11 @@ in the MRO fine, but multiple-inheriting from two QObject-derived
 classes is a well-known source of real, hard-to-diagnose problems. A
 plain mixin sidesteps that entirely."""
 from PySide6.QtCore import Qt, QEvent, QObject, QSize, QMargins
-from PySide6.QtGui import QAction, QActionGroup, QFont, QFontMetrics, QKeySequence, QPainter
+from PySide6.QtGui import QAction, QActionGroup, QFont, QFontMetrics, QColor, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QMenu, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-    QSizePolicy, QSlider, QSpinBox, QStyle, QStyleOptionButton, QStyleOptionGroupBox, QTabWidget, QVBoxLayout,
+    QSizePolicy, QSlider, QSpinBox, QStyle, QStyleOptionButton, QStyleOptionGroupBox, QStyleOptionSlider, QTabWidget, QVBoxLayout,
     QWidget,
 )
 
@@ -33,7 +33,7 @@ from velocoder.ui.queue_widget import (
 from velocoder.ui.icons import (
     _TEXT_GAP, icon_button, icon_label, icon_size_for, icon_tabs, refresh_button_icon,
 )
-from velocoder.ui.theming import _NoItemFocusRectStyle
+from velocoder.ui.theming import _NoItemFocusRectStyle, _current_theme_palette
 
 PANEL_MARGIN = 8
 # The settings column's width (see _build_ui): fixed, never drag-resized,
@@ -275,6 +275,58 @@ class _ButtonActionMirror(QObject):
         if event.type() == QEvent.EnabledChange and obj in self.pairs:
             self.pairs[obj].setEnabled(obj.isEnabled())
         return False
+
+
+class _TierTickSlider(QSlider):
+    """Exact Quality's slider, with a small mark across the groove at each
+    of the current encoder's Smaller File/Balanced/Better Quality values
+    (set_tick_values). QSlider's own tick marks can only be evenly spaced."""
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self._tick_values = ()
+
+    def tick_values(self):
+        return self._tick_values
+
+    def set_tick_values(self, values):
+        values = tuple(values)
+        if values != self._tick_values:
+            self._tick_values = values
+            self.update()
+
+    def _option(self):
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        return opt
+
+    def tick_x(self, value: int) -> int:
+        """The x of value's mark: where the handle's centre sits at value."""
+        opt = self._option()
+        groove = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
+        handle = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
+        span = groove.width() - handle.width()
+        return groove.x() + handle.width() // 2 + QStyle.sliderPositionFromValue(
+            self.minimum(), self.maximum(), value, span, opt.upsideDown)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._tick_values:
+            return
+        # Over the finished slider (the stylesheet draws the groove's
+        # filled part only alongside the handle), then the handle again so
+        # it stays on top of the marks.
+        painter = QPainter(self)
+        opt = self._option()
+        style = self.style()
+        groove = style.subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
+        centre = groove.center().y()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(_current_theme_palette.get("TEXT_SECONDARY", "#9098a6")))
+        for value in self._tick_values:
+            painter.drawRect(self.tick_x(value) - 1, centre - 5, 2, 10)
+        opt.subControls = QStyle.SC_SliderHandle
+        style.drawComplexControl(QStyle.CC_Slider, opt, painter, self)
 
 
 class _UiBuilderMixin:
@@ -1068,7 +1120,7 @@ class _UiBuilderMixin:
         form.addRow("Rate Control:", self.rc_mode_combo)
 
         quality_row = QHBoxLayout()
-        self.quality_slider = QSlider(Qt.Horizontal)
+        self.quality_slider = _TierTickSlider(Qt.Horizontal)
         # Left = worse quality/smaller, right = better quality/larger --
         # the intuitive direction for a horizontal slider. The underlying
         # ICQ/CQP/CRF value this drives is the opposite (lower number is
@@ -1080,7 +1132,8 @@ class _UiBuilderMixin:
         self.quality_slider.setInvertedControls(True)
         self.quality_slider.setToolTip(
             "Left: more compression, smaller file.\n"
-            "Right: higher quality, larger file."
+            "Right: higher quality, larger file.\n"
+            "Marks: Smaller File, Balanced and Better Quality."
         )
         self.quality_slider.valueChanged.connect(self._on_quality_changed)
         self.quality_label = QLabel()

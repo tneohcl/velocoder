@@ -4330,6 +4330,25 @@ class TestDesktopTextSize(unittest.TestCase):
         window._button_mirror.sync()
         self.assertEqual(window.convert_action.text(), "Converting…")
 
+    def test_a_long_status_line_never_widens_the_window(self):
+        # The run-status lines elide instead: a long filename used to set the
+        # window's minimum (1489 px mid-run at 22 pt).
+        name = "a-very-long-holiday-video-name-from-the-camcorder-tape-2019.mkv"
+        for points in (10, 22):
+            self._set_desktop_points(points)
+            window = self._window()
+            window._apply_run_phase_visuals("converting")
+            window._set_status(f"Converting 3 of 4 — {name}")
+            window.eta_label.setText(f"About 8 minutes remaining for {name}")
+            window.stats_label.setText(f"{name} · 2.3x · 41 fps · 1.2 Mb/s")
+            for _ in range(5):
+                QApplication.processEvents()
+            with self.subTest(points=points):
+                self.assertEqual(window.minimumWidth(), max(960, window.layout().minimumSize().width()))
+                self.assertLessEqual(window.width(), 1280)
+                self.assertIn(name, window.status_label.text())  # full text kept (and as tooltip)
+                self.assertIn(name, window.status_label.toolTip())
+
     def test_no_toolbar_label_is_clipped(self):
         for points in (10, 14, 22):
             self._set_desktop_points(points)

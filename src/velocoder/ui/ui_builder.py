@@ -1521,7 +1521,10 @@ class _UiBuilderMixin:
         # happens, and _start()/_on_all_finished both disable it -- there's
         # nothing to "pause after" while idle or already paused.
 
-        self.status_label = QLabel("Idle")
+        # _ElidedLabel, like eta_label and stats_label below: one line that
+        # elides a long filename instead of setting the window's minimum
+        # width (1489 px mid-run at 22 pt). Full text in the tooltip.
+        self.status_label = _ElidedLabel("Idle")
         # Matches what _set_status("Idle") itself would do (main_window.py) --
         # this initial text is set directly here, not through that
         # method, so the hidden-at-rest state has to be established
@@ -1540,10 +1543,10 @@ class _UiBuilderMixin:
         # as technical as it always was. Reported directly: the numbers
         # matter for this app's actual audience, they just shouldn't be
         # the first thing read.
-        self.eta_label = QLabel("")
+        self.eta_label = _ElidedLabel("")
         layout.addWidget(self.eta_label)
 
-        self.stats_label = QLabel("—")
+        self.stats_label = _ElidedLabel("—")
         # palette(mid) reads as near-invisible on a dark theme -- default
         # text color, smaller size instead.
         self.stats_label.setObjectName("statsLabel")  # style.qss

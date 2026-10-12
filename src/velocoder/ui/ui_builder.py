@@ -147,6 +147,29 @@ class _GroupTitleIcon(QLabel):
         self.move(text_left - self.width() - self.GAP, title.center().y() - self.height() // 2 + 1)
 
 
+class _SharedLabelWidth(QObject):
+    """Gives a set of form labels the width of the widest one, measured again
+    whenever their font or style changes, so a larger text size widens the
+    label column instead of clipping it."""
+
+    def __init__(self, labels, parent=None):
+        super().__init__(parent)
+        self.labels = list(labels)
+        for label in self.labels:
+            label.installEventFilter(self)
+        self.fit()
+
+    def fit(self):
+        widest = max(label.sizeHint().width() for label in self.labels)
+        for label in self.labels:
+            label.setMinimumWidth(widest)
+
+    def eventFilter(self, obj, event):  # noqa: N802 (Qt API)
+        if event.type() in (QEvent.StyleChange, QEvent.FontChange, QEvent.Polish):
+            self.fit()
+        return False
+
+
 class _ButtonActionMirror(QObject):
     """Keeps menu actions in step with the buttons that own the run state:
     enabled state live (so a shortcut never fires a disabled command) and the
@@ -795,10 +818,10 @@ class _UiBuilderMixin:
         # every label in this form to the true widest sizeHint up front
         # sidesteps that Qt timing quirk entirely instead of chasing a
         # relayout call that convinces it to recompute.
+        # Kept current as the text size changes (_SharedLabelWidth): a
+        # width taken once at 10 pt clipped "Quality:" at 22 pt.
         labels = [form.labelForField(f) for f in (mode_field, self._quality_tier_field, self._target_size_field)]
-        widest = max(label.sizeHint().width() for label in labels)
-        for label in labels:
-            label.setMinimumWidth(widest)
+        self._quality_label_width = _SharedLabelWidth(labels, group)
 
         return group
 

@@ -115,8 +115,11 @@ QGroupBox {
        ui_builder.py's SECTION_SPACING and form.setVerticalSpacing had
        already shrunk enough that the header reserve was the next-most
        visible source of bulk; the title's own top offset below was
-       pulled in to match, so it doesn't collide with the border. */
-    padding-top: 19px;
+       pulled in to match, so it doesn't collide with the border.
+       In em (one line of the title's font: 19 px at 10 pt), so the room
+       grows with the text; a fixed 19px let a 22 pt title run into the
+       card's first row. */
+    padding-top: 1.06em;
     font-weight: 600;
 }
 

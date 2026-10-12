@@ -36,7 +36,7 @@ from PySide6.QtGui import (  # noqa: E402
 )
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QFormLayout, QGroupBox, QHeaderView, QLabel, QPushButton, QScrollArea, QStyle, QStyleOptionGroupBox,
-    QStyleOptionViewItem, QTabWidget, QWidget,
+    QStyleOptionViewItem, QTabWidget, QToolButton, QWidget,
 )
 from PySide6.QtTest import QTest  # noqa: E402
 
@@ -5991,6 +5991,24 @@ class TestQueueAtLargeText(unittest.TestCase):
         window, row = self._window(22)
         row.setData(main_window.VIDEO_COL, queue_widget.FAILURE_REASON_ROLE, "Demo failure")
         self.assertEqual(self._subtitle(window, row), "Failed: Demo failure")
+
+    def test_status_text_stops_before_the_show_output_button(self):
+        # Status narrows to share the width with Video, and its elided text
+        # ran on under a finished row's button ("17.7KB (6…" behind it).
+        window, row = self._window(22)
+        queue = window.queue_list
+        row.setText(main_window.RESULT_COL, "17.7KB (65% smaller)")
+        window._add_reveal_output_button(row)
+        for _ in range(5):
+            QApplication.processEvents()
+        cell = queue.itemWidget(row, main_window.RESULT_COL)
+        button = cell.findChild(QToolButton)
+        under = QRect(button.mapTo(queue.viewport(), QPoint(0, 0)), button.size()).adjusted(2, 2, -2, -2)
+        cell.hide()  # what the delegate painted behind the button
+        image = queue.viewport().grab().toImage()
+        colors = {image.pixel(x, y) for x in range(under.left(), under.right() + 1)
+                  for y in range(under.top(), under.bottom() + 1)}
+        self.assertEqual(len(colors), 1, "Status text is painted under the Show output button")
 
 
 class TestQueueColumnsFitTheirContent(unittest.TestCase):

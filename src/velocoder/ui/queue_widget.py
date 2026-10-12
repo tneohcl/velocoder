@@ -6,7 +6,8 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QHeaderView, QMenu, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTreeWidget,
+    QAbstractItemView, QHeaderView, QMenu, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QToolButton,
+    QTreeWidget,
 )
 
 from velocoder.ui.theming import _current_theme_palette, _fuzzy_text_color
@@ -185,6 +186,30 @@ def _empty_state_icon() -> QIcon:
     return QIcon(str(Path(__file__).parent / "assets" / f"video_{suffix}.svg"))
 
 
+class _StatusCellDelegate(QStyledItemDelegate):
+    """Stops a finished row's Status text before its Show output button
+    (queue_controller._add_reveal_output_button). The column is fitted to
+    hold both, but when large text makes Status share the width with Video
+    (DropTreeWidget._fill_video) the elided text ran on under the button."""
+
+    def paint(self, painter, option, index):
+        cell = option.widget.indexWidget(index) if option.widget else None
+        button = cell.findChild(QToolButton) if cell else None
+        if button is None:
+            super().paint(painter, option, index)
+            return
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        style = opt.widget.style()
+        text_rect = style.subElementRect(QStyle.SE_ItemViewItemText, opt, opt.widget)
+        # The cell's trailing margin, the button, and a small gap before it.
+        reserved = cell.layout().contentsMargins().right() + button.sizeHint().width() + 4
+        room = min(text_rect.right(), opt.rect.right() - reserved) - text_rect.left()
+        opt.text = opt.fontMetrics.elidedText(opt.text, Qt.ElideRight, max(0, room))
+        opt.textElideMode = Qt.ElideNone
+        style.drawControl(QStyle.CE_ItemViewItem, opt, painter, opt.widget)
+
+
 class DropTreeWidget(QTreeWidget):
     """Flat (no hierarchy) QTreeWidget -- gives the queue a real multi-column
     grid with a header bar while keeping the same "one item per row, holding
@@ -251,6 +276,7 @@ class DropTreeWidget(QTreeWidget):
         # app) when Qt hands it an option.widget of None -- observed under
         # some paint paths, not just a defensive guess.
         self.setItemDelegateForColumn(VIDEO_COL, _VideoCellDelegate(self))
+        self.setItemDelegateForColumn(RESULT_COL, _StatusCellDelegate(self))
         # Right-click on the header: undo any dragged column widths.
         self.header().setContextMenuPolicy(Qt.CustomContextMenu)
         self.header().customContextMenuRequested.connect(self._on_header_context_menu)

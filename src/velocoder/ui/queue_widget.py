@@ -62,6 +62,25 @@ FAILURE_REASON_ROLE = Qt.UserRole + 6
 QUEUE_COLUMN_HEADERS = ["Video", "Duration", "Size", "Status"]
 
 
+# Columns that move into a row's second line, in this order, when the list
+# is too narrow for them beside a readable name (DropTreeWidget._fill_video).
+FOLDABLE_COLUMNS = (DURATION_COL, SIZE_COL)
+
+
+def row_subtitle(index, tree) -> str:
+    """A row's second line: why it failed, or the codec/resolution line led
+    by any column folded into it ("0:03  ·  53.1KB  ·  H.264 320x180")."""
+    failure_reason = index.data(FAILURE_REASON_ROLE)
+    if failure_reason:
+        return f"Failed: {failure_reason}"
+    parts = []
+    if tree is not None:
+        header = tree.header()
+        parts = [index.siblingAtColumn(col).data() for col in FOLDABLE_COLUMNS if header.isSectionHidden(col)]
+    parts.append(index.data(VIDEO_SUBTITLE_ROLE))
+    return "  ·  ".join(part for part in parts if part)
+
+
 class _VideoCellDelegate(QStyledItemDelegate):
     """Paints the Video column as a two-line card -- filename (bold) over
     a muted resolution/codec subtitle, e.g. "1920x1080 H.264" -- instead
@@ -105,10 +124,8 @@ class _VideoCellDelegate(QStyledItemDelegate):
         style.drawControl(QStyle.CE_ItemViewItem, opt, painter, opt.widget)
 
         text_rect = opt.rect.adjusted(icon_width + 4, 2, -4, -2)
-        subtitle = index.data(VIDEO_SUBTITLE_ROLE) or ""
+        subtitle = row_subtitle(index, opt.widget)
         failure_reason = index.data(FAILURE_REASON_ROLE)
-        if failure_reason:
-            subtitle = f"Failed: {failure_reason}"
 
         if has_icon:
             size = opt.decorationSize
@@ -193,6 +210,12 @@ class DropTreeWidget(QTreeWidget):
     COLUMN_SAMPLES = {DURATION_COL: "00:00:00", SIZE_COL: "1023.9GB", RESULT_COL: "1023.9GB (100% smaller)"}
     # Item and header padding (style.qss: 6px each side) plus room to breathe.
     COLUMN_PADDING = 16
+    # Video keeps room for about this many characters: when the fitted
+    # columns would leave it less, Duration then Size fold into the rows'
+    # second line, then Video and Status share what's left. At 22 pt the
+    # three fixed columns alone wanted ~690 px of a ~390 px list, and every
+    # name read "h…". At 10 pt nothing folds, even in the narrowest window.
+    VIDEO_MIN_CHARS = 10
 
     def __init__(self, on_files_dropped, on_reordered=None, parent=None):
         super().__init__(parent)
@@ -340,6 +363,7 @@ class DropTreeWidget(QTreeWidget):
         header_font = QFont(header.font())
         header_font.setWeight(QFont.Weight(600))  # QHeaderView::section is semibold (style.qss)
         header_metrics = QFontMetrics(header_font)
+        self._fitted_widths = {}
         self._fitting_columns = True
         try:
             for col, sample in self.COLUMN_SAMPLES.items():
@@ -353,9 +377,12 @@ class DropTreeWidget(QTreeWidget):
                 width += self.COLUMN_PADDING
                 if col == RESULT_COL:
                     self._status_width = width
+                self._fitted_widths[col] = width
                 self.setColumnWidth(col, width)
         finally:
             self._fitting_columns = False
+        # The row's status icon sits before the name (one text line high).
+        self._video_min = self.VIDEO_MIN_CHARS * item_metrics.averageCharWidth() + item_metrics.height()
         self._video_offset = 0
         self._fill_video()
 
@@ -363,26 +390,54 @@ class DropTreeWidget(QTreeWidget):
         """Video = the list's width minus the other columns, minus however
         much the user dragged Video narrower (_video_offset; negative when
         they dragged it wider). A window resize therefore lands on Video,
-        and Status returns to its fitted width plus that same offset."""
+        and Status returns to its fitted width plus that same offset.
+
+        When the fitted columns would leave Video under _video_min, Duration
+        and then Size are hidden and shown in each row's second line
+        (row_subtitle) instead, and come back once there's room. If that's
+        still not enough, Video and Status share the width (Status elides)."""
         if not hasattr(self, "_status_width"):
             return
         header = self.header()
-        rest = header.sectionSize(DURATION_COL) + header.sectionSize(SIZE_COL) + self._status_width
-        width = max(header.minimumSectionSize(), self.viewport().width() - rest - self._video_offset)
+        available = self.viewport().width()
+        folded = set()
+        others = sum(self._fitted_widths[col] for col in FOLDABLE_COLUMNS) + self._status_width
+        for col in FOLDABLE_COLUMNS:
+            if available - others >= self._video_min:
+                break
+            folded.add(col)
+            others -= self._fitted_widths[col]
         self._fitting_columns = True
         try:
+            for col in FOLDABLE_COLUMNS:
+                if header.isSectionHidden(col) != (col in folded):
+                    header.setSectionHidden(col, col in folded)
+            width = available - self._other_columns_width() - self._video_offset
+            if self._video_offset == 0 and width < self._video_min:
+                width = min(self._video_min, max(available // 2, available - self._status_width))
+            width = max(header.minimumSectionSize(), width)
             header.resizeSection(VIDEO_COL, width)
+            # Status stretches into any spare width, but never shrinks below
+            # its last size on its own: give it exactly what's left when that
+            # is less than its fitted width, so nothing scrolls sideways.
+            shown = self._other_columns_width() - self._status_width
+            status = min(self._status_width, available - width - shown)
+            header.resizeSection(RESULT_COL, max(header.minimumSectionSize(), status))
         finally:
             self._fitting_columns = False
+        self.viewport().update()  # second lines change with the folded columns
+
+    def _other_columns_width(self) -> int:
+        header = self.header()
+        shown = sum(header.sectionSize(col) for col in FOLDABLE_COLUMNS if not header.isSectionHidden(col))
+        return shown + self._status_width
 
     def _on_section_resized(self, col, _old, new):
         if getattr(self, "_fitting_columns", False) or col == RESULT_COL:
             return  # our own layout, or Status stretching to fill
         if col == VIDEO_COL:
             # The user dragged Video's edge: remember how far from "fill".
-            header = self.header()
-            rest = header.sectionSize(DURATION_COL) + header.sectionSize(SIZE_COL) + self._status_width
-            self._video_offset = self.viewport().width() - rest - new
+            self._video_offset = self.viewport().width() - self._other_columns_width() - new
         else:
             # Duration or Size dragged: Video gives up (or takes) the
             # difference, so Status keeps its width.

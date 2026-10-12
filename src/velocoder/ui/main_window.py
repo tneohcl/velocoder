@@ -35,7 +35,7 @@ from velocoder.ui.icons import refresh_icons
 from velocoder.ui.theming import (
     _current_theme_palette, _system_accent_tokens, _load_stylesheet,
     _ComboPopupBackgroundFilter, _FocusVisibleFilter, _ComboWheelBlockFilter,
-    _validate_theme_choice, _resolve_theme,
+    _validate_theme_choice, _resolve_theme, stylesheet_is_current,
 )
 from velocoder.ui.ui_builder import _UiBuilderMixin
 from velocoder.ui.queue_controller import _QueueControllerMixin
@@ -524,8 +524,9 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         if self._theme_choice == "system":
             self._reload_stylesheet()
 
-    def _reload_stylesheet(self):
-        _load_stylesheet(QApplication.instance(), _resolve_theme(self._theme_choice))
+    def _reload_stylesheet(self, *, if_scale_changed: bool = False):
+        if not (if_scale_changed and stylesheet_is_current()):
+            _load_stylesheet(QApplication.instance(), _resolve_theme(self._theme_choice))
         self._refresh_status_icons()
         refresh_icons(self)
         if getattr(self, "_help_window", None) is not None:
@@ -536,9 +537,10 @@ class MainWindow(QMainWindow, _UiBuilderMixin, _QueueControllerMixin):
         if kind == QEvent.ApplicationFontChange and self.isVisible():
             # The desktop text size changed (System Settings > Fonts):
             # style.qss's sizes follow it (theming.text_scale), and the
-            # queue columns are sized from the font. A closed window skips
-            # it: the stylesheet is app-wide, one reload re-polishes all.
-            self._reload_stylesheet()
+            # queue columns are sized from the font. The stylesheet is
+            # app-wide: the first window to see the change reloads it for
+            # all, and a closed window skips this entirely.
+            self._reload_stylesheet(if_scale_changed=True)
             self.queue_list.fit_columns()
         elif kind == QEvent.LayoutRequest:
             handled = super().event(event)  # lets the layout settle first

@@ -30,7 +30,27 @@ _FFMPEG_ERROR_RE = re.compile(
 INTERLACE_DETECT_THRESHOLD = 0.5
 INTERLACE_DETECT_SAMPLE_SECONDS = 20
 
+# The UHD 630's iHD HEVC encoder only takes compression_level (its "target
+# usage") 1, 4 and 7. 2, 3, 5 and 6 pass ffmpeg's range check, then fail
+# on the very first frame ("Failed to end picture encode issue: 24
+# (internal encoding error)", ffmpeg exits 251) -- confirmed by encoding at
+# every level on the real driver (iHD 26.1.5), 8- and 10-bit, ICQ and CQP
+# alike. AMD's driver takes all seven.
+INTEL_HEVC_COMPRESSION_LEVELS = (1, 4, 7)
+
 _render_node_cache: dict[str, str] = {}
+
+
+def vaapi_compression_level(speed: str, gpu_vendor: str) -> str:
+    """The -compression_level value for a VAAPI speed setting: Intel's
+    in-between levels snap to the nearest one its driver accepts (2->1,
+    3->4, 5->4, 6->7). Done here rather than in the slider so a preset, a
+    restored session or an already-queued job holding an in-between value
+    still runs instead of failing."""
+    level = int(speed)
+    if gpu_vendor == "intel":
+        level = min(INTEL_HEVC_COMPRESSION_LEVELS, key=lambda allowed: abs(allowed - level))
+    return str(level)
 
 
 def find_render_node(vendor_id: str) -> str:
@@ -576,7 +596,7 @@ def build_args(
             args += ["-rc_mode", "CQP", "-qp", str(quality_value)]
         elif rc_mode == "VBR":
             args += ["-rc_mode", "VBR", "-b:v", f"{video_kbps}k"]
-        args += ["-compression_level", str(settings["speed"])]
+        args += ["-compression_level", vaapi_compression_level(settings["speed"], gpu_vendor)]
     else:
         # bwdif's own default (mode=send_field) doubles the frame rate -- one
         # output frame per FIELD -- which isn't what a "fix the interlacing,

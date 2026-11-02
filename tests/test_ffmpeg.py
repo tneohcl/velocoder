@@ -78,6 +78,7 @@ def _has_vendor_render_node(vendor_id: str) -> bool:
 # encodes, see constants.RC_MODES's comment), but a machine with only one
 # or the other shouldn't spuriously run/skip the wrong vendor's tests.
 HAS_AMD_VAAPI = _has_vendor_render_node(ffmpeg.AMD_VENDOR_ID)
+HAS_INTEL_VAAPI = _has_vendor_render_node(ffmpeg.INTEL_VENDOR_ID)
 
 
 def _run_queue_and_collect(queue: "transcode_queue.TranscodeQueue", jobs, output_dir, timeout_ms=15000):
@@ -245,6 +246,24 @@ class TestBuildArgsVaapi(_MockedRenderNodeMixin, ClipTestCase):
         # appears, encoding just continues past it now).
         args = ffmpeg.build_args(vaapi_settings(), self.clip, self.out_path)
         self.assertIn("-noautoscale", args)
+
+    def test_intel_speed_snaps_to_a_level_its_driver_accepts(self):
+        # The UHD 630's driver fails every encode at 2/3/5/6 (see
+        # ffmpeg.INTEL_HEVC_COMPRESSION_LEVELS).
+        expected = {"1": "1", "2": "1", "3": "4", "4": "4", "5": "4", "6": "7", "7": "7"}
+        for speed, level in expected.items():
+            args = ffmpeg.build_args(
+                vaapi_settings(gpu_vendor="intel", speed=speed), self.clip, self.out_path,
+            )
+            self.assertEqual(args[args.index("-compression_level") + 1], level, speed)
+
+    def test_amd_speed_passes_through_unchanged(self):
+        for speed in map(str, range(1, 8)):
+            args = ffmpeg.build_args(
+                vaapi_settings(gpu_vendor="amd", rc_mode="CQP", speed=speed),
+                self.clip, self.out_path,
+            )
+            self.assertEqual(args[args.index("-compression_level") + 1], speed)
 
 
 class TestBuildArgsAudioBitrateReservation(unittest.TestCase):
@@ -2000,6 +2019,19 @@ class TestIntegrationRealEncode(unittest.TestCase):
         )
         self.assertIn("hevc", probe.stdout)
         self.assertIn("320,180", probe.stdout.replace("\n", ","))
+
+    @unittest.skipUnless(HAS_INTEL_VAAPI, "no Intel render node on this machine")
+    def test_intel_vaapi_encode_runs_at_every_speed_setting(self):
+        # Every Speed slider position, not just 1/4/7: the in-between ones
+        # used to reach the driver as-is and fail on the first frame.
+        for speed in map(str, range(1, 8)):
+            out = self.tmpdir / f"intel_speed_{speed}.mp4"
+            args = ffmpeg.build_args(
+                vaapi_settings(gpu_vendor="intel", speed=speed, width=320, height=320),
+                self.clip, out,
+            )
+            result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, f"speed {speed}: {result.stderr[-2000:]}")
 
     @unittest.skipUnless(HAS_AMD_VAAPI, "no AMD render node on this machine")
     def test_amd_vaapi_encode_runs_and_produces_correct_output(self):

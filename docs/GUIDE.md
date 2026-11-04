@@ -127,6 +127,9 @@ same underlying value, never two independently-tracked ones.
   which every pixel format this app uses (4:2:0) rejects outright.
 - **File Format** — MP4 or MKV. `-movflags +faststart` is only added
   for MP4 (a mov/mp4-muxer-private option, silently ignored elsewhere).
+  H.265 in MP4 also gets `-tag:v hvc1`: ffmpeg's default `hev1` tag
+  won't play in Apple's players (QuickTime, Safari, iPhone/iPad, Apple
+  TV). H.264 is already `avc1`, and MKV has no such tag.
 - **Color Depth** — 8-bit or 10-bit (`main`/`nv12` vs `main10`/`p010le`
   for VAAPI; `yuv420p` vs `yuv420p10le` for CPU). H.264 specifically:
   8-bit offers the broadest playback compatibility of any option in

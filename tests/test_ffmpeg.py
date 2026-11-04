@@ -649,6 +649,23 @@ class TestBuildArgsCommon(_MockedRenderNodeMixin, ClipTestCase):
         args = ffmpeg.build_args(vaapi_settings(container="mkv"), self.clip, self.out_path)
         self.assertNotIn("-movflags", args)
 
+    def test_hevc_mp4_is_tagged_hvc1_for_apple_players(self):
+        # ffmpeg's mp4 muxer tags HEVC as hev1 by default, and Apple's
+        # players (QuickTime, Safari, iOS/iPadOS, Apple TV) refuse hev1.
+        for settings in (vaapi_settings(container="mp4"), x265_settings(container="mp4")):
+            with self.subTest(encoder=settings["encoder"]):
+                args = ffmpeg.build_args(settings, self.clip, self.out_path)
+                self.assertIn("-tag:v", args)
+                self.assertEqual(args[args.index("-tag:v") + 1], "hvc1")
+
+    def test_hvc1_tag_only_for_hevc_in_mp4(self):
+        # H.264 in mp4 is already avc1, and mkv has no fourcc to fix.
+        for settings in (x264_settings(container="mp4"), x265_settings(container="mkv"),
+                         vaapi_settings(container="mkv")):
+            with self.subTest(encoder=settings["encoder"], container=settings["container"]):
+                args = ffmpeg.build_args(settings, self.clip, self.out_path)
+                self.assertNotIn("-tag:v", args)
+
 
 class TestTune(_MockedRenderNodeMixin, ClipTestCase):
     def test_none_omits_tune_flag(self):
@@ -1990,6 +2007,15 @@ class TestGpuVendorSelection(ClipTestCase):
         mock_find.assert_called_once_with(ffmpeg.AMD_VENDOR_ID)
 
 
+def _video_codec_tag(path: Path) -> str:
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=codec_tag_string", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    )
+    return probe.stdout.strip()
+
+
 class TestIntegrationRealEncode(unittest.TestCase):
     """Actually run ffmpeg end to end -- the part a pure arg-list check can't catch."""
 
@@ -2067,6 +2093,24 @@ class TestIntegrationRealEncode(unittest.TestCase):
         # Source track is mp3, which is never copy-compatible -- must have
         # been transcoded to aac, not passed through untouched.
         self.assertEqual(probe.stdout.strip(), "aac")
+
+    def test_x265_mp4_output_is_tagged_hvc1(self):
+        out = self.tmpdir / "x265_hvc1.mp4"
+        args = ffmpeg.build_args(x265_settings(width=320, height=240), self.clip, out)
+        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        self.assertEqual(_video_codec_tag(out), "hvc1")
+
+    @unittest.skipUnless(HAS_AMD_VAAPI, "no AMD render node on this machine")
+    def test_amd_vaapi_mp4_output_is_tagged_hvc1(self):
+        out = self.tmpdir / "amd_hvc1.mp4"
+        args = ffmpeg.build_args(
+            vaapi_settings(gpu_vendor="amd", rc_mode="CQP", width=320, height=320),
+            self.clip, out,
+        )
+        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        self.assertEqual(_video_codec_tag(out), "hvc1")
 
 
 

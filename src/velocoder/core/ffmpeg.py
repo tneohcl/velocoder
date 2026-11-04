@@ -668,6 +668,12 @@ def build_args(
         # ignores it for other muxers, but omit it for mkv anyway so the
         # command line doesn't carry a flag that means nothing there.
         args += ["-movflags", "+faststart"]
+        if encoder in ("libx265", "hevc_vaapi"):
+            # ffmpeg's mp4 muxer tags HEVC as hev1 by default; Apple's
+            # players (QuickTime, Safari, iOS/iPadOS, Apple TV) only play
+            # hvc1. Everything else plays either. H.264 is already avc1,
+            # and mkv has no fourcc, so only HEVC-in-mp4 needs this.
+            args += ["-tag:v", "hvc1"]
     if is_vaapi:
         # A source with inconsistent color-range/matrix signaling across
         # its own GOPs (no container-level color metadata around to
